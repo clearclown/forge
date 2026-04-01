@@ -1,0 +1,18 @@
+[package]
+name = "forge-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+forge-core = { workspace = true }
+forge-proto = { workspace = true }
+tokio = { workspace = true }
+iroh = { workspace = true }
+bincode = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
