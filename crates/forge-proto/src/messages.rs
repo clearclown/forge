@@ -1,7 +1,12 @@
-use forge_core::{
-    LayerRange, ModelId, NodeId, PeerCapability, PipelineStage, TensorMeta,
-};
+use forge_core::{LayerRange, ModelId, NodeId, PeerCapability, PipelineStage, TensorMeta};
 use serde::{Deserialize, Serialize};
+
+pub const MAX_PROTOCOL_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_PROTOCOL_PROMPT_CHARS: usize = 32 * 1024;
+pub const MAX_PROTOCOL_TOKENS: u32 = 4_096;
+pub const MAX_PROTOCOL_TEXT_FRAGMENT_CHARS: usize = 8 * 1024;
+pub const MAX_PROTOCOL_REASON_CHARS: usize = 1_024;
+pub const MAX_PROTOCOL_ERROR_MESSAGE_CHARS: usize = 1_024;
 
 /// Top-level message envelope for all wire protocol communication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +29,7 @@ pub enum Payload {
     TokenResult(TokenResult),
     InferenceRequest(InferenceRequest),
     TokenStream(TokenStreamMsg),
+    Error(ErrorMsg),
     Heartbeat(Heartbeat),
     Ping(Ping),
     Pong(Pong),
@@ -115,6 +121,22 @@ pub struct TokenStreamMsg {
     pub is_final: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ErrorCode {
+    InvalidRequest,
+    InsufficientBalance,
+    Busy,
+    Internal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorMsg {
+    pub request_id: u64,
+    pub code: ErrorCode,
+    pub message: String,
+    pub retryable: bool,
+}
+
 // --- Health ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +206,207 @@ pub struct RpcServerReady {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcServerFailed {
     pub reason: String,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ProtocolValidationError {
+    #[error("sender mismatch: expected {expected}, got {actual}")]
+    SenderMismatch { expected: String, actual: String },
+    #[error("hello capability node id does not match sender")]
+    HelloCapabilityMismatch,
+    #[error("welcome capability node id does not match sender")]
+    WelcomeCapabilityMismatch,
+    #[error("invalid protocol version 0")]
+    InvalidVersion,
+    #[error("invalid layer range {start}..{end}")]
+    InvalidLayerRange { start: u32, end: u32 },
+    #[error("prompt must not be empty")]
+    EmptyPrompt,
+    #[error("prompt too large: {chars} chars > {limit}")]
+    PromptTooLarge { chars: usize, limit: usize },
+    #[error("max_tokens must be within 1..={0}")]
+    InvalidMaxTokens(u32),
+    #[error("temperature must be finite and within 0.0..=2.0")]
+    InvalidTemperature,
+    #[error("top_p must be finite and within (0.0, 1.0]")]
+    InvalidTopP,
+    #[error("tensor shape must not be empty")]
+    EmptyTensorShape,
+    #[error("tensor byte_len mismatch: meta={meta} actual={actual}")]
+    TensorByteLenMismatch { meta: u32, actual: usize },
+    #[error("tensor payload too large: {actual} bytes > {limit}")]
+    TensorTooLarge { actual: usize, limit: usize },
+    #[error("text fragment too large: {chars} chars > {limit}")]
+    TextFragmentTooLarge { chars: usize, limit: usize },
+    #[error("error message too large: {chars} chars > {limit}")]
+    ErrorMessageTooLarge { chars: usize, limit: usize },
+    #[error("rpc failure reason too large: {chars} chars > {limit}")]
+    ReasonTooLarge { chars: usize, limit: usize },
+    #[error("rpc port must be unprivileged and non-zero")]
+    InvalidRpcPort,
+}
+
+impl Envelope {
+    pub fn validate_for_peer(
+        &self,
+        expected_sender: &NodeId,
+    ) -> Result<(), ProtocolValidationError> {
+        if &self.sender != expected_sender {
+            return Err(ProtocolValidationError::SenderMismatch {
+                expected: expected_sender.to_hex(),
+                actual: self.sender.to_hex(),
+            });
+        }
+        self.payload.validate_with_sender(&self.sender)
+    }
+}
+
+impl Payload {
+    pub fn validate_with_sender(&self, sender: &NodeId) -> Result<(), ProtocolValidationError> {
+        match self {
+            Payload::Hello(hello) => {
+                validate_protocol_version(hello.version)?;
+                if hello.capability.node_id != *sender {
+                    return Err(ProtocolValidationError::HelloCapabilityMismatch);
+                }
+                Ok(())
+            }
+            Payload::Welcome(welcome) => {
+                validate_protocol_version(welcome.version)?;
+                if welcome.capability.node_id != *sender {
+                    return Err(ProtocolValidationError::WelcomeCapabilityMismatch);
+                }
+                Ok(())
+            }
+            Payload::AssignShard(assign) => {
+                validate_layer_range(assign.layer_range)?;
+                Ok(())
+            }
+            Payload::ShardReady(ready) => {
+                validate_layer_range(ready.layer_range)?;
+                Ok(())
+            }
+            Payload::PipelineTopology(topology) => {
+                for stage in &topology.stages {
+                    validate_layer_range(stage.layer_range)?;
+                }
+                Ok(())
+            }
+            Payload::Forward(forward) => {
+                if forward.tensor_meta.shape.is_empty() {
+                    return Err(ProtocolValidationError::EmptyTensorShape);
+                }
+                let actual = forward.tensor_data.len();
+                if forward.tensor_meta.byte_len as usize != actual {
+                    return Err(ProtocolValidationError::TensorByteLenMismatch {
+                        meta: forward.tensor_meta.byte_len,
+                        actual,
+                    });
+                }
+                if actual > MAX_PROTOCOL_MESSAGE_BYTES {
+                    return Err(ProtocolValidationError::TensorTooLarge {
+                        actual,
+                        limit: MAX_PROTOCOL_MESSAGE_BYTES,
+                    });
+                }
+                Ok(())
+            }
+            Payload::TokenResult(_) => Ok(()),
+            Payload::InferenceRequest(req) => {
+                let prompt_chars = req.prompt_text.chars().count();
+                if prompt_chars == 0 {
+                    return Err(ProtocolValidationError::EmptyPrompt);
+                }
+                if prompt_chars > MAX_PROTOCOL_PROMPT_CHARS {
+                    return Err(ProtocolValidationError::PromptTooLarge {
+                        chars: prompt_chars,
+                        limit: MAX_PROTOCOL_PROMPT_CHARS,
+                    });
+                }
+                if req.max_tokens == 0 || req.max_tokens > MAX_PROTOCOL_TOKENS {
+                    return Err(ProtocolValidationError::InvalidMaxTokens(
+                        MAX_PROTOCOL_TOKENS,
+                    ));
+                }
+                if !req.temperature.is_finite() || !(0.0..=2.0).contains(&req.temperature) {
+                    return Err(ProtocolValidationError::InvalidTemperature);
+                }
+                if !req.top_p.is_finite() || !(0.0..=1.0).contains(&req.top_p) || req.top_p == 0.0 {
+                    return Err(ProtocolValidationError::InvalidTopP);
+                }
+                Ok(())
+            }
+            Payload::TokenStream(stream) => {
+                let chars = stream.text.chars().count();
+                if chars > MAX_PROTOCOL_TEXT_FRAGMENT_CHARS {
+                    return Err(ProtocolValidationError::TextFragmentTooLarge {
+                        chars,
+                        limit: MAX_PROTOCOL_TEXT_FRAGMENT_CHARS,
+                    });
+                }
+                Ok(())
+            }
+            Payload::Error(error) => {
+                let chars = error.message.chars().count();
+                if chars > MAX_PROTOCOL_ERROR_MESSAGE_CHARS {
+                    return Err(ProtocolValidationError::ErrorMessageTooLarge {
+                        chars,
+                        limit: MAX_PROTOCOL_ERROR_MESSAGE_CHARS,
+                    });
+                }
+                Ok(())
+            }
+            Payload::Heartbeat(_) | Payload::Ping(_) | Payload::Pong(_) | Payload::Leaving(_) => {
+                Ok(())
+            }
+            Payload::Rebalance(rebalance) => {
+                for stage in &rebalance.new_topology.stages {
+                    validate_layer_range(stage.layer_range)?;
+                }
+                Ok(())
+            }
+            Payload::StartRpcServer(start) => {
+                validate_layer_range(start.layer_range)?;
+                if start.port == 0 || start.port < 1024 {
+                    return Err(ProtocolValidationError::InvalidRpcPort);
+                }
+                Ok(())
+            }
+            Payload::RpcServerReady(ready) => {
+                if ready.port == 0 || ready.port < 1024 {
+                    return Err(ProtocolValidationError::InvalidRpcPort);
+                }
+                Ok(())
+            }
+            Payload::RpcServerFailed(failed) => {
+                let chars = failed.reason.chars().count();
+                if chars > MAX_PROTOCOL_REASON_CHARS {
+                    return Err(ProtocolValidationError::ReasonTooLarge {
+                        chars,
+                        limit: MAX_PROTOCOL_REASON_CHARS,
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+fn validate_protocol_version(version: u16) -> Result<(), ProtocolValidationError> {
+    if version == 0 {
+        return Err(ProtocolValidationError::InvalidVersion);
+    }
+    Ok(())
+}
+
+fn validate_layer_range(range: LayerRange) -> Result<(), ProtocolValidationError> {
+    if range.start >= range.end {
+        return Err(ProtocolValidationError::InvalidLayerRange {
+            start: range.start,
+            end: range.end,
+        });
+    }
+    Ok(())
 }
 
 mod serde_bytes {

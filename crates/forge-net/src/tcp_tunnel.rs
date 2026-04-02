@@ -132,31 +132,25 @@ async fn relay_to_rpc_server(rpc_addr: &str, data: &[u8]) -> anyhow::Result<Vec<
     let mut buf = [0u8; 64 * 1024];
 
     // Read response with a short timeout (RPC responses are fast)
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        async {
-            loop {
-                match stream.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => response.extend_from_slice(&buf[..n]),
-                    Err(e) => return Err(e),
-                }
-                // RPC protocol is request-response, so we read until
-                // the server has sent its response. We use a small delay
-                // to detect end-of-response.
-                if tokio::time::timeout(
-                    std::time::Duration::from_millis(10),
-                    stream.read(&mut buf),
-                )
+    match tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => response.extend_from_slice(&buf[..n]),
+                Err(e) => return Err(e),
+            }
+            // RPC protocol is request-response, so we read until
+            // the server has sent its response. We use a small delay
+            // to detect end-of-response.
+            if tokio::time::timeout(std::time::Duration::from_millis(10), stream.read(&mut buf))
                 .await
                 .is_err()
-                {
-                    break;
-                }
+            {
+                break;
             }
-            Ok(())
-        },
-    )
+        }
+        Ok(())
+    })
     .await
     {
         Ok(Ok(())) => {}

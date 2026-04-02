@@ -39,7 +39,15 @@ impl TokenOutputStream {
             .decode(&self.tokens[self.prev_index..self.current_index], true)
             .map_err(anyhow::Error::msg)?;
 
-        if text.len() > prev_text.len() && text.ends_with(|c: char| !c.is_ascii() || c.is_ascii_alphanumeric() || c.is_ascii_punctuation() || c == ' ' || c == '\n') {
+        if text.len() > prev_text.len()
+            && text.ends_with(|c: char| {
+                !c.is_ascii()
+                    || c.is_ascii_alphanumeric()
+                    || c.is_ascii_punctuation()
+                    || c == ' '
+                    || c == '\n'
+            })
+        {
             let new_text = text[prev_text.len()..].to_string();
             self.prev_index = self.current_index - 1; // keep last token for context
             Ok(Some(new_text))

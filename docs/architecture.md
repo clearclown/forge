@@ -243,6 +243,7 @@ let transport = node.connect_to_seed(seed_addr).await?;
 let stats = node.network_stats().await;
 
 // Local daemon status over HTTP
+// Bound to 127.0.0.1 by default; operators opt into wider exposure explicitly
 // GET /status -> model_loaded + market price + network stats + recent trades
 // GET /topology -> model manifest + connected peer capabilities + planned shard topology
 // GET /settlement -> export settlement statement for a time window

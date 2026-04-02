@@ -102,6 +102,19 @@
 - local fallback is a design goal for future split-inference clients
 - Reputation penalty for nodes that disconnect frequently
 - Graceful degradation is a core design principle
+- inbound inference requests are bounded by runtime validation and a fixed concurrent execution limit on the seed
+- duplicate protocol `msg_id` values from the same peer are dropped inside a bounded replay window
+
+### T9: Administrative API Exposure
+**Threat**: An operator binds the local HTTP API to a public interface without protection, exposing `/status`, `/topology`, `/settlement`, or `/chat`.
+
+**Mitigation in the current implementation**:
+- the daemon binds the HTTP API to `127.0.0.1` by default
+- operators can still expose it intentionally with `--bind 0.0.0.0`
+- exposed administrative routes can be protected with a bearer token via `--api-token`
+- JSON request bodies are size-limited before deserialization to reduce allocation abuse on `/chat`
+
+**Residual risk**: Bearer token authentication is an operator control, not mutual TLS. If the token leaks, the API should be treated as compromised until rotated.
 
 ## Trust Hierarchy
 

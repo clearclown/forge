@@ -1,11 +1,12 @@
 use axum::{
-    extract::{Query, State},
-    http::StatusCode,
-    response::{sse::Event, Sse},
-    routing::{get, post},
     Json, Router,
+    extract::{DefaultBodyLimit, Query, State},
+    http::{Request, StatusCode, header::AUTHORIZATION},
+    middleware::{self, Next},
+    response::{Response, Sse, sse::Event},
+    routing::{get, post},
 };
-use forge_core::{ModelManifest, PeerCapability, PipelineTopology};
+use forge_core::{Config, ModelManifest, PeerCapability, PipelineTopology};
 use forge_infer::{CandleEngine, InferenceEngine};
 use forge_ledger::{ComputeLedger, SettlementStatement};
 use forge_net::ClusterManager;
@@ -20,6 +21,7 @@ type TopologyState = Arc<Mutex<Option<PipelineTopology>>>;
 
 #[derive(Clone)]
 struct AppState {
+    config: Config,
     engine: EngineState,
     ledger: LedgerState,
     model_manifest: ModelState,
@@ -28,29 +30,42 @@ struct AppState {
 }
 
 pub fn create_router(
+    config: Config,
     engine: EngineState,
     ledger: LedgerState,
     model_manifest: ModelState,
     advertised_topology: TopologyState,
     cluster: Option<Arc<ClusterManager>>,
 ) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    let state = AppState {
+        config,
+        engine,
+        ledger,
+        model_manifest,
+        advertised_topology,
+        cluster,
+    };
+    let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
+
+    let protected = Router::new()
         .route("/status", get(status))
         .route("/topology", get(topology))
         .route("/settlement", get(settlement))
         .route("/chat", post(chat))
         .route("/chat/stream", post(chat_stream))
-        .with_state(AppState {
-            engine,
-            ledger,
-            model_manifest,
-            advertised_topology,
-            cluster,
-        })
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_bearer_auth,
+        ));
+
+    Router::new()
+        .route("/health", get(health))
+        .merge(protected)
+        .layer(DefaultBodyLimit::max(api_max_request_body_bytes))
+        .with_state(state)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub prompt: String,
     #[serde(default = "default_max_tokens")]
@@ -106,6 +121,52 @@ pub struct SettlementQuery {
     pub reference_price_per_cu: Option<f64>,
 }
 
+async fn require_bearer_auth(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, (StatusCode, String)> {
+    let Some(expected) = state
+        .config
+        .api_bearer_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+    else {
+        return Ok(next.run(request).await);
+    };
+
+    let Some(value) = request.headers().get(AUTHORIZATION) else {
+        return Err((StatusCode::UNAUTHORIZED, "missing bearer token".to_string()));
+    };
+
+    let Ok(value) = value.to_str() else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "invalid authorization header".to_string(),
+        ));
+    };
+
+    let Some(token) = value.strip_prefix("Bearer ") else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "authorization header must use Bearer".to_string(),
+        ));
+    };
+
+    if token != expected {
+        return Err((StatusCode::UNAUTHORIZED, "invalid bearer token".to_string()));
+    }
+
+    Ok(next.run(request).await)
+}
+
+fn validate_chat_request(state: &AppState, req: &ChatRequest) -> Result<(), (StatusCode, String)> {
+    state
+        .config
+        .validate_inference_request(&req.prompt, req.max_tokens, req.temperature, Some(0.9))
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))
+}
+
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let engine = state.engine.lock().await;
     Json(HealthResponse {
@@ -154,11 +215,11 @@ async fn settlement(
         ));
     }
 
-    let statement = state
-        .ledger
-        .lock()
-        .await
-        .export_settlement_statement(window_start, window_end, query.reference_price_per_cu);
+    let statement = state.ledger.lock().await.export_settlement_statement(
+        window_start,
+        window_end,
+        query.reference_price_per_cu,
+    );
 
     Ok(Json(statement))
 }
@@ -182,8 +243,9 @@ async fn topology(
         None => Vec::new(),
     };
 
-    let snapshot = crate::topology::build_topology_snapshot(model, local_capability, connected_peers)
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let snapshot =
+        crate::topology::build_topology_snapshot(model, local_capability, connected_peers)
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let advertised_topology = state.advertised_topology.lock().await.clone();
 
     Ok(Json(TopologyResponse {
@@ -201,6 +263,8 @@ async fn chat(
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, (StatusCode, String)> {
     use forge_infer::InferenceEngine;
+
+    validate_chat_request(&state, &req)?;
 
     let mut engine = state.engine.lock().await;
     if !engine.is_loaded() {
@@ -226,9 +290,13 @@ async fn chat(
 async fn chat_stream(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
-) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>, (StatusCode, String)>
-{
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>,
+    (StatusCode, String),
+> {
     use forge_infer::InferenceEngine;
+
+    validate_chat_request(&state, &req)?;
 
     let mut engine_guard = state.engine.lock().await;
     if !engine_guard.is_loaded() {
@@ -245,9 +313,11 @@ async fn chat_stream(
 
     drop(engine_guard);
 
-    let stream = tokio_stream::iter(tokens.into_iter().map(|token| {
-        Ok(Event::default().data(token))
-    }));
+    let stream = tokio_stream::iter(
+        tokens
+            .into_iter()
+            .map(|token| Ok(Event::default().data(token))),
+    );
 
     Ok(Sse::new(stream))
 }
@@ -257,4 +327,136 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use tower::util::ServiceExt;
+
+    fn test_router(config: Config) -> Router {
+        create_router(
+            config,
+            Arc::new(Mutex::new(CandleEngine::new())),
+            Arc::new(Mutex::new(ComputeLedger::new())),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn health_is_not_protected_by_bearer_auth() {
+        let mut config = Config::default();
+        config.api_bearer_token = Some("secret".to_string());
+        let app = test_router(config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn protected_routes_require_bearer_auth() {
+        let mut config = Config::default();
+        config.api_bearer_token = Some("secret".to_string());
+        let app = test_router(config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn protected_routes_accept_valid_bearer_auth() {
+        let mut config = Config::default();
+        config.api_bearer_token = Some("secret".to_string());
+        let app = test_router(config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn chat_rejects_requests_over_runtime_limits() {
+        let mut config = Config::default();
+        config.max_generate_tokens = 32;
+        let app = test_router(config);
+
+        let body = serde_json::to_vec(&ChatRequest {
+            prompt: "hello".to_string(),
+            max_tokens: 64,
+            temperature: 0.7,
+        })
+        .expect("serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/chat")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn chat_rejects_request_bodies_over_limit() {
+        let mut config = Config::default();
+        config.api_max_request_body_bytes = 32;
+        let app = test_router(config);
+
+        let body = serde_json::json!({
+            "prompt": "this body is intentionally much larger than the configured limit",
+            "max_tokens": 16,
+            "temperature": 0.7
+        })
+        .to_string();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/chat")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }

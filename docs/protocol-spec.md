@@ -17,6 +17,13 @@ pub struct Envelope {
 }
 ```
 
+Validation rules enforced by the current runtime:
+- `Envelope.sender` must match the authenticated remote peer identity from the QUIC connection
+- duplicate `msg_id` values from the same peer are dropped within a bounded replay window
+- `Hello.capability.node_id` and `Welcome.capability.node_id` must match `Envelope.sender`
+- malformed layer ranges and mismatched tensor lengths are rejected before higher-level handlers see the message
+- prompt and token fields are bounded (`prompt_text` and `max_tokens`) so one peer cannot ask another to allocate unbounded work
+
 ## Payload Enum
 
 ```rust
@@ -30,6 +37,7 @@ pub enum Payload {
     TokenResult(TokenResult),
     InferenceRequest(InferenceRequest),
     TokenStream(TokenStreamMsg),
+    Error(ErrorMsg),
     Heartbeat(Heartbeat),
     Ping(Ping),
     Pong(Pong),
@@ -156,7 +164,30 @@ pub struct TokenStreamMsg {
 
 - `text` is a decoded text fragment suitable for immediate rendering.
 - `is_final = true` closes the stream for the request.
-- Current insufficient-balance behavior is encoded as a final text fragment such as `[error: insufficient CU balance]`. A typed error payload is planned for a later protocol revision.
+
+### ErrorMsg
+
+Request-scoped failures are returned as typed errors rather than overloaded text fragments.
+
+```rust
+pub enum ErrorCode {
+    InvalidRequest,
+    InsufficientBalance,
+    Busy,
+    Internal,
+}
+
+pub struct ErrorMsg {
+    pub request_id: u64,
+    pub code: ErrorCode,
+    pub message: String,
+    pub retryable: bool,
+}
+```
+
+- `request_id` ties the error to the in-flight inference request.
+- `retryable` tells the caller whether retrying later is sensible.
+- Current seed/runtime uses this for invalid requests, CU rejection, concurrency saturation, and generation failures.
 
 ## Health and Liveness
 
@@ -209,6 +240,7 @@ pub struct Rebalance {
 - Control messages use bincode.
 - `Forward.tensor_data` is transmitted as raw contiguous bytes.
 - The envelope stays uniform across all message types so transports can stay generic.
+- The runtime rejects protocol frames larger than 64 MiB.
 - The protocol does not embed fiat, blockchain, or exchange settlement fields. Those belong in off-protocol integrations.
 
 ## Connection Lifecycle

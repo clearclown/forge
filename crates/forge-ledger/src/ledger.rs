@@ -132,12 +132,7 @@ impl ComputeLedger {
 
     /// Return the most recent trades, newest first.
     pub fn recent_trades(&self, limit: usize) -> Vec<TradeRecord> {
-        self.trade_log
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        self.trade_log.iter().rev().take(limit).cloned().collect()
     }
 
     /// Save the current ledger snapshot as JSON with integrity hash.
@@ -198,7 +193,10 @@ impl ComputeLedger {
         }
 
         // Fallback: load unsigned (legacy format), log warning
-        tracing::warn!("Loading unsigned ledger (no integrity hash) from {:?}", path);
+        tracing::warn!(
+            "Loading unsigned ledger (no integrity hash) from {:?}",
+            path
+        );
         let snapshot: PersistedLedger = serde_json::from_str(&raw)
             .map_err(|e| forge_core::ForgeError::LedgerError(format!("deserialize: {e}")))?;
         Ok(Self::from_snapshot(snapshot))
@@ -316,16 +314,13 @@ impl ComputeLedger {
 
     /// Record compute consumed by a node (it requested inference).
     pub fn record_consumption(&mut self, node_id: &NodeId, cu: u64) {
-        let balance = self
-            .balances
-            .entry(node_id.clone())
-            .or_insert(NodeBalance {
-                node_id: node_id.clone(),
-                contributed: 0,
-                consumed: 0,
-                reserved: 0,
-                reputation: 0.5,
-            });
+        let balance = self.balances.entry(node_id.clone()).or_insert(NodeBalance {
+            node_id: node_id.clone(),
+            contributed: 0,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.5,
+        });
 
         balance.consumed += cu;
     }
@@ -655,7 +650,10 @@ mod tests {
         let loaded = ComputeLedger::load_from_path(&path).unwrap();
 
         assert_eq!(loaded.network_stats().total_trades, 1);
-        assert_eq!(loaded.get_balance(&NodeId([7u8; 32])).unwrap().contributed, 17);
+        assert_eq!(
+            loaded.get_balance(&NodeId([7u8; 32])).unwrap().contributed,
+            17
+        );
         let _ = std::fs::remove_file(path);
     }
 

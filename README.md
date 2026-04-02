@@ -10,7 +10,7 @@ The current reference implementation is an encrypted seed/worker inference proto
 
 ## Project Status
 
-- Current: encrypted remote inference, local HTTP API, local CU ledger, persisted ledger snapshots, settlement export
+- Current: encrypted remote inference, loopback-first HTTP API, local CU ledger, persisted ledger snapshots, settlement export
 - Current groundwork for split inference: capability handshake, model metadata parsing, topology planning endpoint
 - Next: partial-layer model loading, `Forward`-based activation routing, topology-driven split inference, honest fallback behavior
 - Boundary: payout rails, credits, stablecoins, and fiat stay outside the protocol
@@ -89,6 +89,9 @@ forge chat -m model.gguf -t tokenizer.json "What is gravity?"
 # Start the daemon as a seed node (serves inference to the network)
 forged seed -m model.gguf -t tokenizer.json --ledger forge-ledger.json
 
+# If you need remote API access, opt into it explicitly and protect it
+forged seed -m model.gguf -t tokenizer.json --bind 0.0.0.0 --api-token "$FORGE_API_TOKEN"
+
 # Connect as a requester and buy inference from the seed
 forge worker --seed <seed_public_key>
 
@@ -103,6 +106,9 @@ forge settle --url http://127.0.0.1:3000 --hours 24 --price 0.05 --out settlemen
 
 # Local API mode without P2P
 forged node -m model.gguf -t tokenizer.json --port 3000 --ledger forge-ledger.json
+
+# Protected admin calls
+forge status --url http://127.0.0.1:3000 --api-token "$FORGE_API_TOKEN"
 ```
 
 ## Operator Flow
@@ -110,10 +116,11 @@ forged node -m model.gguf -t tokenizer.json --port 3000 --ledger forge-ledger.js
 1. Run `forged seed` on the machine that will host the model.
 2. Point consumers at it with `forge worker --seed ...`.
 3. Keep `--ledger forge-ledger.json` enabled so balances and trades survive restarts.
-4. Watch `/status` or `forge status` for market price, trade count, and CU flow.
-5. Use `/topology` or `forge topology` to inspect the current shard plan from connected peer capabilities.
-6. Export `/settlement` or use `forge settle` for off-protocol billing and payout adapters.
-7. Build any payout or billing adapter outside the protocol boundary; the core ledger remains CU-native.
+4. Leave the HTTP API on `127.0.0.1` unless you intentionally need remote access; if you expose it, set `--api-token`.
+5. Watch `/status` or `forge status` for market price, trade count, and CU flow.
+6. Use `/topology` or `forge topology` to inspect the current shard plan from connected peer capabilities.
+7. Export `/settlement` or use `forge settle` for off-protocol billing and payout adapters.
+8. Build any payout or billing adapter outside the protocol boundary; the core ledger remains CU-native.
 
 ## Docs
 

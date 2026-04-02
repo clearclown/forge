@@ -73,6 +73,8 @@ impl ForgeNode {
         max_tokens: u32,
         temperature: f32,
     ) -> Result<String, forge_core::ForgeError> {
+        self.config
+            .validate_inference_request(prompt, max_tokens, temperature, None)?;
         let mut engine = self.engine.lock().await;
         let tokens = engine.generate(prompt, max_tokens, temperature, None)?;
         Ok(tokens.join(""))
@@ -81,13 +83,14 @@ impl ForgeNode {
     /// Start the HTTP API server.
     pub async fn serve_api(&self) -> Result<(), forge_core::ForgeError> {
         let app = crate::api::create_router(
+            self.config.clone(),
             self.engine.clone(),
             self.ledger.clone(),
             self.model_manifest.clone(),
             self.advertised_topology.clone(),
             self.cluster.clone(),
         );
-        let addr = format!("0.0.0.0:{}", self.config.api_port);
+        let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
 
         let listener = tokio::net::TcpListener::bind(&addr)
@@ -109,8 +112,7 @@ impl ForgeNode {
             .await
             .map_err(|e| forge_core::ForgeError::NetworkError(format!("transport: {e}")))?;
         let transport = Arc::new(transport);
-        let local_capability =
-            build_local_capability(&self.config, transport.forge_node_id());
+        let local_capability = build_local_capability(&self.config, transport.forge_node_id());
         self.cluster = Some(Arc::new(ClusterManager::new(
             transport.clone(),
             local_capability,
@@ -140,18 +142,19 @@ impl ForgeNode {
         let manifest_api = self.model_manifest.clone();
         let topology_api = self.advertised_topology.clone();
         let cluster_api = self.cluster.clone();
-        let api_port = self.config.api_port;
+        let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router(
+                api_config.clone(),
                 engine_api,
                 ledger_api,
                 manifest_api,
                 topology_api,
                 cluster_api,
             );
-            let addr = format!("0.0.0.0:{}", api_port);
+            let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
-                tracing::info!("HTTP API at http://localhost:{}", api_port);
+                tracing::info!("HTTP API at http://{}", addr);
                 let _ = axum::serve(listener, app).await;
             }
         });
@@ -165,6 +168,7 @@ impl ForgeNode {
                 self.model_manifest.clone(),
                 self.advertised_topology.clone(),
                 self.cluster.clone(),
+                self.config.clone(),
                 self.config.ledger_path.clone(),
             )
             .await

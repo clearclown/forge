@@ -26,9 +26,17 @@ enum DaemonCommand {
         #[arg(short, long, default_value = "3000")]
         port: u16,
 
+        /// Bind address for the local HTTP API
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+
         /// Path to the persisted ledger snapshot
         #[arg(long, default_value = "forge-ledger.json")]
         ledger: String,
+
+        /// Optional bearer token protecting administrative HTTP API routes
+        #[arg(long)]
+        api_token: Option<String>,
     },
 
     /// Start a local API server (no P2P)
@@ -45,9 +53,17 @@ enum DaemonCommand {
         #[arg(short, long, default_value = "3000")]
         port: u16,
 
+        /// Bind address for the local HTTP API
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+
         /// Path to the persisted ledger snapshot
         #[arg(long, default_value = "forge-ledger.json")]
         ledger: String,
+
+        /// Optional bearer token protecting administrative HTTP API routes
+        #[arg(long)]
+        api_token: Option<String>,
     },
 }
 
@@ -67,10 +83,14 @@ async fn main() -> anyhow::Result<()> {
             model,
             tokenizer,
             port,
+            bind,
             ledger,
+            api_token,
         } => {
             let config = Config {
                 api_port: port,
+                api_bind_addr: bind,
+                api_bearer_token: resolve_api_token(api_token),
                 ledger_path: Some(PathBuf::from(&ledger)),
                 share_compute: true,
                 ..Config::default()
@@ -87,10 +107,14 @@ async fn main() -> anyhow::Result<()> {
             model,
             tokenizer,
             port,
+            bind,
             ledger,
+            api_token,
         } => {
             let config = Config {
                 api_port: port,
+                api_bind_addr: bind,
+                api_bearer_token: resolve_api_token(api_token),
                 ledger_path: Some(PathBuf::from(&ledger)),
                 ..Config::default()
             };
@@ -107,4 +131,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_api_token(flag: Option<String>) -> Option<String> {
+    flag.or_else(|| std::env::var("FORGE_API_TOKEN").ok())
+        .filter(|token| !token.is_empty())
 }

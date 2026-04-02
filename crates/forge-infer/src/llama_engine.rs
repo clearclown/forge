@@ -77,12 +77,12 @@ impl InferenceEngine for LlamaCppEngine {
         _layer_range: Option<LayerRange>,
     ) -> Result<(), ForgeError> {
         // Validate paths
-        let model_path = model_path.canonicalize().map_err(|e| {
-            ForgeError::ModelLoadError(format!("invalid model path: {e}"))
-        })?;
-        let tokenizer_path = tokenizer_path.canonicalize().map_err(|e| {
-            ForgeError::ModelLoadError(format!("invalid tokenizer path: {e}"))
-        })?;
+        let model_path = model_path
+            .canonicalize()
+            .map_err(|e| ForgeError::ModelLoadError(format!("invalid model path: {e}")))?;
+        let tokenizer_path = tokenizer_path
+            .canonicalize()
+            .map_err(|e| ForgeError::ModelLoadError(format!("invalid tokenizer path: {e}")))?;
 
         tracing::info!("Loading GGUF model from {:?}", model_path);
 
@@ -163,25 +163,27 @@ impl InferenceEngine for LlamaCppEngine {
     }
 
     fn tokenize(&self, prompt: &str) -> Result<Vec<u32>, ForgeError> {
-        let tokenizer = self.tokenizer.as_ref()
+        let tokenizer = self
+            .tokenizer
+            .as_ref()
             .ok_or_else(|| ForgeError::InferenceError("tokenizer not loaded".to_string()))?;
-        let encoding = tokenizer.encode(prompt, true)
+        let encoding = tokenizer
+            .encode(prompt, true)
             .map_err(|e| ForgeError::InferenceError(format!("tokenize: {e}")))?;
         Ok(encoding.get_ids().to_vec())
     }
 
     fn decode(&self, tokens: &[u32]) -> Result<String, ForgeError> {
-        let tokenizer = self.tokenizer.as_ref()
+        let tokenizer = self
+            .tokenizer
+            .as_ref()
             .ok_or_else(|| ForgeError::InferenceError("tokenizer not loaded".to_string()))?;
-        tokenizer.decode(tokens, true)
+        tokenizer
+            .decode(tokens, true)
             .map_err(|e| ForgeError::InferenceError(format!("decode: {e}")))
     }
 
-    fn forward_tokens(
-        &mut self,
-        _tokens: &[u32],
-        _pos: usize,
-    ) -> Result<Vec<f32>, ForgeError> {
+    fn forward_tokens(&mut self, _tokens: &[u32], _pos: usize) -> Result<Vec<f32>, ForgeError> {
         Err(ForgeError::InferenceError(
             "forward_tokens not yet implemented for llama.cpp backend".to_string(),
         ))
@@ -245,27 +247,32 @@ fn engine_thread(rx: mpsc::Receiver<EngineCmd>) {
                 reply,
             } => {
                 let result = (|| -> Result<Vec<(i32, Vec<u8>)>, ForgeError> {
-                    let be = backend.as_ref()
+                    let be = backend
+                        .as_ref()
                         .ok_or_else(|| ForgeError::InferenceError("not loaded".to_string()))?;
-                    let m = model.as_ref()
+                    let m = model
+                        .as_ref()
                         .ok_or_else(|| ForgeError::InferenceError("not loaded".to_string()))?;
 
-                    let tokens = m.str_to_token(&prompt, AddBos::Always)
+                    let tokens = m
+                        .str_to_token(&prompt, AddBos::Always)
                         .map_err(|e| ForgeError::InferenceError(format!("tokenize: {e}")))?;
 
                     if tokens.is_empty() {
                         return Err(ForgeError::InferenceError("empty prompt".to_string()));
                     }
 
-                    let ctx_params = LlamaContextParams::default()
-                        .with_n_ctx(NonZeroU32::new(4096));
-                    let mut ctx = m.new_context(be, ctx_params)
+                    let ctx_params =
+                        LlamaContextParams::default().with_n_ctx(NonZeroU32::new(4096));
+                    let mut ctx = m
+                        .new_context(be, ctx_params)
                         .map_err(|e| ForgeError::InferenceError(format!("context: {e}")))?;
 
                     let mut batch = LlamaBatch::new(4096, 1);
                     let last_idx = tokens.len() as i32 - 1;
                     for (i, &token) in tokens.iter().enumerate() {
-                        batch.add(token, i as i32, &[0], i as i32 == last_idx)
+                        batch
+                            .add(token, i as i32, &[0], i as i32 == last_idx)
                             .map_err(|e| ForgeError::InferenceError(format!("batch: {e}")))?;
                     }
                     ctx.decode(&mut batch)
@@ -276,8 +283,7 @@ fn engine_thread(rx: mpsc::Receiver<EngineCmd>) {
 
                     for _ in 0..max_tokens {
                         let candidates = ctx.candidates_ith(batch.n_tokens() - 1);
-                        let mut candidates_p =
-                            LlamaTokenDataArray::from_iter(candidates, false);
+                        let mut candidates_p = LlamaTokenDataArray::from_iter(candidates, false);
 
                         let new_token = if temperature <= 0.0 {
                             candidates_p.sample_token_greedy()
@@ -293,7 +299,8 @@ fn engine_thread(rx: mpsc::Receiver<EngineCmd>) {
                         result.push((new_token.0, Vec::new()));
 
                         batch.clear();
-                        batch.add(new_token, n_decoded as i32, &[0], true)
+                        batch
+                            .add(new_token, n_decoded as i32, &[0], true)
                             .map_err(|e| ForgeError::InferenceError(format!("batch: {e}")))?;
                         ctx.decode(&mut batch)
                             .map_err(|e| ForgeError::InferenceError(format!("decode: {e}")))?;

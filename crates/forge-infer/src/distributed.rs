@@ -17,8 +17,7 @@
 //! ```
 
 use forge_core::ForgeError;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 /// Configuration for a distributed inference session.
@@ -114,21 +113,27 @@ pub fn run_distributed_inference(
     }
 
     // Validate model path
-    let model_path = config.model_path.canonicalize().map_err(|e| {
-        ForgeError::InferenceError(format!("invalid model path: {e}"))
-    })?;
+    let model_path = config
+        .model_path
+        .canonicalize()
+        .map_err(|e| ForgeError::InferenceError(format!("invalid model path: {e}")))?;
 
     // Validate llama-cli path
-    let cli_path = config.llama_cli_path.canonicalize().map_err(|e| {
-        ForgeError::InferenceError(format!("invalid llama-cli path: {e}"))
-    })?;
+    let cli_path = config
+        .llama_cli_path
+        .canonicalize()
+        .map_err(|e| ForgeError::InferenceError(format!("invalid llama-cli path: {e}")))?;
     if !cli_path.is_file() {
-        return Err(ForgeError::InferenceError("llama-cli is not a file".to_string()));
+        return Err(ForgeError::InferenceError(
+            "llama-cli is not a file".to_string(),
+        ));
     }
 
     // Sanitize prompt — reject null bytes
     if prompt.contains('\0') {
-        return Err(ForgeError::InferenceError("prompt contains null bytes".to_string()));
+        return Err(ForgeError::InferenceError(
+            "prompt contains null bytes".to_string(),
+        ));
     }
 
     let rpc_arg = config.rpc_endpoints.join(",");
@@ -159,13 +164,13 @@ pub fn run_distributed_inference(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let child = cmd.spawn().map_err(|e| {
-        ForgeError::InferenceError(format!("spawn llama-cli: {e}"))
-    })?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| ForgeError::InferenceError(format!("spawn llama-cli: {e}")))?;
 
-    let output = child.wait_with_output().map_err(|e| {
-        ForgeError::InferenceError(format!("llama-cli wait: {e}"))
-    })?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| ForgeError::InferenceError(format!("llama-cli wait: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

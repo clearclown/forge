@@ -26,6 +26,9 @@ pub enum ForgeError {
     #[error("ledger error: {0}")]
     LedgerError(String),
 
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

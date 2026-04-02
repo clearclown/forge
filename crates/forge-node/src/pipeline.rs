@@ -1,13 +1,12 @@
-use forge_core::NodeId;
-use forge_core::{ModelManifest, PipelineTopology};
+use forge_core::{Config, ModelManifest, NodeId, PipelineTopology};
 use forge_ledger::{ComputeLedger, TradeRecord};
 use forge_net::{ClusterManager, ForgeTransport};
 use forge_proto::{
-    Envelope, InferenceRequest, Payload, PipelineTopologyMsg, RpcServerFailed,
+    Envelope, ErrorCode, ErrorMsg, InferenceRequest, Payload, PipelineTopologyMsg, RpcServerFailed,
     RpcServerReady, TokenStreamMsg, Welcome,
 };
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 /// The role of a node in the inference pipeline.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,12 +35,16 @@ impl PipelineCoordinator {
         model_manifest: Arc<Mutex<Option<ModelManifest>>>,
         advertised_topology: Arc<Mutex<Option<PipelineTopology>>>,
         cluster: Option<Arc<ClusterManager>>,
+        config: Config,
         ledger_path: Option<std::path::PathBuf>,
     ) -> anyhow::Result<()> {
         let node_id = self.transport.forge_node_id();
         tracing::info!("Pipeline seed running, waiting for requests...");
         let _heartbeat = cluster.as_ref().map(|c| c.start_heartbeat());
         let _failure_detector = cluster.as_ref().map(|c| c.start_failure_detector(15));
+        let request_slots = Arc::new(Semaphore::new(
+            config.max_concurrent_remote_inference_requests,
+        ));
 
         loop {
             match self.transport.recv().await {
@@ -105,6 +108,35 @@ impl PipelineCoordinator {
                             req.prompt_text.len(),
                             req.max_tokens
                         );
+                        let permit = match request_slots.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                tracing::warn!(
+                                    "Rejecting inference request {} from {}: seed at concurrency limit {}",
+                                    req.request_id,
+                                    peer_id,
+                                    config.max_concurrent_remote_inference_requests
+                                );
+                                if let Err(err) = send_protocol_error(
+                                    &self.transport,
+                                    &peer_id,
+                                    &node_id,
+                                    req.request_id,
+                                    ErrorCode::Busy,
+                                    "seed is at max concurrent inference capacity".to_string(),
+                                    true,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(
+                                        "Failed to send busy error to {}: {}",
+                                        peer_id,
+                                        err
+                                    );
+                                }
+                                continue;
+                            }
+                        };
 
                         let engine = engine.clone();
                         let ledger = ledger.clone();
@@ -112,10 +144,13 @@ impl PipelineCoordinator {
                         let node_id = node_id.clone();
                         let sender_id = envelope.sender.clone();
                         let peer_id = peer_id.clone();
+                        let config = config.clone();
                         let ledger_path = ledger_path.clone();
 
                         tokio::spawn(async move {
+                            let _permit = permit;
                             if let Err(e) = handle_inference(
+                                &config,
                                 engine,
                                 ledger,
                                 ledger_path,
@@ -135,11 +170,7 @@ impl PipelineCoordinator {
                         if let Some(cluster) = cluster.as_ref() {
                             cluster.handle_message(&peer_id, envelope).await;
                         }
-                        tracing::debug!(
-                            "Heartbeat from {}: load={:.0}%",
-                            peer_id,
-                            hb.load * 100.0
-                        );
+                        tracing::debug!("Heartbeat from {}: load={:.0}%", peer_id, hb.load * 100.0);
                     }
                     Payload::StartRpcServer(req) => {
                         tracing::info!(
@@ -236,6 +267,7 @@ impl PipelineCoordinator {
                 top_p: 0.9,
             }),
         };
+        envelope.validate_for_peer(node_id)?;
 
         transport.send_to(seed_peer_id, &envelope).await?;
         tracing::debug!("Sent inference request {} to {}", request_id, seed_peer_id);
@@ -244,8 +276,8 @@ impl PipelineCoordinator {
         let mut result = String::new();
         loop {
             match transport.recv().await {
-                Some((_peer_id, response)) => {
-                    if let Payload::TokenStream(ts) = response.payload {
+                Some((_peer_id, response)) => match response.payload {
+                    Payload::TokenStream(ts) => {
                         if ts.request_id == request_id {
                             result.push_str(&ts.text);
                             if ts.is_final {
@@ -253,7 +285,13 @@ impl PipelineCoordinator {
                             }
                         }
                     }
-                }
+                    Payload::Error(err) => {
+                        if err.request_id == request_id {
+                            anyhow::bail!("{:?}: {}", err.code, err.message);
+                        }
+                    }
+                    _ => {}
+                },
                 None => break,
             }
         }
@@ -290,6 +328,7 @@ async fn current_pipeline_topology(
 
 /// Handle a single inference request from a worker.
 async fn handle_inference(
+    config: &Config,
     engine: Arc<Mutex<forge_infer::CandleEngine>>,
     ledger: Arc<Mutex<ComputeLedger>>,
     ledger_path: Option<std::path::PathBuf>,
@@ -301,32 +340,69 @@ async fn handle_inference(
 ) -> anyhow::Result<()> {
     use forge_infer::InferenceEngine;
 
+    if let Err(err) = config.validate_inference_request(
+        &req.prompt_text,
+        req.max_tokens,
+        req.temperature,
+        Some(req.top_p),
+    ) {
+        send_protocol_error(
+            &transport,
+            peer_id,
+            &node_id,
+            req.request_id,
+            ErrorCode::InvalidRequest,
+            err.to_string(),
+            false,
+        )
+        .await?;
+        return Ok(());
+    }
+
     // Check if consumer can afford
     {
         let ledger = ledger.lock().await;
         let estimated_cost = ledger.estimate_cost(req.max_tokens as u64, 32, 32);
         if !ledger.can_afford(&consumer_id, estimated_cost) {
             tracing::warn!("Consumer {} cannot afford {} CU", peer_id, estimated_cost);
-            // Send empty final token to signal rejection
-            let msg = Envelope {
-                msg_id: req.request_id,
-                sender: node_id.clone(),
-                timestamp: now_millis(),
-                payload: Payload::TokenStream(TokenStreamMsg {
-                    request_id: req.request_id,
-                    text: "[error: insufficient CU balance]".to_string(),
-                    is_final: true,
-                }),
-            };
-            transport.send_to(peer_id, &msg).await?;
+            send_protocol_error(
+                &transport,
+                peer_id,
+                &node_id,
+                req.request_id,
+                ErrorCode::InsufficientBalance,
+                format!("insufficient CU balance for estimated cost {estimated_cost}"),
+                true,
+            )
+            .await?;
             return Ok(());
         }
     }
 
     // Run inference
-    let tokens = {
+    let tokens = match {
         let mut engine = engine.lock().await;
-        engine.generate(&req.prompt_text, req.max_tokens, req.temperature, Some(req.top_p as f64))?
+        engine.generate(
+            &req.prompt_text,
+            req.max_tokens,
+            req.temperature,
+            Some(req.top_p as f64),
+        )
+    } {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            send_protocol_error(
+                &transport,
+                peer_id,
+                &node_id,
+                req.request_id,
+                ErrorCode::Internal,
+                err.to_string(),
+                true,
+            )
+            .await?;
+            return Ok(());
+        }
     };
 
     let total_tokens = tokens.len() as u64;
@@ -399,10 +475,158 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
+async fn send_protocol_error(
+    transport: &ForgeTransport,
+    peer_id: &str,
+    sender: &NodeId,
+    request_id: u64,
+    code: ErrorCode,
+    message: String,
+    retryable: bool,
+) -> anyhow::Result<()> {
+    let msg = Envelope {
+        msg_id: request_id,
+        sender: sender.clone(),
+        timestamp: now_millis(),
+        payload: Payload::Error(ErrorMsg {
+            request_id,
+            code,
+            message,
+            retryable,
+        }),
+    };
+    transport.send_to(peer_id, &msg).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_infer::CandleEngine;
+    use forge_ledger::ComputeLedger;
+    use forge_net::ForgeTransport;
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn worker_request_inference_surfaces_typed_error() {
+        let transport_worker = ForgeTransport::new().await.expect("worker");
+        let transport_seed = ForgeTransport::new().await.expect("seed");
+        let _accept_seed = transport_seed.start_accepting();
+
+        let addr_seed = transport_seed.endpoint_addr();
+        let peer_seed = transport_worker
+            .connect(addr_seed)
+            .await
+            .expect("connect to seed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let worker_peer_id = transport_worker.forge_node_id().to_hex();
+        let seed_peer_id = peer_seed.peer_id().to_string();
+        let worker_node_id = transport_worker.forge_node_id();
+        let request_transport = transport_worker;
+
+        let worker_task = tokio::spawn(async move {
+            PipelineCoordinator::request_inference(
+                &request_transport,
+                &seed_peer_id,
+                &worker_node_id,
+                "hello",
+                32,
+                0.7,
+            )
+            .await
+        });
+
+        let (_peer_id, received) = timeout(Duration::from_secs(5), transport_seed.recv())
+            .await
+            .expect("timeout")
+            .expect("receive request");
+
+        let request_id = match received.payload {
+            Payload::InferenceRequest(req) => req.request_id,
+            other => panic!(
+                "Expected InferenceRequest, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        };
+
+        let msg = Envelope {
+            msg_id: request_id,
+            sender: transport_seed.forge_node_id(),
+            timestamp: 0,
+            payload: Payload::Error(ErrorMsg {
+                request_id,
+                code: ErrorCode::InsufficientBalance,
+                message: "insufficient CU balance".to_string(),
+                retryable: true,
+            }),
+        };
+
+        transport_seed
+            .send_to(&worker_peer_id, &msg)
+            .await
+            .expect("send error");
+
+        let result = worker_task.await.expect("worker task");
+        let err = result.expect_err("typed error should surface as Err");
+        assert!(
+            err.to_string().contains("InsufficientBalance"),
+            "unexpected error: {err}"
+        );
+
+        transport_seed.close().await;
+    }
+
+    #[tokio::test]
+    async fn seed_rejects_requests_when_at_concurrency_limit() {
+        let transport_worker = ForgeTransport::new().await.expect("worker");
+        let transport_seed = Arc::new(ForgeTransport::new().await.expect("seed"));
+        let _accept_seed = transport_seed.start_accepting();
+
+        let coordinator = PipelineCoordinator::new(transport_seed.clone());
+        let seed_task = tokio::spawn({
+            let transport_seed = transport_seed.clone();
+            async move {
+                coordinator
+                    .run_seed(
+                        Arc::new(Mutex::new(CandleEngine::new())),
+                        Arc::new(Mutex::new(ComputeLedger::new())),
+                        Arc::new(Mutex::new(None)),
+                        Arc::new(Mutex::new(None)),
+                        None,
+                        Config {
+                            max_concurrent_remote_inference_requests: 0,
+                            ..Config::default()
+                        },
+                        None,
+                    )
+                    .await
+                    .expect("seed loop");
+                transport_seed.close().await;
+            }
+        });
+
+        let addr_seed = transport_seed.endpoint_addr();
+        let peer_seed = transport_worker
+            .connect(addr_seed)
+            .await
+            .expect("connect to seed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let result = PipelineCoordinator::request_inference(
+            &transport_worker,
+            peer_seed.peer_id(),
+            &transport_worker.forge_node_id(),
+            "hello",
+            32,
+            0.7,
+        )
+        .await;
+
+        let err = result.expect_err("busy seed should reject request");
+        assert!(err.to_string().contains("Busy"), "unexpected error: {err}");
+
+        transport_worker.close().await;
+        transport_seed.close().await;
+        seed_task.await.expect("seed task");
     }
 }

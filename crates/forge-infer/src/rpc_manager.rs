@@ -15,9 +15,9 @@ pub struct RpcServer {
 
 /// Validate that a path points to an actual executable file.
 fn validate_executable(path: &PathBuf) -> Result<PathBuf, ForgeError> {
-    let canonical = path.canonicalize().map_err(|e| {
-        ForgeError::InferenceError(format!("invalid binary path {:?}: {e}", path))
-    })?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| ForgeError::InferenceError(format!("invalid binary path {:?}: {e}", path)))?;
 
     if !canonical.is_file() {
         return Err(ForgeError::InferenceError(format!(
@@ -101,7 +101,7 @@ impl RpcServer {
             .spawn()
             .map_err(|e| ForgeError::InferenceError(format!("spawn rpc-server: {e}")))?;
 
-        let mut server = Self {
+        let server = Self {
             child: Some(child),
             port,
             host: "127.0.0.1".to_string(),

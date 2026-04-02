@@ -98,10 +98,7 @@ pub async fn send_token_result(
         msg_id: rand::random(),
         sender: sender.clone(),
         timestamp: now_millis(),
-        payload: Payload::TokenResult(TokenResult {
-            request_id,
-            tokens,
-        }),
+        payload: Payload::TokenResult(TokenResult { request_id, tokens }),
     };
 
     transport.send_to(peer_id, &msg).await?;

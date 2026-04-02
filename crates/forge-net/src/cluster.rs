@@ -2,9 +2,7 @@ use crate::connection::PeerConnection;
 use crate::discovery::DiscoveryService;
 use crate::transport::ForgeTransport;
 use forge_core::PeerCapability;
-use forge_proto::{
-    Envelope, Hello, Heartbeat, Leaving, LeaveReason, Payload,
-};
+use forge_proto::{Envelope, Heartbeat, Hello, LeaveReason, Leaving, Payload};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,10 +21,7 @@ pub struct ClusterManager {
 }
 
 impl ClusterManager {
-    pub fn new(
-        transport: Arc<ForgeTransport>,
-        local_capability: PeerCapability,
-    ) -> Self {
+    pub fn new(transport: Arc<ForgeTransport>, local_capability: PeerCapability) -> Self {
         Self {
             transport,
             discovery: Arc::new(DiscoveryService::new()),
@@ -109,17 +104,15 @@ impl ClusterManager {
     }
 
     /// Handle incoming messages — dispatch to appropriate handlers.
-    pub async fn handle_message(
-        &self,
-        peer_id: &str,
-        envelope: Envelope,
-    ) {
+    pub async fn handle_message(&self, peer_id: &str, envelope: Envelope) {
         match envelope.payload {
             Payload::Hello(hello) => {
                 if hello.version != PROTOCOL_VERSION {
                     tracing::warn!(
                         "Peer {} speaks protocol v{}, we speak v{}. Proceeding with caution.",
-                        peer_id, hello.version, PROTOCOL_VERSION
+                        peer_id,
+                        hello.version,
+                        PROTOCOL_VERSION
                     );
                 }
                 tracing::info!(
@@ -131,11 +124,7 @@ impl ClusterManager {
                 );
 
                 self.discovery
-                    .register_peer(
-                        peer_id.to_string(),
-                        None,
-                        Some(hello.capability),
-                    )
+                    .register_peer(peer_id.to_string(), None, Some(hello.capability))
                     .await;
                 self.discovery.mark_connected(peer_id).await;
                 self.discovery.record_heartbeat(peer_id).await;
@@ -149,18 +138,14 @@ impl ClusterManager {
                 );
 
                 self.discovery
-                    .register_peer(
-                        peer_id.to_string(),
-                        None,
-                        Some(welcome.capability),
-                    )
+                    .register_peer(peer_id.to_string(), None, Some(welcome.capability))
                     .await;
                 self.discovery.mark_connected(peer_id).await;
 
                 // Register peers from Welcome message
                 for known in welcome.known_peers {
                     self.discovery
-                        .register_peer(known.node_id.to_string(), None, None)
+                        .register_peer(known.node_id.to_hex(), None, None)
                         .await;
                 }
             }

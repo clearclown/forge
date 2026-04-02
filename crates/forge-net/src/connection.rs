@@ -1,4 +1,5 @@
-use forge_proto::Envelope;
+use forge_core::NodeId;
+use forge_proto::{Envelope, MAX_PROTOCOL_MESSAGE_BYTES};
 use iroh::endpoint::Connection;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -7,21 +8,28 @@ use tokio::sync::Mutex;
 #[derive(Clone)]
 pub struct PeerConnection {
     conn: Connection,
+    peer_node_id: NodeId,
     peer_id: String,
     write_lock: Arc<Mutex<()>>,
 }
 
 impl PeerConnection {
-    pub fn new(conn: Connection, peer_id: String) -> Self {
+    pub fn new(conn: Connection) -> Self {
+        let peer_node_id = NodeId(*conn.remote_id().as_bytes());
         Self {
             conn,
-            peer_id,
+            peer_id: peer_node_id.to_hex(),
+            peer_node_id,
             write_lock: Arc::new(Mutex::new(())),
         }
     }
 
     pub fn peer_id(&self) -> &str {
         &self.peer_id
+    }
+
+    pub fn peer_node_id(&self) -> &NodeId {
+        &self.peer_node_id
     }
 
     /// Send a protocol message to this peer.
@@ -50,7 +58,7 @@ impl PeerConnection {
         recv.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;
 
-        if len > 64 * 1024 * 1024 {
+        if len > MAX_PROTOCOL_MESSAGE_BYTES {
             anyhow::bail!("message too large: {} bytes", len);
         }
 
@@ -89,7 +97,7 @@ impl PeerConnection {
         recv.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;
 
-        if len > 64 * 1024 * 1024 {
+        if len > MAX_PROTOCOL_MESSAGE_BYTES {
             anyhow::bail!("raw message too large: {} bytes", len);
         }
 

@@ -2,15 +2,11 @@
 
 use forge_core::{DType, TensorMeta};
 use forge_net::ForgeTransport;
-use forge_proto::{
-    Envelope, Forward, Hello, InferenceRequest, Payload, TokenStreamMsg,
-};
+use forge_proto::{Envelope, Forward, Hello, InferenceRequest, Payload, TokenStreamMsg};
 
 #[tokio::test]
 async fn two_nodes_connect_and_exchange_hello() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     // Create two transport instances (two Iroh endpoints)
     let transport_a = ForgeTransport::new().await.expect("transport A");
@@ -52,10 +48,7 @@ async fn two_nodes_connect_and_exchange_hello() {
         .expect("send hello");
 
     // Node B receives the Hello
-    let (sender_id, received) = transport_b
-        .recv()
-        .await
-        .expect("receive message");
+    let (sender_id, received) = transport_b.recv().await.expect("receive message");
 
     match received.payload {
         Payload::Hello(h) => {
@@ -74,9 +67,7 @@ async fn two_nodes_connect_and_exchange_hello() {
 
 #[tokio::test]
 async fn multiple_messages_in_sequence() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let transport_a = ForgeTransport::new().await.expect("transport A");
     let transport_b = ForgeTransport::new().await.expect("transport B");
@@ -110,17 +101,17 @@ async fn multiple_messages_in_sequence() {
 
     // B receives all 3
     for i in 0..3 {
-        let (_peer, received) = transport_b
-            .recv()
-            .await
-            .expect("receive message");
+        let (_peer, received) = transport_b.recv().await.expect("receive message");
 
         match received.payload {
             Payload::Heartbeat(hb) => {
                 assert_eq!(hb.uptime_sec, i * 100);
                 println!("Received heartbeat #{}", i);
             }
-            other => panic!("Expected Heartbeat, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "Expected Heartbeat, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -130,9 +121,7 @@ async fn multiple_messages_in_sequence() {
 
 #[tokio::test]
 async fn forward_activation_tensor_over_p2p() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let transport_a = ForgeTransport::new().await.expect("transport A");
     let transport_b = ForgeTransport::new().await.expect("transport B");
@@ -191,9 +180,7 @@ async fn forward_activation_tensor_over_p2p() {
 /// Full bidirectional: Worker sends InferenceRequest, Seed streams TokenStreamMsg back.
 #[tokio::test]
 async fn bidirectional_inference_request_and_token_stream() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let transport_worker = ForgeTransport::new().await.expect("worker");
     let transport_seed = ForgeTransport::new().await.expect("seed");
@@ -227,20 +214,21 @@ async fn bidirectional_inference_request_and_token_stream() {
         .expect("send request");
 
     // Seed receives InferenceRequest
-    let (worker_peer_id, received) = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        transport_seed.recv(),
-    )
-    .await
-    .expect("timeout")
-    .expect("receive request");
+    let (worker_peer_id, received) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), transport_seed.recv())
+            .await
+            .expect("timeout")
+            .expect("receive request");
 
     match &received.payload {
         Payload::InferenceRequest(r) => {
             assert_eq!(r.request_id, 200);
             assert_eq!(r.prompt_text, "What is gravity?");
         }
-        other => panic!("Expected InferenceRequest, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "Expected InferenceRequest, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 
     // Seed → Worker: stream 4 token fragments
@@ -292,4 +280,92 @@ async fn bidirectional_inference_request_and_token_stream() {
 
     transport_worker.close().await;
     transport_seed.close().await;
+}
+
+#[tokio::test]
+async fn transport_rejects_spoofed_sender_identity() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    let transport_a = ForgeTransport::new().await.expect("transport A");
+    let transport_b = ForgeTransport::new().await.expect("transport B");
+    let _accept_b = transport_b.start_accepting();
+
+    let addr_b = transport_b.endpoint_addr();
+    let peer_b = transport_a.connect(addr_b).await.expect("connect");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let spoofed = Envelope {
+        msg_id: 999,
+        sender: forge_core::NodeId([9u8; 32]),
+        timestamp: 0,
+        payload: Payload::Heartbeat(forge_proto::Heartbeat {
+            uptime_sec: 1,
+            load: 0.1,
+            memory_free_gb: 1.0,
+            battery_pct: None,
+        }),
+    };
+
+    transport_a
+        .send_to(peer_b.peer_id(), &spoofed)
+        .await
+        .expect("send spoofed");
+
+    let result =
+        tokio::time::timeout(std::time::Duration::from_millis(300), transport_b.recv()).await;
+
+    assert!(result.is_err(), "spoofed envelope should be dropped");
+
+    transport_a.close().await;
+    transport_b.close().await;
+}
+
+#[tokio::test]
+async fn transport_drops_duplicate_message_ids_from_same_peer() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    let transport_a = ForgeTransport::new().await.expect("transport A");
+    let transport_b = ForgeTransport::new().await.expect("transport B");
+    let _accept_b = transport_b.start_accepting();
+
+    let addr_b = transport_b.endpoint_addr();
+    let peer_b = transport_a.connect(addr_b).await.expect("connect");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let heartbeat = Envelope {
+        msg_id: 1_234,
+        sender: transport_a.forge_node_id(),
+        timestamp: 0,
+        payload: Payload::Heartbeat(forge_proto::Heartbeat {
+            uptime_sec: 1,
+            load: 0.25,
+            memory_free_gb: 4.0,
+            battery_pct: None,
+        }),
+    };
+
+    transport_a
+        .send_to(peer_b.peer_id(), &heartbeat)
+        .await
+        .expect("send first heartbeat");
+    transport_a
+        .send_to(peer_b.peer_id(), &heartbeat)
+        .await
+        .expect("send duplicate heartbeat");
+
+    let (_peer_id, received) = transport_b.recv().await.expect("first heartbeat");
+    match received.payload {
+        Payload::Heartbeat(hb) => assert_eq!(hb.uptime_sec, 1),
+        other => panic!(
+            "Expected Heartbeat, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    }
+
+    let result =
+        tokio::time::timeout(std::time::Duration::from_millis(300), transport_b.recv()).await;
+    assert!(result.is_err(), "duplicate message should be dropped");
+
+    transport_a.close().await;
+    transport_b.close().await;
 }

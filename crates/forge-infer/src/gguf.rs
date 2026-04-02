@@ -15,8 +15,8 @@ enum GgufValue {
 /// Parse GGUF file header to extract model metadata.
 /// Self-contained — no Candle dependency.
 pub fn parse_gguf_metadata(path: &Path) -> Result<ModelManifest, ForgeError> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| ForgeError::ModelLoadError(format!("open: {e}")))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| ForgeError::ModelLoadError(format!("open: {e}")))?;
 
     // Magic: "GGUF" (4 bytes)
     let mut magic = [0u8; 4];
@@ -153,9 +153,7 @@ fn read_string(r: &mut impl Read) -> Result<String, ForgeError> {
     String::from_utf8(buf).map_err(|e| ForgeError::ModelLoadError(format!("utf8: {e}")))
 }
 
-fn read_kv_pair(
-    r: &mut (impl Read + Seek),
-) -> Result<(String, GgufValue), ForgeError> {
+fn read_kv_pair(r: &mut (impl Read + Seek)) -> Result<(String, GgufValue), ForgeError> {
     let key = read_string(r)?;
     let value_type = read_u32_le(r)?;
 
@@ -163,24 +161,27 @@ fn read_kv_pair(
         0 => {
             // UINT8
             let mut b = [0u8; 1];
-            r.read_exact(&mut b).map_err(|e| ForgeError::ModelLoadError(e.to_string()))?;
+            r.read_exact(&mut b)
+                .map_err(|e| ForgeError::ModelLoadError(e.to_string()))?;
             GgufValue::U32(b[0] as u32)
         }
-        1 => GgufValue::I32(read_i32_le(r)?),        // INT8 (read as i32 for simplicity)
+        1 => GgufValue::I32(read_i32_le(r)?), // INT8 (read as i32 for simplicity)
         2 => {
             // UINT16
             let mut buf = [0u8; 2];
-            r.read_exact(&mut buf).map_err(|e| ForgeError::ModelLoadError(e.to_string()))?;
+            r.read_exact(&mut buf)
+                .map_err(|e| ForgeError::ModelLoadError(e.to_string()))?;
             GgufValue::U32(u16::from_le_bytes(buf) as u32)
         }
         3 => {
             // INT16
             let mut buf = [0u8; 2];
-            r.read_exact(&mut buf).map_err(|e| ForgeError::ModelLoadError(e.to_string()))?;
+            r.read_exact(&mut buf)
+                .map_err(|e| ForgeError::ModelLoadError(e.to_string()))?;
             GgufValue::I32(i16::from_le_bytes(buf) as i32)
         }
-        4 => GgufValue::U32(read_u32_le(r)?),         // UINT32
-        5 => GgufValue::I32(read_i32_le(r)?),         // INT32
+        4 => GgufValue::U32(read_u32_le(r)?), // UINT32
+        5 => GgufValue::I32(read_i32_le(r)?), // INT32
         6 => {
             // FLOAT32
             let _ = read_u32_le(r)?;
@@ -189,19 +190,20 @@ fn read_kv_pair(
         7 => {
             // BOOL
             let mut b = [0u8; 1];
-            r.read_exact(&mut b).map_err(|e| ForgeError::ModelLoadError(e.to_string()))?;
+            r.read_exact(&mut b)
+                .map_err(|e| ForgeError::ModelLoadError(e.to_string()))?;
             GgufValue::U32(b[0] as u32)
         }
-        8 => GgufValue::String(read_string(r)?),      // STRING
+        8 => GgufValue::String(read_string(r)?), // STRING
         9 => {
             // ARRAY — skip
             let elem_type = read_u32_le(r)?;
             let count = read_u64_le(r)?;
             let elem_size = match elem_type {
-                0 | 7 => 1,   // u8, bool
-                2 | 3 => 2,   // u16, i16
+                0 | 7 => 1,     // u8, bool
+                2 | 3 => 2,     // u16, i16
                 4 | 5 | 6 => 4, // u32, i32, f32
-                10 | 12 => 8, // u64, f64
+                10 | 12 => 8,   // u64, f64
                 8 => {
                     // array of strings — skip each
                     for _ in 0..count {
@@ -216,7 +218,7 @@ fn read_kv_pair(
                 .map_err(|e| ForgeError::ModelLoadError(format!("seek: {e}")))?;
             GgufValue::Other
         }
-        10 => GgufValue::U64(read_u64_le(r)?),        // UINT64
+        10 => GgufValue::U64(read_u64_le(r)?), // UINT64
         11 => {
             // INT64
             let _ = read_u64_le(r)?;
@@ -246,7 +248,10 @@ fn get_u32(metadata: &std::collections::HashMap<String, GgufValue>, key: &str) -
     }
 }
 
-fn get_string(metadata: &std::collections::HashMap<String, GgufValue>, key: &str) -> Option<String> {
+fn get_string(
+    metadata: &std::collections::HashMap<String, GgufValue>,
+    key: &str,
+) -> Option<String> {
     match metadata.get(key)? {
         GgufValue::String(s) => Some(s.clone()),
         _ => None,

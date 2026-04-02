@@ -49,9 +49,17 @@ enum Commands {
         #[arg(short, long, default_value = "3000")]
         port: u16,
 
+        /// Bind address for the local HTTP API
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+
         /// Path to the persisted ledger snapshot
         #[arg(long, default_value = "forge-ledger.json")]
         ledger: String,
+
+        /// Optional bearer token protecting administrative HTTP API routes
+        #[arg(long)]
+        api_token: Option<String>,
     },
 
     /// Start as a worker node (connects to seed for inference)
@@ -79,9 +87,17 @@ enum Commands {
         #[arg(short, long, default_value = "3000")]
         port: u16,
 
+        /// Bind address for the local HTTP API
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+
         /// Path to the persisted ledger snapshot
         #[arg(long, default_value = "forge-ledger.json")]
         ledger: String,
+
+        /// Optional bearer token protecting administrative HTTP API routes
+        #[arg(long)]
+        api_token: Option<String>,
     },
 
     /// Show cluster status
@@ -89,6 +105,10 @@ enum Commands {
         /// Base URL of a running forge node API
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         url: String,
+
+        /// Optional bearer token for a protected forge node API
+        #[arg(long)]
+        api_token: Option<String>,
     },
 
     /// Show the current model/capability-based topology plan
@@ -96,6 +116,10 @@ enum Commands {
         /// Base URL of a running forge node API
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         url: String,
+
+        /// Optional bearer token for a protected forge node API
+        #[arg(long)]
+        api_token: Option<String>,
     },
 
     /// Run distributed inference across RPC peers
@@ -129,6 +153,10 @@ enum Commands {
         /// Base URL of a running forge node API
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         url: String,
+
+        /// Optional bearer token for a protected forge node API
+        #[arg(long)]
+        api_token: Option<String>,
 
         /// Settlement window size in hours
         #[arg(long, default_value = "24")]
@@ -212,10 +240,14 @@ async fn main() -> anyhow::Result<()> {
             model,
             tokenizer,
             port,
+            bind,
             ledger,
+            api_token,
         } => {
             let config = Config {
                 api_port: port,
+                api_bind_addr: bind,
+                api_bearer_token: resolve_api_token(api_token),
                 ledger_path: Some(PathBuf::from(&ledger)),
                 share_compute: true,
                 ..Config::default()
@@ -299,10 +331,11 @@ async fn main() -> anyhow::Result<()> {
             temperature,
             ngl,
         } => {
-            let llama_cli = forge_infer::distributed::find_llama_cli()
-                .ok_or_else(|| anyhow::anyhow!(
+            let llama_cli = forge_infer::distributed::find_llama_cli().ok_or_else(|| {
+                anyhow::anyhow!(
                     "llama-cli not found. Set FORGE_LLAMA_CLI_PATH or install llama.cpp"
-                ))?;
+                )
+            })?;
 
             let rpc_endpoints: Vec<String> = rpc.split(',').map(|s| s.trim().to_string()).collect();
 
@@ -332,10 +365,14 @@ async fn main() -> anyhow::Result<()> {
             model,
             tokenizer,
             port,
+            bind,
             ledger,
+            api_token,
         } => {
             let config = Config {
                 api_port: port,
+                api_bind_addr: bind,
+                api_bearer_token: resolve_api_token(api_token),
                 ledger_path: Some(PathBuf::from(&ledger)),
                 ..Config::default()
             };
@@ -350,13 +387,15 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("Starting local API server on port {}", port);
             node.serve_api().await?;
         }
-        Commands::Status { url } => {
+        Commands::Status { url, api_token } => {
             let base = url.trim_end_matches('/');
-            let status: forge_node::api::StatusResponse = reqwest::get(format!("{base}/status"))
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            let client = reqwest::Client::new();
+            let mut request = client.get(format!("{base}/status"));
+            if let Some(token) = resolve_api_token(api_token) {
+                request = request.bearer_auth(token);
+            }
+            let status: forge_node::api::StatusResponse =
+                request.send().await?.error_for_status()?.json().await?;
 
             println!("Forge status: {}", status.status);
             println!("Model loaded: {}", status.model_loaded);
@@ -395,18 +434,27 @@ async fn main() -> anyhow::Result<()> {
             let dist = forge_infer::distributed::distributed_status();
             println!(
                 "Distributed: llama-cli={} rpc-server={}",
-                if dist.llama_cli_available { "available" } else { "not found" },
-                if dist.rpc_server_available { "available" } else { "not found" },
+                if dist.llama_cli_available {
+                    "available"
+                } else {
+                    "not found"
+                },
+                if dist.rpc_server_available {
+                    "available"
+                } else {
+                    "not found"
+                },
             );
         }
-        Commands::Topology { url } => {
+        Commands::Topology { url, api_token } => {
             let base = url.trim_end_matches('/');
+            let client = reqwest::Client::new();
+            let mut request = client.get(format!("{base}/topology"));
+            if let Some(token) = resolve_api_token(api_token) {
+                request = request.bearer_auth(token);
+            }
             let topology: forge_node::api::TopologyResponse =
-                reqwest::get(format!("{base}/topology"))
-                    .await?
-                    .error_for_status()?
-                    .json()
-                    .await?;
+                request.send().await?.error_for_status()?.json().await?;
 
             println!("Forge topology: {}", topology.status);
             if let Some(model) = topology.model {
@@ -482,6 +530,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Settle {
             url,
+            api_token,
             hours,
             price,
             out,
@@ -492,11 +541,13 @@ async fn main() -> anyhow::Result<()> {
                 endpoint.push_str(&format!("&reference_price_per_cu={price}"));
             }
 
-            let statement: forge_ledger::SettlementStatement = reqwest::get(endpoint)
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            let client = reqwest::Client::new();
+            let mut request = client.get(endpoint);
+            if let Some(token) = resolve_api_token(api_token) {
+                request = request.bearer_auth(token);
+            }
+            let statement: forge_ledger::SettlementStatement =
+                request.send().await?.error_for_status()?.json().await?;
 
             let json = serde_json::to_string_pretty(&statement)?;
             if let Some(path) = out {
@@ -509,4 +560,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_api_token(flag: Option<String>) -> Option<String> {
+    flag.or_else(|| std::env::var("FORGE_API_TOKEN").ok())
+        .filter(|token| !token.is_empty())
 }

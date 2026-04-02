@@ -22,6 +22,10 @@ The repo today exposes the bootstrap path through the daemon and CLI:
 
 This keeps the operator path explicit while the protocol surface remains small.
 
+Operational default:
+- the daemon HTTP API binds to `127.0.0.1` unless you override `--bind`
+- if you expose the API beyond loopback, set `--api-token` and use the same token on `forge status`, `forge topology`, and `forge settle`
+
 ## Target Bootstrap (planned)
 
 The intended bootstrap path for future clients is still:

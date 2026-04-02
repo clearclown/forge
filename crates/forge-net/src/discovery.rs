@@ -113,7 +113,9 @@ impl DiscoveryService {
         peers.sort_by(|a, b| {
             let a_mem = a.capability.as_ref().map_or(0.0, |c| c.available_memory_gb);
             let b_mem = b.capability.as_ref().map_or(0.0, |c| c.available_memory_gb);
-            b_mem.partial_cmp(&a_mem).unwrap_or(std::cmp::Ordering::Equal)
+            b_mem
+                .partial_cmp(&a_mem)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         peers
