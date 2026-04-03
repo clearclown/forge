@@ -50,6 +50,8 @@ clap = { version = "4", features = ["derive"] }
 ed25519-dalek = { version = "2", features = ["serde"] }
 rand = "0.8"
 hex = "0.4"
+hmac = "0.12"
+sha2 = "0.10"
 
 # Inference (llama.cpp via Rust bindings)
 llama-cpp-2 = "0.1"
