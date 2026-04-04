@@ -8,7 +8,7 @@ use axum::{
 };
 use forge_core::{Config, ModelManifest, NodeId, PeerCapability, PipelineTopology};
 use forge_infer::{CandleEngine, InferenceEngine};
-use forge_ledger::{ComputeLedger, SafetyController, SettlementStatement, TradeRecord};
+use forge_ledger::{AgentNet, ComputeLedger, SafetyController, SettlementStatement, TradeRecord};
 use forge_net::ClusterManager;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -33,6 +33,8 @@ struct AppState {
     forge_rate_limiter: Arc<Mutex<RateLimiter>>,
     /// Safety controller — kill switch, budget policies, circuit breakers.
     safety: Arc<Mutex<SafetyController>>,
+    /// AgentNet — social network for AI agents.
+    agentnet: Arc<Mutex<AgentNet>>,
     /// Node identity for this seed (used as provider in trades).
     local_node_id: NodeId,
 }
@@ -130,6 +132,7 @@ pub fn create_router(
         auth_failures: Arc::new(Mutex::new(AuthFailureTracker::default())),
         forge_rate_limiter: Arc::new(Mutex::new(RateLimiter::default())),
         safety: Arc::new(Mutex::new(SafetyController::new())),
+        agentnet: Arc::new(Mutex::new(AgentNet::new())),
         local_node_id,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
@@ -153,6 +156,12 @@ pub fn create_router(
         .route("/v1/forge/safety", get(forge_safety_status))
         .route("/v1/forge/kill", post(forge_kill_switch))
         .route("/v1/forge/policy", post(forge_set_policy))
+        // AgentNet — social network for AI agents
+        .route("/v1/agentnet/feed", get(agentnet_feed))
+        .route("/v1/agentnet/post", post(agentnet_post))
+        .route("/v1/agentnet/profile", post(agentnet_upsert_profile))
+        .route("/v1/agentnet/discover", get(agentnet_discover))
+        .route("/v1/agentnet/leaderboard", get(agentnet_leaderboard))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -1144,6 +1153,183 @@ struct SetPolicyRequest {
     max_cu_per_request: Option<u64>,
     max_cu_lifetime: Option<u64>,
     human_approval_threshold: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// AgentNet — Social Network for AI Agents
+// ---------------------------------------------------------------------------
+
+/// GET /v1/agentnet/feed — recent posts from agents.
+async fn agentnet_feed(
+    State(state): State<AppState>,
+    Query(params): Query<AgentNetFeedQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let net = state.agentnet.lock().await;
+    let limit = params.limit.unwrap_or(20).min(100) as usize;
+
+    let posts: Vec<serde_json::Value> = if let Some(cat) = &params.category {
+        net.feed_by_category(cat, limit)
+    } else {
+        net.feed(limit)
+    }
+    .into_iter()
+    .map(|p| {
+        serde_json::json!({
+            "id": p.id,
+            "author": p.author.to_hex(),
+            "category": p.category,
+            "content": p.content,
+            "timestamp": p.timestamp,
+            "tips": p.tips,
+            "endorsements": p.endorsements.len(),
+        })
+    })
+    .collect();
+
+    Ok(Json(serde_json::json!({
+        "count": posts.len(),
+        "total_agents": net.agent_count(),
+        "total_posts": net.post_count(),
+        "posts": posts,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentNetFeedQuery {
+    limit: Option<u32>,
+    category: Option<String>,
+}
+
+/// POST /v1/agentnet/post — publish to the agent network.
+async fn agentnet_post(
+    State(state): State<AppState>,
+    Json(req): Json<AgentNetPostRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+
+    if req.content.is_empty() || req.content.len() > 1024 {
+        return Err((StatusCode::BAD_REQUEST, "content must be 1-1024 chars".to_string()));
+    }
+
+    let mut net = state.agentnet.lock().await;
+    let id = net.post(state.local_node_id.clone(), &req.category, &req.content);
+
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "status": "posted",
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentNetPostRequest {
+    category: String,
+    content: String,
+}
+
+/// POST /v1/agentnet/profile — register or update agent profile.
+async fn agentnet_upsert_profile(
+    State(state): State<AppState>,
+    Json(req): Json<AgentNetProfileRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+
+    let ledger = state.ledger.lock().await;
+    let balance = ledger.get_balance(&state.local_node_id);
+    let (reputation, total_earned, total_spent) = match balance {
+        Some(b) => (b.reputation, b.contributed, b.consumed),
+        None => (0.5, 0, 0),
+    };
+    drop(ledger);
+
+    let profile = forge_ledger::AgentProfile {
+        node_id: state.local_node_id.clone(),
+        name: req.name,
+        description: req.description,
+        models: req.models,
+        price_per_token: req.price_per_token,
+        tags: req.tags,
+        updated_at: now_millis(),
+        reputation,
+        total_earned,
+        total_spent,
+    };
+
+    state.agentnet.lock().await.upsert_profile(profile);
+    Ok(Json(serde_json::json!({"status": "profile updated"})))
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentNetProfileRequest {
+    name: String,
+    description: String,
+    models: Vec<String>,
+    price_per_token: Option<f64>,
+    tags: Vec<String>,
+}
+
+/// GET /v1/agentnet/discover — find agents by capability tag.
+async fn agentnet_discover(
+    State(state): State<AppState>,
+    Query(params): Query<AgentNetDiscoverQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let net = state.agentnet.lock().await;
+
+    let agents: Vec<serde_json::Value> = net
+        .discover(&params.tag)
+        .into_iter()
+        .map(|a| {
+            serde_json::json!({
+                "node_id": a.node_id.to_hex(),
+                "name": a.name,
+                "description": a.description,
+                "models": a.models,
+                "price_per_token": a.price_per_token,
+                "tags": a.tags,
+                "reputation": a.reputation,
+                "total_earned": a.total_earned,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "query": params.tag,
+        "count": agents.len(),
+        "agents": agents,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentNetDiscoverQuery {
+    tag: String,
+}
+
+/// GET /v1/agentnet/leaderboard — top agents by reputation.
+async fn agentnet_leaderboard(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let net = state.agentnet.lock().await;
+
+    let top: Vec<serde_json::Value> = net
+        .leaderboard(20)
+        .into_iter()
+        .map(|a| {
+            serde_json::json!({
+                "name": a.name,
+                "reputation": a.reputation,
+                "total_earned": a.total_earned,
+                "total_spent": a.total_spent,
+                "tags": a.tags,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "count": top.len(),
+        "agents": top,
+    })))
 }
 
 /// POST /v1/forge/invoice — create a Lightning invoice from CU balance.
