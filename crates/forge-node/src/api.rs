@@ -107,6 +107,7 @@ pub fn create_router(
         .route("/v1/forge/pricing", get(forge_pricing))
         .route("/v1/forge/trades", get(forge_trades))
         .route("/v1/forge/invoice", post(forge_invoice))
+        .route("/v1/forge/network", get(forge_network))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -937,6 +938,33 @@ pub struct TradeEntry {
     pub tokens_processed: u64,
     pub timestamp: u64,
     pub model_id: String,
+}
+
+/// GET /v1/forge/network — mesh-wide economic summary.
+async fn forge_network(State(state): State<AppState>) -> Json<ForgeNetworkResponse> {
+    let ledger = state.ledger.lock().await;
+    let stats = ledger.network_stats();
+    let merkle_root = hex::encode(ledger.compute_trade_merkle_root());
+
+    Json(ForgeNetworkResponse {
+        total_nodes: stats.total_nodes,
+        total_contributed_cu: stats.total_contributed_cu,
+        total_consumed_cu: stats.total_consumed_cu,
+        total_trades: stats.total_trades,
+        avg_reputation: stats.avg_reputation,
+        merkle_root,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct ForgeNetworkResponse {
+    pub total_nodes: usize,
+    pub total_contributed_cu: u64,
+    pub total_consumed_cu: u64,
+    pub total_trades: usize,
+    pub avg_reputation: f64,
+    /// SHA-256 Merkle root of the entire trade log.
+    pub merkle_root: String,
 }
 
 /// POST /v1/forge/invoice — create a Lightning invoice from CU balance.

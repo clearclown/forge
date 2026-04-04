@@ -235,6 +235,95 @@ pub struct Rebalance {
 }
 ```
 
+## Trade Signing (Proof of Useful Work)
+
+Forge uses dual-signed trades to prove that computation was performed and received. Both the provider and consumer must sign the same canonical trade bytes.
+
+### TradeProposal
+
+Sent by the provider after inference completes. Contains the trade details and the provider's Ed25519 signature.
+
+```rust
+pub struct TradeProposal {
+    pub request_id: u64,
+    pub provider: NodeId,
+    pub consumer: NodeId,
+    pub cu_amount: u64,
+    pub tokens_processed: u64,
+    pub timestamp: u64,
+    pub model_id: String,
+    pub provider_sig: Vec<u8>,  // 64-byte Ed25519 signature
+}
+```
+
+### TradeAccept
+
+Sent by the consumer to counter-sign the trade.
+
+```rust
+pub struct TradeAccept {
+    pub request_id: u64,
+    pub consumer_sig: Vec<u8>,  // 64-byte Ed25519 signature
+}
+```
+
+### TradeGossip
+
+Broadcast to all connected peers after a dual-signed trade is recorded. Any node can verify both signatures.
+
+```rust
+pub struct TradeGossip {
+    pub provider: NodeId,
+    pub consumer: NodeId,
+    pub cu_amount: u64,
+    pub tokens_processed: u64,
+    pub timestamp: u64,
+    pub model_id: String,
+    pub provider_sig: Vec<u8>,
+    pub consumer_sig: Vec<u8>,
+}
+```
+
+### Canonical Bytes for Signing
+
+Both parties sign the same deterministic binary representation:
+
+```
+provider_id (32 bytes) + consumer_id (32 bytes) +
+cu_amount (8 bytes LE) + tokens_processed (8 bytes LE) +
+timestamp (8 bytes LE) + model_id (variable bytes)
+```
+
+### Dual-Sign Flow
+
+```text
+Provider (Seed)                          Consumer (Worker)
+    |                                         |
+    |--- TokenStream (inference) ------------>|
+    |--- TokenStream (final) ---------------->|
+    |                                         |
+    |--- TradeProposal (provider_sig) ------->|
+    |                                         |
+    |    [consumer verifies provider_sig]     |
+    |    [consumer counter-signs]             |
+    |                                         |
+    |<--- TradeAccept (consumer_sig) ---------|
+    |                                         |
+    [provider verifies both sigs]             |
+    [records SignedTradeRecord in ledger]      |
+    [broadcasts TradeGossip to mesh]          |
+```
+
+If the consumer does not respond within 5 seconds, the provider falls back to recording an unsigned trade (backward compatible).
+
+### Gossip Propagation
+
+When a node receives a `TradeGossip` message:
+1. Verify both Ed25519 signatures
+2. Check SHA-256 deduplication (reject if already seen)
+3. Record the trade in the local ledger
+4. The trade is NOT re-broadcast (single-hop gossip to prevent storms)
+
 ## Serialization Rules
 
 - Control messages use bincode.
@@ -254,9 +343,14 @@ Requester                       Seed
   |--- Hello ------------------->|
   |<-- Welcome ------------------|
   |--- InferenceRequest -------->|
+  |                              | [CU reserved]
   |<-- TokenStreamMsg ---------- |
   |<-- TokenStreamMsg ---------- |
   |<-- TokenStreamMsg (final) -- |
+  |<-- TradeProposal ----------- | [provider signs]
+  |--- TradeAccept ------------->| [consumer counter-signs]
+  |                              | [SignedTradeRecord recorded]
+  |                              | [TradeGossip broadcast]
 ```
 
 ### Future multi-hop flow

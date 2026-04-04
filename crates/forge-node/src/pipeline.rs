@@ -570,6 +570,8 @@ async fn handle_inference(
                         total_tokens,
                         peer_id
                     );
+                    // Reputation boost for successful signed trade
+                    ledger.update_reputation(&trade.provider, 0.01);
                     drop(ledger);
                     // Broadcast to mesh via gossip
                     forge_net::gossip::broadcast_trade(&transport, &gossip, &signed).await;

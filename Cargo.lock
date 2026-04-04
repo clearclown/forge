@@ -1554,6 +1554,7 @@ dependencies = [
  "forge-net",
  "forge-proto",
  "forge-shard",
+ "hex",
  "iroh",
  "rand 0.8.5",
  "serde",

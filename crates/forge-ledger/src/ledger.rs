@@ -153,6 +153,9 @@ pub struct SettlementStatement {
     pub trade_count: usize,
     pub total_cu_transferred: u64,
     pub reference_price_per_cu: Option<f64>,
+    /// Merkle root of the trade log — can be anchored to Bitcoin for immutability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merkle_root: Option<String>,
     pub nodes: Vec<SettlementNode>,
     pub trades: Vec<TradeRecord>,
 }
@@ -374,6 +377,12 @@ impl ComputeLedger {
             .collect();
         nodes.sort_by(|a, b| b.net_cu.cmp(&a.net_cu));
 
+        let merkle_root = if trades.is_empty() {
+            None
+        } else {
+            Some(hex::encode(self.compute_trade_merkle_root()))
+        };
+
         SettlementStatement {
             generated_at: now_millis(),
             window_start,
@@ -381,6 +390,7 @@ impl ComputeLedger {
             trade_count: trades.len(),
             total_cu_transferred,
             reference_price_per_cu,
+            merkle_root,
             nodes,
             trades,
         }
@@ -572,6 +582,46 @@ impl ComputeLedger {
         let mut nodes: Vec<_> = self.balances.values().collect();
         nodes.sort_by(|a, b| b.balance().cmp(&a.balance()));
         nodes
+    }
+
+    /// Compute a Merkle root of all trades in the log.
+    /// This is the hash that can be anchored to Bitcoin (OP_RETURN) for immutability.
+    pub fn compute_trade_merkle_root(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+
+        if self.trade_log.is_empty() {
+            return [0u8; 32];
+        }
+
+        // Leaf hashes: SHA-256 of each trade's canonical bytes
+        let mut hashes: Vec<[u8; 32]> = self
+            .trade_log
+            .iter()
+            .map(|trade| {
+                let mut hasher = Sha256::new();
+                hasher.update(trade.canonical_bytes());
+                hasher.finalize().into()
+            })
+            .collect();
+
+        // Build Merkle tree bottom-up
+        while hashes.len() > 1 {
+            let mut next_level = Vec::with_capacity((hashes.len() + 1) / 2);
+            for chunk in hashes.chunks(2) {
+                let mut hasher = Sha256::new();
+                hasher.update(chunk[0]);
+                if chunk.len() > 1 {
+                    hasher.update(chunk[1]);
+                } else {
+                    // Odd number: duplicate last hash
+                    hasher.update(chunk[0]);
+                }
+                next_level.push(hasher.finalize().into());
+            }
+            hashes = next_level;
+        }
+
+        hashes[0]
     }
 
     /// Get total network statistics.
@@ -855,6 +905,58 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn merkle_root_empty_log() {
+        let ledger = ComputeLedger::new();
+        assert_eq!(ledger.compute_trade_merkle_root(), [0u8; 32]);
+    }
+
+    #[test]
+    fn merkle_root_is_deterministic() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+
+        ledger.execute_trade(&TradeRecord {
+            provider: provider.clone(),
+            consumer: consumer.clone(),
+            cu_amount: 100,
+            tokens_processed: 50,
+            timestamp: 1000,
+            model_id: "m1".to_string(),
+        });
+        ledger.execute_trade(&TradeRecord {
+            provider,
+            consumer,
+            cu_amount: 200,
+            tokens_processed: 100,
+            timestamp: 2000,
+            model_id: "m2".to_string(),
+        });
+
+        let root1 = ledger.compute_trade_merkle_root();
+        let root2 = ledger.compute_trade_merkle_root();
+        assert_eq!(root1, root2);
+        assert_ne!(root1, [0u8; 32]);
+    }
+
+    #[test]
+    fn settlement_includes_merkle_root() {
+        let mut ledger = ComputeLedger::new();
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 50,
+            tokens_processed: 25,
+            timestamp: 500,
+            model_id: "test".to_string(),
+        });
+
+        let statement = ledger.export_settlement_statement(0, 10000, None);
+        assert!(statement.merkle_root.is_some());
+        assert_eq!(statement.merkle_root.unwrap().len(), 64); // 32 bytes = 64 hex chars
     }
 
     #[test]
