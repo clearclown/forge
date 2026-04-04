@@ -42,6 +42,9 @@ pub struct Config {
 
     /// Maximum number of concurrent remote inference requests the seed will execute.
     pub max_concurrent_remote_inference_requests: usize,
+
+    /// Settlement window duration in hours (Issue #19). 0 = manual only.
+    pub settlement_window_hours: u64,
 }
 
 impl Config {
@@ -112,6 +115,7 @@ impl Default for Config {
             max_prompt_chars: 8_192,
             max_generate_tokens: 1_024,
             max_concurrent_remote_inference_requests: 4,
+            settlement_window_hours: 24,
         }
     }
 }

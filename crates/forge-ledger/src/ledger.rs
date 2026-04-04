@@ -412,6 +412,19 @@ impl ComputeLedger {
         }
     }
 
+    /// Compute reputation-adjusted cost. Low reputation pays a premium (Issue #9).
+    /// Reputation 1.0 = base cost. Reputation 0.0 = 2x cost.
+    pub fn reputation_adjusted_cost(&self, node_id: &NodeId, base_cost: u64) -> u64 {
+        let rep = self
+            .balances
+            .get(node_id)
+            .map(|b| b.reputation)
+            .unwrap_or(0.5);
+        // Multiplier: 2.0 at rep=0, 1.0 at rep=1.0
+        let multiplier = 2.0 - rep;
+        (base_cost as f64 * multiplier).ceil() as u64
+    }
+
     /// Estimate the CU cost for a given inference request.
     pub fn estimate_cost(&self, tokens: u64, layers: u32, model_layers: u32) -> u64 {
         let fraction = layers as f64 / model_layers as f64;
@@ -594,12 +607,22 @@ impl ComputeLedger {
     }
 
     /// Update market price based on observed supply and demand.
+    /// Uses exponential moving average for smoothing (Issue #11).
     pub fn update_price(&mut self, active_providers: usize, pending_requests: usize) {
-        // Supply: more providers → lower price
-        self.price.supply_factor = (active_providers as f64 / 10.0).max(0.5).min(2.0);
+        const EMA_ALPHA: f64 = 0.3; // smoothing factor (0.3 = moderate responsiveness)
 
-        // Demand: more pending requests → higher price
-        self.price.demand_factor = (pending_requests as f64 / 5.0).max(0.5).min(3.0);
+        // Adaptive divisor: scales with network size
+        let supply_divisor = (self.balances.len() as f64).max(5.0);
+        let demand_divisor = (supply_divisor / 2.0).max(3.0);
+
+        let raw_supply = (active_providers as f64 / supply_divisor).clamp(0.5, 2.0);
+        let raw_demand = (pending_requests as f64 / demand_divisor).clamp(0.5, 3.0);
+
+        // EMA smoothing: new = alpha * raw + (1-alpha) * old
+        self.price.supply_factor =
+            EMA_ALPHA * raw_supply + (1.0 - EMA_ALPHA) * self.price.supply_factor;
+        self.price.demand_factor =
+            EMA_ALPHA * raw_demand + (1.0 - EMA_ALPHA) * self.price.demand_factor;
     }
 
     /// Get all nodes sorted by balance (highest contributors first).
@@ -647,6 +670,21 @@ impl ComputeLedger {
         }
 
         hashes[0]
+    }
+
+    /// Prepare Bitcoin OP_RETURN anchor data (Issue #17).
+    /// Returns 80 bytes: "FORGE" (5) + trade_count (4) + total_cu (8) + merkle_root (32) + timestamp (8) + padding.
+    pub fn prepare_anchor_data(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(80);
+        data.extend_from_slice(b"FORGE"); // 5 bytes magic
+        data.extend_from_slice(&(self.trade_log.len() as u32).to_le_bytes()); // 4 bytes
+        let total_cu: u64 = self.trade_log.iter().map(|t| t.cu_amount).sum();
+        data.extend_from_slice(&total_cu.to_le_bytes()); // 8 bytes
+        data.extend_from_slice(&self.compute_trade_merkle_root()); // 32 bytes
+        data.extend_from_slice(&now_millis().to_le_bytes()); // 8 bytes
+        // Pad to 80 bytes (OP_RETURN max)
+        data.resize(80, 0);
+        data
     }
 
     /// Get total network statistics.
@@ -789,12 +827,16 @@ mod tests {
     fn market_price_adjusts() {
         let mut ledger = ComputeLedger::new();
 
-        // Low supply, high demand → expensive
-        ledger.update_price(2, 20);
+        // Low supply, high demand → expensive (apply EMA multiple times to converge)
+        for _ in 0..10 {
+            ledger.update_price(2, 20);
+        }
         assert!(ledger.market_price().effective_cu_per_token() > 1.0);
 
         // High supply, low demand → cheap
-        ledger.update_price(20, 2);
+        for _ in 0..10 {
+            ledger.update_price(20, 2);
+        }
         assert!(ledger.market_price().effective_cu_per_token() < 1.0);
     }
 
@@ -1209,5 +1251,89 @@ mod tests {
             200
         );
         assert_eq!(ledger.get_balance(&trade.consumer).unwrap().consumed, 200);
+    }
+
+    #[test]
+    fn reputation_adjusted_cost_penalizes_low_rep() {
+        let mut ledger = ComputeLedger::new();
+        let good_node = NodeId([1u8; 32]);
+        let bad_node = NodeId([2u8; 32]);
+
+        ledger.record_contribution(make_work([1u8; 32], 100 * FLOPS_PER_CU));
+        ledger.record_contribution(make_work([2u8; 32], 100 * FLOPS_PER_CU));
+        ledger.update_reputation(&good_node, 0.5); // 1.0
+        ledger.update_reputation(&bad_node, -0.3); // 0.2
+
+        let base = 100;
+        let good_cost = ledger.reputation_adjusted_cost(&good_node, base);
+        let bad_cost = ledger.reputation_adjusted_cost(&bad_node, base);
+
+        assert!(good_cost <= base + 1); // ~100 at rep 1.0
+        assert!(bad_cost > base); // ~180 at rep 0.2
+        assert!(bad_cost > good_cost);
+    }
+
+    #[test]
+    fn sybil_free_tier_decays_for_non_contributors() {
+        let mut ledger = ComputeLedger::new();
+        let consumer = NodeId([99u8; 32]);
+
+        // First use: can afford (free tier = 1000 CU)
+        assert!(ledger.can_afford(&consumer, 500));
+
+        // Record consumption without contribution
+        ledger.record_consumption(&consumer, 500);
+
+        // balance = -500, free_bonus = 1000-500=500, total = 0
+        // Can afford 0 but not 1
+        assert!(!ledger.can_afford(&consumer, 1));
+
+        // If they contribute, free tier comes back
+        ledger.record_contribution(make_work([99u8; 32], 1000 * FLOPS_PER_CU));
+        assert!(ledger.can_afford(&consumer, 500)); // contributed + free tier
+    }
+
+    #[test]
+    fn merkle_root_changes_with_new_trades() {
+        let mut ledger = ComputeLedger::new();
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 50,
+            tokens_processed: 25,
+            timestamp: now_millis(),
+            model_id: "m1".to_string(),
+        });
+        let root1 = ledger.compute_trade_merkle_root();
+
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([3u8; 32]),
+            consumer: NodeId([4u8; 32]),
+            cu_amount: 100,
+            tokens_processed: 50,
+            timestamp: now_millis(),
+            model_id: "m2".to_string(),
+        });
+        let root2 = ledger.compute_trade_merkle_root();
+
+        assert_ne!(root1, root2); // root changes with new trades
+    }
+
+    #[test]
+    fn ema_price_smoothing() {
+        let mut ledger = ComputeLedger::new();
+
+        // Apply high demand once
+        ledger.update_price(1, 50);
+        let price_after_one = ledger.market_price().effective_cu_per_token();
+
+        // Apply same demand many times
+        for _ in 0..20 {
+            ledger.update_price(1, 50);
+        }
+        let price_converged = ledger.market_price().effective_cu_per_token();
+
+        // After convergence, price should be higher than after one update (EMA smoothing)
+        assert!(price_converged > price_after_one);
     }
 }

@@ -1533,6 +1533,7 @@ dependencies = [
  "forge-core",
  "forge-ledger",
  "forge-proto",
+ "hex",
  "iroh",
  "rand 0.8.5",
  "sha2 0.10.9",

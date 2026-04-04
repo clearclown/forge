@@ -16,11 +16,17 @@ use tokio::sync::Mutex;
 /// Prevents unbounded memory growth under trade flooding (Issue #1).
 const MAX_GOSSIP_SEEN: usize = 100_000;
 
+/// Maximum pending gossip trades to process per second (Issue #14).
+const MAX_GOSSIP_TRADES_PER_SEC: u32 = 100;
+
 /// Tracks which trades have been seen to avoid re-broadcasting.
 /// Bounded: evicts oldest entries when exceeding MAX_GOSSIP_SEEN.
 pub struct GossipState {
     seen: HashSet<[u8; 32]>,
     order: VecDeque<[u8; 32]>,
+    /// Rate limiting for incoming gossip (Issue #14).
+    ingest_count: u32,
+    ingest_window: std::time::Instant,
 }
 
 impl GossipState {
@@ -28,7 +34,19 @@ impl GossipState {
         Self {
             seen: HashSet::new(),
             order: VecDeque::new(),
+            ingest_count: 0,
+            ingest_window: std::time::Instant::now(),
         }
+    }
+
+    /// Check if we can accept more gossip trades this second.
+    pub fn can_ingest(&mut self) -> bool {
+        if self.ingest_window.elapsed() > std::time::Duration::from_secs(1) {
+            self.ingest_count = 0;
+            self.ingest_window = std::time::Instant::now();
+        }
+        self.ingest_count += 1;
+        self.ingest_count <= MAX_GOSSIP_TRADES_PER_SEC
     }
 
     /// Check if we've already seen this trade. Returns true if new.
@@ -106,6 +124,11 @@ pub async fn handle_trade_gossip(
     gossip: &Arc<Mutex<GossipState>>,
     msg: &TradeGossip,
 ) -> Option<SignedTradeRecord> {
+    // Backpressure: reject if rate limit exceeded (Issue #14)
+    if !gossip.lock().await.can_ingest() {
+        tracing::debug!("Gossip rate limit exceeded, dropping trade");
+        return None;
+    }
     let trade = forge_ledger::TradeRecord {
         provider: msg.provider.clone(),
         consumer: msg.consumer.clone(),
@@ -134,6 +157,24 @@ pub async fn handle_trade_gossip(
     }
 
     Some(signed)
+}
+
+/// Check for network partition by comparing local Merkle root with a peer's.
+/// Returns true if roots match (consistent), false if divergent (partition detected).
+pub fn check_consistency(local_root: &[u8; 32], peer_root: &[u8; 32]) -> bool {
+    local_root == peer_root
+}
+
+/// Log a partition warning if Merkle roots differ (Issue #12).
+pub fn log_partition_check(local_root: &[u8; 32], peer_id: &str, peer_root: &[u8; 32]) {
+    if !check_consistency(local_root, peer_root) {
+        tracing::warn!(
+            "Ledger divergence detected with peer {}: local={} peer={}",
+            peer_id,
+            hex::encode(local_root),
+            hex::encode(peer_root)
+        );
+    }
 }
 
 /// Compute a SHA-256 hash of a trade's canonical bytes for deduplication.
