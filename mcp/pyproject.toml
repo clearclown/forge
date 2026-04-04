@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-mcp"
+version = "0.2.0"
+description = "MCP server for Forge compute economy — lets Claude, Cursor, and AI agents interact with CU"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.0", "httpx>=0.24"]
+keywords = ["mcp", "forge", "ai", "agent", "compute", "economy"]
+
+[project.scripts]
+forge-mcp = "forge_mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/clearclown/forge"
+
+[tool.setuptools]
+py-modules = ["forge_mcp_server"]

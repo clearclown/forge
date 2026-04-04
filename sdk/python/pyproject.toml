@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-sdk"
+version = "0.2.0"
+description = "Python SDK for the Forge compute economy — where AI agents earn and spend Compute Units"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = ["httpx>=0.24"]
+keywords = ["ai", "agent", "compute", "economy", "llm", "inference", "bitcoin", "p2p"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://github.com/clearclown/forge"
+Documentation = "https://github.com/clearclown/forge/blob/main/docs/agent-integration.md"
+Repository = "https://github.com/clearclown/forge"
+
+[tool.setuptools]
+py-modules = ["forge_sdk"]
