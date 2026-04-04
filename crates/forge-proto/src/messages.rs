@@ -38,6 +38,10 @@ pub enum Payload {
     StartRpcServer(StartRpcServer),
     RpcServerReady(RpcServerReady),
     RpcServerFailed(RpcServerFailed),
+    /// Provider proposes a trade after inference, with provider's signature.
+    TradeProposal(TradeProposal),
+    /// Consumer accepts the trade with counter-signature.
+    TradeAccept(TradeAccept),
 }
 
 // --- Discovery & Handshake ---
@@ -206,6 +210,31 @@ pub struct RpcServerReady {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcServerFailed {
     pub reason: String,
+}
+
+// --- Trade Signing (Proof of Useful Work) ---
+
+/// Provider proposes a trade after completing inference.
+/// Contains the trade details and provider's Ed25519 signature.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeProposal {
+    pub request_id: u64,
+    pub provider: NodeId,
+    pub consumer: NodeId,
+    pub cu_amount: u64,
+    pub tokens_processed: u64,
+    pub timestamp: u64,
+    pub model_id: String,
+    /// Ed25519 signature from the provider over canonical trade bytes.
+    pub provider_sig: Vec<u8>,
+}
+
+/// Consumer accepts the trade by counter-signing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeAccept {
+    pub request_id: u64,
+    /// Ed25519 signature from the consumer over the same canonical trade bytes.
+    pub consumer_sig: Vec<u8>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -388,6 +417,16 @@ impl Payload {
                 }
                 Ok(())
             }
+            Payload::TradeProposal(proposal) => {
+                if proposal.provider != *sender {
+                    return Err(ProtocolValidationError::SenderMismatch {
+                        expected: sender.to_hex(),
+                        actual: proposal.provider.to_hex(),
+                    });
+                }
+                Ok(())
+            }
+            Payload::TradeAccept(_) => Ok(()),
         }
     }
 }

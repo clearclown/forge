@@ -1,5 +1,6 @@
 pub mod ledger;
 
 pub use ledger::{
-    ComputeLedger, MarketPrice, NetworkStats, SettlementNode, SettlementStatement, TradeRecord,
+    ComputeLedger, MarketPrice, NetworkStats, SettlementNode, SettlementStatement,
+    SignatureError, SignedTradeRecord, TradeRecord,
 };

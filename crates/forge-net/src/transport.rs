@@ -96,6 +96,12 @@ impl ForgeTransport {
         NodeId(bytes)
     }
 
+    /// Sign arbitrary bytes with this node's Ed25519 secret key.
+    /// Used for dual-signing trades (Proof of Useful Work).
+    pub fn sign(&self, msg: &[u8]) -> [u8; 64] {
+        self.endpoint.secret_key().sign(msg).to_bytes()
+    }
+
     /// Connect to a peer by their EndpointAddr.
     ///
     /// Starts a background read loop so that messages sent by the remote

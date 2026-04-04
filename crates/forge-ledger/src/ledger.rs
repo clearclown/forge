@@ -59,6 +59,80 @@ pub struct TradeRecord {
     pub model_id: String,
 }
 
+impl TradeRecord {
+    /// Deterministic binary representation for signing.
+    /// Fixed format: provider(32) + consumer(32) + cu_amount(8) + tokens(8) + timestamp(8) + model_id(var)
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(88 + self.model_id.len());
+        buf.extend_from_slice(&self.provider.0);
+        buf.extend_from_slice(&self.consumer.0);
+        buf.extend_from_slice(&self.cu_amount.to_le_bytes());
+        buf.extend_from_slice(&self.tokens_processed.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp.to_le_bytes());
+        buf.extend_from_slice(self.model_id.as_bytes());
+        buf
+    }
+}
+
+/// A trade with cryptographic proof from both parties.
+///
+/// The provider signs after completing inference.
+/// The consumer counter-signs after verifying the trade terms.
+/// Any node can verify both signatures using only the public NodeIds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedTradeRecord {
+    pub trade: TradeRecord,
+    /// Ed25519 signature from the provider (64 bytes).
+    pub provider_sig: Vec<u8>,
+    /// Ed25519 signature from the consumer (64 bytes).
+    pub consumer_sig: Vec<u8>,
+}
+
+impl SignedTradeRecord {
+    /// Verify both signatures on this trade.
+    /// Returns Ok(()) if both provider and consumer signatures are valid.
+    pub fn verify(&self) -> Result<(), SignatureError> {
+        use ed25519_dalek::{Signature, VerifyingKey};
+
+        let canonical = self.trade.canonical_bytes();
+
+        // Verify provider signature
+        let provider_key = VerifyingKey::from_bytes(&self.trade.provider.0)
+            .map_err(|_| SignatureError::InvalidProviderKey)?;
+        let provider_sig_bytes: [u8; 64] = self.provider_sig.as_slice().try_into()
+            .map_err(|_| SignatureError::InvalidProviderSignature)?;
+        let provider_sig = Signature::from_bytes(&provider_sig_bytes);
+        provider_key
+            .verify_strict(&canonical, &provider_sig)
+            .map_err(|_| SignatureError::InvalidProviderSignature)?;
+
+        // Verify consumer signature
+        let consumer_key = VerifyingKey::from_bytes(&self.trade.consumer.0)
+            .map_err(|_| SignatureError::InvalidConsumerKey)?;
+        let consumer_sig_bytes: [u8; 64] = self.consumer_sig.as_slice().try_into()
+            .map_err(|_| SignatureError::InvalidConsumerSignature)?;
+        let consumer_sig = Signature::from_bytes(&consumer_sig_bytes);
+        consumer_key
+            .verify_strict(&canonical, &consumer_sig)
+            .map_err(|_| SignatureError::InvalidConsumerSignature)?;
+
+        Ok(())
+    }
+}
+
+/// Errors during trade signature verification.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum SignatureError {
+    #[error("invalid provider public key")]
+    InvalidProviderKey,
+    #[error("invalid provider signature")]
+    InvalidProviderSignature,
+    #[error("invalid consumer public key")]
+    InvalidConsumerKey,
+    #[error("invalid consumer signature")]
+    InvalidConsumerSignature,
+}
+
 /// Per-node summary within a settlement window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettlementNode {
@@ -347,6 +421,16 @@ impl ComputeLedger {
         });
 
         balance.consumed += cu;
+    }
+
+    /// Execute a verified signed trade: verify both signatures, then record.
+    pub fn execute_signed_trade(
+        &mut self,
+        signed: &SignedTradeRecord,
+    ) -> Result<(), SignatureError> {
+        signed.verify()?;
+        self.execute_trade(&signed.trade);
+        Ok(())
     }
 
     /// Execute a trade: provider earns CU, consumer spends CU.
@@ -766,5 +850,158 @@ mod tests {
         // Different input should produce different hash
         let hash3 = compute_hash(b"different data");
         assert_ne!(hash, hash3);
+    }
+
+    #[test]
+    fn canonical_bytes_is_deterministic() {
+        let trade = TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 100,
+            tokens_processed: 256,
+            timestamp: 1000,
+            model_id: "llama-7b".to_string(),
+        };
+
+        let bytes1 = trade.canonical_bytes();
+        let bytes2 = trade.canonical_bytes();
+        assert_eq!(bytes1, bytes2);
+        // 32 + 32 + 8 + 8 + 8 + 8 (model_id bytes) = 96
+        assert_eq!(bytes1.len(), 96);
+    }
+
+    #[test]
+    fn canonical_bytes_differs_for_different_trades() {
+        let trade1 = TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 100,
+            tokens_processed: 256,
+            timestamp: 1000,
+            model_id: "model-a".to_string(),
+        };
+        let trade2 = TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 101, // different
+            tokens_processed: 256,
+            timestamp: 1000,
+            model_id: "model-a".to_string(),
+        };
+        assert_ne!(trade1.canonical_bytes(), trade2.canonical_bytes());
+    }
+
+    #[test]
+    fn signed_trade_verification_with_real_keys() {
+        use ed25519_dalek::SigningKey;
+
+        // Generate two keypairs
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+
+        let provider_id = NodeId(provider_key.verifying_key().to_bytes());
+        let consumer_id = NodeId(consumer_key.verifying_key().to_bytes());
+
+        let trade = TradeRecord {
+            provider: provider_id,
+            consumer: consumer_id,
+            cu_amount: 500,
+            tokens_processed: 100,
+            timestamp: now_millis(),
+            model_id: "test-model".to_string(),
+        };
+
+        let canonical = trade.canonical_bytes();
+
+        // Both parties sign
+        use ed25519_dalek::Signer;
+        let provider_sig = provider_key.sign(&canonical).to_bytes().to_vec();
+        let consumer_sig = consumer_key.sign(&canonical).to_bytes().to_vec();
+
+        let signed = SignedTradeRecord {
+            trade,
+            provider_sig,
+            consumer_sig,
+        };
+
+        // Verification should succeed
+        assert!(signed.verify().is_ok());
+    }
+
+    #[test]
+    fn signed_trade_rejects_wrong_signature() {
+        use ed25519_dalek::SigningKey;
+
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+        let attacker_key = SigningKey::generate(&mut rng);
+
+        let trade = TradeRecord {
+            provider: NodeId(provider_key.verifying_key().to_bytes()),
+            consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+            cu_amount: 500,
+            tokens_processed: 100,
+            timestamp: now_millis(),
+            model_id: "test".to_string(),
+        };
+
+        let canonical = trade.canonical_bytes();
+
+        use ed25519_dalek::Signer;
+        let provider_sig = provider_key.sign(&canonical).to_bytes().to_vec();
+        // Attacker signs instead of consumer
+        let fake_consumer_sig = attacker_key.sign(&canonical).to_bytes().to_vec();
+
+        let signed = SignedTradeRecord {
+            trade,
+            provider_sig,
+            consumer_sig: fake_consumer_sig,
+        };
+
+        // Verification should fail
+        let result = signed.verify();
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SignatureError::InvalidConsumerSignature
+        ));
+    }
+
+    #[test]
+    fn ledger_execute_signed_trade() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+
+        let trade = TradeRecord {
+            provider: NodeId(provider_key.verifying_key().to_bytes()),
+            consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+            cu_amount: 200,
+            tokens_processed: 50,
+            timestamp: now_millis(),
+            model_id: "test".to_string(),
+        };
+
+        let canonical = trade.canonical_bytes();
+        let provider_sig = provider_key.sign(&canonical).to_bytes().to_vec();
+        let consumer_sig = consumer_key.sign(&canonical).to_bytes().to_vec();
+
+        let signed = SignedTradeRecord {
+            trade: trade.clone(),
+            provider_sig,
+            consumer_sig,
+        };
+
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger.execute_signed_trade(&signed).is_ok());
+        assert_eq!(
+            ledger.get_balance(&trade.provider).unwrap().contributed,
+            200
+        );
+        assert_eq!(ledger.get_balance(&trade.consumer).unwrap().consumed, 200);
     }
 }
