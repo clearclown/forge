@@ -2,338 +2,229 @@
 
 ## Compute Standard (計算本位制)
 
-Throughout history, money has been backed by physical scarcity:
+Every monetary system is backed by scarcity:
 
 | Era | Standard | Backing |
-|---|---|---|
-| Ancient | Gold/Silver | Precious metals |
-| 1944-1971 | Bretton Woods | USD pegged to gold |
-| 1971-present | Fiat / Petrodollar | Oil demand, military power, trust |
-| **Forge era** | **Compute Standard** | **Electricity × Time × Silicon** |
+|-----|----------|---------|
+| Ancient | Gold/Silver | Geological scarcity |
+| 1944–1971 | Bretton Woods | USD pegged to gold |
+| 1971–present | Petrodollar | Oil demand + military power |
+| 2009–present | Bitcoin | Electricity burned on SHA-256 |
+| **Forge** | **Compute Standard** | **Electricity spent on useful inference** |
 
-Forge introduces a **Compute Standard**: the unit of value is backed by real energy expenditure performing useful computation. Unlike Bitcoin's Proof of Work (which wastes energy on meaningless hashes), every joule spent in Forge produces real intelligence — inference results that someone actually needs.
+Forge introduces a Compute Standard: the unit of value is backed by real energy expenditure performing useful computation. Unlike Bitcoin's Proof of Work, every joule spent in Forge produces real intelligence.
 
-## Status Note
+## CU: The Native Currency
 
-This document describes the economic direction of Forge, not just the currently shipped runtime.
+### What CU Is
 
-Current implementation:
-- seed/worker remote inference over encrypted transport
-- CU-native local accounting
-- persisted ledger snapshots
-- settlement statement export
+**1 CU = 1 billion FLOPs of verified inference work.**
 
-Planned but not yet complete in runtime:
-- split-inference accounting by pipeline stage
-- reserved CU holds for in-flight jobs
-- agent-directed compute spending
+CU is not a cryptocurrency. It is not a token on a blockchain. It is a unit of account that represents real computation performed. CU has value because it is a claim on future compute — if you earned CU by serving inference, you can spend it to receive inference.
 
-### Why Compute = Money
+### Why CU, Not Bitcoin
 
-Sam Altman's thesis: intelligence scales with compute. More electricity + more silicon = smarter AI. This means:
+| Property | CU | Bitcoin |
+|----------|-----|---------|
+| **Value backing** | Useful computation (intrinsic) | Hash computation (artificial) |
+| **Settlement speed** | Instant (local ledger) | Seconds to minutes (Lightning/chain) |
+| **Transaction cost** | Zero | Channel fees, on-chain fees |
+| **External dependency** | None | Bitcoin network health |
+| **Quantum risk** | None (no cryptographic puzzle) | SHA-256 / ECDSA vulnerable |
+| **Yield generation** | Yes (idle hardware earns CU) | No (BTC in wallet earns nothing) |
 
-> **Compute is the most valuable commodity of the AI era.**
+CU is the **primary** settlement unit. Bitcoin, stablecoins, and fiat are optional **off-ramps** available through bridge adapters outside the protocol.
 
-If you can convert electricity into intelligence, and intelligence creates economic value, then electricity → compute → intelligence → value is the most direct value chain possible. No intermediary, no central bank, no trust assumption. Physics backs the currency.
-
-### The Interest Problem
-
-Cryptocurrencies have a fundamental flaw: **they don't generate yield**. Bitcoin sitting in a wallet produces nothing. It's digital gold — a store of value, but not a productive asset.
-
-Real estate generates rent. Bonds generate interest. Stocks generate dividends. These are productive assets.
-
-**Compute resources are productive assets.** A Mac Mini sitting idle is like an empty apartment — it could be earning. When you lend it to the Forge network, it performs inference (useful work) and earns compute units. This is real yield, backed by real energy expenditure.
+### CU as a Productive Asset
 
 ```
-Apartment building        Mac Mini on Forge
-─────────────────        ──────────────────
-Asset: building           Asset: compute hardware
-Cost: maintenance         Cost: electricity
-Revenue: rent             Revenue: compute units
-Yield: rent - maintenance Yield: units earned - electricity cost
-Idle = lost income        Idle = wasted potential
+Apartment building          Mac Mini on Forge
+───────────────────         ──────────────────
+Asset: building             Asset: compute hardware
+Cost: maintenance           Cost: electricity
+Revenue: rent               Revenue: CU from inference
+Yield: rent - maintenance   Yield: CU earned - electricity cost
+Idle = lost income          Idle = wasted potential
 ```
+
+A computing device on Forge is not like Bitcoin in a wallet (static value, no yield). It is like a rental property — generating income through useful work.
 
 ## Transaction Model
 
-### Compute Unit (CU)
+### Trade Execution
 
-The atomic unit of value in Forge. 1 CU represents a standardized amount of useful computation:
-
-```rust
-/// 1 CU = 1 billion FLOPs of verified inference work
-/// Roughly: processing 1 token through 1 layer of a 7B model
-pub const FLOPS_PER_CU: u64 = 1_000_000_000;
-```
-
-CU is **not a cryptocurrency inside the core protocol**. It is the accounting unit for contribution and consumption. The protocol itself stays CU-native. If an operator wants crypto or fiat settlement, that happens outside the protocol boundary through an exchange or payout adapter.
-
-### Transaction Flow
-
-#### Basic Inference Trade
-
-```
-1. Alice (phone) wants to run 13B model inference
-   - She has 500 CU balance from previous contributions
-   - Estimated cost: 150 CU for 256 tokens
-
-2. Alice's agent discovers Bob's Mac Mini (idle, 16GB, M4)
-   - Bob has reputation 0.95 (reliable node)
-   - Bob's electricity cost: ~0.02 CU/token (low-power region)
-
-3. Connection established (encrypted QUIC)
-   - Layers 8-31 assigned to Bob
-   - Alice keeps layers 0-7 locally
-
-4. Inference proceeds:
-   - Each forward pass: Alice → activation tensor → Bob → activation tensor → Alice
-   - Per token: Bob spends ~0.001 kWh of electricity
-
-5. Settlement (per token):
-   - Bob's ledger: +0.6 CU (contributed computation)
-   - Alice's ledger: -0.6 CU (consumed computation)
-   - Recorded locally by both parties, gossip-synced
-
-6. After 256 tokens:
-   - Bob earned: 153.6 CU
-   - Alice spent: 153.6 CU
-   - Bob's Mac Mini earned ~$0.003 worth of future compute access
-```
-
-#### Interest Accumulation (Yield)
-
-A node that contributes compute earns CU. These CU can later be spent when that node needs inference. But there's a twist — **compounding**:
-
-```
-Bob's Mac Mini runs 8 hours/night while Bob sleeps.
-  Night 1: serves 1,000 inference requests → earns 5,000 CU
-  Night 2: reputation increases → gets assigned more work → 6,200 CU
-  Night 3: 7,100 CU
-  ...
-  Month 1: Bob has accumulated 180,000 CU
-
-Bob's phone needs a 30B model for a complex task:
-  Cost: 50,000 CU
-  Bob can afford it — his Mac Mini earned it while he slept.
-```
-
-The "interest rate" is implicit:
-- **Hardware depreciates** (like a building aging)
-- **But demand for compute grows** (like rising rents in a growing city)
-- **Net yield is positive** as long as AI demand exceeds idle supply
-
-### Pricing Mechanism
-
-CU prices float based on supply and demand:
+Every inference creates a trade between two parties:
 
 ```rust
-pub struct MarketPrice {
-    /// Base price: 1 CU per FLOPS_PER_CU of compute
-    pub base_cu_per_token: f64,
-
-    /// Supply multiplier: more idle nodes → lower price
-    pub supply_factor: f64,
-
-    /// Demand multiplier: more inference requests → higher price
-    pub demand_factor: f64,
+pub struct TradeRecord {
+    pub provider: NodeId,       // Who ran the inference
+    pub consumer: NodeId,       // Who requested it
+    pub cu_amount: u64,         // CU transferred
+    pub tokens_processed: u64,  // Work performed
+    pub timestamp: u64,
+    pub model_id: String,
 }
 ```
 
-Effective price is computed locally as:
+The trade is recorded by both parties. In the current implementation, each node maintains a local ledger. The target implementation adds dual signatures and gossip sync.
 
-```rust
-base_cu_per_token * demand_factor / supply_factor
+### Dynamic Pricing
+
+CU prices float based on local supply and demand:
+
+```
+effective_price = base_cu_per_token × demand_factor / supply_factor
 ```
 
-Price discovery is local — each node observes its own market conditions and adjusts. No global order book. No central exchange in the protocol itself. Just P2P negotiation.
+- **More idle nodes** → supply_factor rises → price drops
+- **More inference requests** → demand_factor rises → price rises
+- Each node observes its own market conditions. No global order book.
 
-## Simple User Flows
+### Free Tier
 
-The protocol should feel simple even if the market underneath is sophisticated. The default product surface should expose only three states to normal users:
+New nodes with no contribution history receive 1,000 CU. This lets anyone use the network immediately. The free tier is consumed from the first request — it does not reset.
 
-- **Ready**: local model works immediately, even with zero balance
-- **Growing**: the client found more compute and is buying remote inference
-- **Earning**: idle hardware is online and accumulating CU
+Sybil mitigation: if more than 100 unknown nodes have appeared without contributing, new free-tier requests are rejected.
 
-### Flow 1: Consumer with Zero Setup
+## Proof of Useful Work
 
-```text
-1. Install a Forge client
-2. Local model starts immediately
-3. User asks a question
-4. Client discovers a seed or provider
-5. Seed checks free tier / CU balance
-6. If affordable, inference runs and text streams back
-7. CU balance decreases only after completed work
+### The Concept
+
+Bitcoin's Proof of Work: "I burned electricity computing SHA-256 hashes. Here is the nonce that proves it."
+
+Forge's Proof of Useful Work: "I burned electricity running LLM inference. Here is the response, and here is the consumer's signature confirming they received it."
+
+The key difference: Bitcoin's proof is self-generated (any miner can produce a valid hash). Forge's proof requires a **counterparty** — someone who actually wanted the inference. You cannot forge demand.
+
+### Verification Protocol (target)
+
+```
+1. Consumer sends InferenceRequest to Provider
+2. Provider executes inference, streams tokens back
+3. Consumer receives tokens, computes response hash
+4. Both parties sign the TradeRecord:
+   - Provider signs: "I computed this"
+   - Consumer signs: "I received this"
+5. Dual-signed TradeRecord is gossip-synced to network
+6. Any node can verify both signatures
 ```
 
-Default UX rule: the user should never need to think about shards, token IDs, or routing. They should only see model quality, speed, and remaining compute budget.
+A node cannot inflate its CU balance without a cooperating counterparty. Collusion is possible but economically irrational — the colluding consumer gains nothing by signing fake trades.
 
-### Flow 2: Home Contributor
+### Current Implementation
 
-```text
-1. User runs `forged seed` on a Mac Mini or other always-on box
-2. User enables share-idle-compute in the client or daemon config
-3. The seed serves encrypted inference requests while idle
-4. Completed requests are written into the persisted local ledger as trades
-5. CU balance grows over time
-6. The same user later spends those CU from a phone or laptop client
+The current reference implementation uses local ledgers with HMAC-SHA256 integrity protection. Dual signatures and gossip are the next step.
+
+## Yield and Reputation
+
+### Yield
+
+Nodes that stay online and contribute compute earn yield:
+
+```
+yield_cu = contributed_cu × 0.001 × reputation × uptime_hours
 ```
 
-Default UX rule: earning should be opt-in, visible, and low-friction. One toggle. One balance. One activity feed.
+At reputation 1.0, a node with 10,000 CU contributed earns 80 CU per 8-hour night. This is not inflation — it is a reward for availability. Nodes that are reliably online are more valuable to the network.
 
-### Flow 3: Operator / Marketplace Provider
+### Reputation
 
-```text
-1. Operator runs one or more `forged` nodes
-2. Operator keeps `--ledger forge-ledger.json` enabled for restart-safe accounting
-3. Operator monitors `/status` for price, throughput, and recent trades
-4. Operator exports settlement statements for a time window from `/settlement`
-5. Operator optionally converts net CU exposure into external credits, stablecoins, or fiat payouts
-6. External payout status is recorded outside the core protocol
-```
+Each node has a reputation score between 0.0 and 1.0:
 
-Default UX rule: commercial features belong in adapters and dashboards, not in the wire protocol.
+- New nodes start at 0.5
+- Uptime and successful trades increase reputation
+- Disconnections and failed trades decrease reputation
+- Higher reputation → higher yield rate, priority in scheduling
 
-## Trading Window and Credit Policy
-
-To keep onboarding simple, Forge should treat compute access as a quota problem before it becomes a finance problem:
-
-- **Free tier**: every new node gets a small CU allowance for first-use inference
-- **Spendable CU**: earned or previously credited balance usable immediately
-- **Reserved CU**: budget temporarily held while an inference request is in flight
-- **Settlement window**: a configurable accounting period where operators net inflows and outflows before external payout
-
-This model keeps the protocol responsive and avoids forcing every inference to become a real-time payment event.
-
-## CU to Crypto to Fiat: The Boundary
-
-Forge should support a path to cash without turning the protocol itself into a blockchain project.
+## Settlement and External Bridges
 
 ### Core Rule
 
-The protocol settles in CU. Conversion to anything else is an integration concern.
+**The protocol settles in CU.** Conversion to anything else is an integration concern.
 
-### Recommended Layering
+### Settlement Statements
 
-```text
+Operators can export auditable trade histories for any time window:
+
+```
+forge settle --hours 24 --price 0.05 --out settlement.json
+```
+
+The statement includes: gross CU earned, gross CU spent, net CU, trade count, and optional reference price per CU.
+
+### Bridge Architecture
+
+```
 Layer 0: Forge protocol
-  - discovery
-  - encrypted inference
-  - CU accounting
+  → CU accounting, trades, pricing
 
 Layer 1: Settlement statement
-  - export auditable trade history
-  - compute net CU earned / spent
-  - attach operator-defined reference price
+  → Exportable trade history
+  → Reference exchange rate
 
-Layer 2: External payout adapter
-  - prepaid credits
-  - stablecoin payout
-  - Lightning payout
-  - bank transfer / fiat payout
+Layer 2: External bridge (optional)
+  → CU ↔ BTC (Lightning)
+  → CU ↔ stablecoin
+  → CU ↔ fiat
 ```
 
-### Concrete Bridge Flow
+The bridge layer is outside the protocol. Different operators can use different bridges. The protocol remains useful with zero external liquidity.
 
-```text
-1. Node earns CU inside Forge from completed inference trades
-2. The ledger snapshot survives daemon restarts
-3. Operator closes a settlement window (for example every hour or every day)
-4. The operator exports a statement:
-   - gross CU earned
-   - gross CU spent
-   - net CU
-   - trade count
-   - reference exchange rate for that window
-5. An external adapter converts net CU into an external unit:
-   - custodial app credits
-   - stablecoin balance
-   - bank payout amount
-6. The external system marks that statement as paid
-7. Forge keeps running exactly the same way; only the adapter changes
+### Lightning Bridge
+
+For operators who want Bitcoin settlement:
+
+```bash
+forge settle --hours 24 --pay
 ```
 
-### Why This Matters
+This creates a BOLT11 Lightning invoice for the net CU earned, converted at the configured exchange rate (default: 10 msats per CU).
 
-- No blockchain is required for the core network
-- No smart contracts are required for inference settlement
-- Different regions can use different payout rails
-- The protocol remains useful even with zero external liquidity
+## Agent-Directed Budgets
 
-### Exchange-Rate Discipline
+### The Vision
 
-If CU is bridged externally, pricing should be explicit and time-bounded:
-
-- quote CU to external value per settlement window, not per packet
-- separate **protocol price** (CU per token) from **market price** (USD/JPY/USDC per CU)
-- publish fees and slippage at the adapter layer
-- never let external payout logic change core scheduling or encryption behavior
-
-### Why Apple Silicon
-
-As of 2026, Apple Silicon offers the best compute-per-dollar for AI inference:
-
-| Hardware | Memory | Cost | Memory Bandwidth | Inference $/token |
-|---|---|---|---|---|
-| Mac Mini M4 (24GB) | 24GB unified | ~$800 | 120 GB/s | Lowest |
-| NVIDIA RTX 4090 (24GB) | 24GB VRAM | ~$1,600 | 1,008 GB/s | Fast but 2x cost |
-| NVIDIA H100 (80GB) | 80GB HBM3 | ~$30,000 | 3,352 GB/s | Datacenter only |
-
-For **memory-bound** inference (which is what token generation is), unified memory architecture means:
-- No CPU↔GPU data transfer overhead
-- More memory per dollar (Apple) vs more bandwidth per dollar (NVIDIA)
-- Lower power consumption → lower electricity cost → higher net yield
-
-A room full of Mac Minis is the apartment building of the AI era.
-
-## Agent-Assisted Budgeting (future)
-
-### The AI as Economic Client
-
-Forge may eventually support software agents that manage their own compute budgets, but that is a later integration concern, not the current protocol boundary.
-
-```
 Traditional: Human decides → Human pays → AI executes
-Future Forge: policy allows agent → agent spends CU within limits → agent executes
-```
+Forge: Policy allows agent → Agent checks budget → Agent spends CU → Agent executes
 
-That future agent layer could:
-1. **Detect** it needs more compute ("I can't run this 13B model locally")
-2. **Discover** available nodes on the network
-3. **Negotiate** price (CU per token, latency requirements)
-4. **Execute** distributed inference across selected nodes
-5. **Settle** payment in CU
-6. **Evaluate** results and update node reputation
-
-Human approval, policy limits, and adapter rules should remain available. Forge should not assume unsupervised agents as a protocol invariant.
-
-### Self-Reinforcement Loop (future)
+### API
 
 ```
-Agent is small (1.5B on phone)
-  → earns CU by lending idle time (phone charges overnight)
-  → spends CU to access larger model (13B across network)
+GET /v1/forge/balance   → CU balance, contribution, consumption, reputation
+GET /v1/forge/pricing   → Market price, cost estimates per 100/1000 tokens
+```
+
+An agent can:
+1. Check its balance before making a request
+2. Estimate the cost of inference at current market prices
+3. Decide whether the request is worth the CU cost
+4. Execute and pay automatically
+
+Human supervisors set budget policies. Agents operate within those limits autonomously.
+
+### Self-Reinforcement Loop
+
+```
+Agent (small, phone)
+  → earns CU by lending idle compute
+  → spends CU on larger model access
   → becomes smarter
-  → makes better trading decisions
+  → makes better economic decisions
   → earns more CU
-  → accesses even larger model (30B)
+  → accesses even larger models
   → ...
 ```
 
-This is a possible application pattern, not something the current runtime guarantees.
+This is a possible application pattern. The protocol provides the market; agents provide the strategy.
 
-## Comparison with Existing Systems
+## Why This Is Not Web3
 
-| System | Value Backing | Yield | Agent Autonomy |
-|---|---|---|---|
-| Bitcoin | Energy (wasted) | None | None |
-| Ethereum | Energy + Utility | Staking (~4%) | Smart contracts |
-| Filecoin | Storage | Storage fees | None |
-| Golem | Compute | Task fees | Human-directed |
-| **Forge** | **Compute (useful)** | **Inference yield** | **Agent integration as a future layer** |
+Most Web3 projects create artificial scarcity (tokens) on top of abundant digital goods. Forge does the opposite:
 
-## Philosophy
+- **Compute is actually scarce** — it requires real electricity, real silicon, real time
+- **CU is not speculative** — it represents verified work, not a bet on future adoption
+- **No ICO, no token sale, no governance token** — CU is earned by working
+- **No blockchain required** — bilateral signatures and gossip are sufficient
+- **No smart contracts** — the protocol is the contract
 
-> Compute only becomes a trustworthy market when the trust boundary is honest.
-> Forge should earn the right to talk about growth by first making split inference real.
+The value is manufactured by physics, not by consensus.

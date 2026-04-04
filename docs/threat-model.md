@@ -151,3 +151,47 @@ Layer assignment should follow this hierarchy once split inference exists:
 - prompt visibility is reduced to the minimal set of trusted boundary nodes
 
 Those later guarantees depend on shipping actual split inference first. Until then, Forge should be described as encrypted remote inference with an honest trust boundary.
+
+## Economic Threats
+
+### T10: CU Forgery
+
+**Threat**: A node claims CU it did not earn by fabricating TradeRecords.
+
+**Current mitigation**: Local ledger with HMAC-SHA256 integrity prevents file-level tampering. However, the node operator can still write arbitrary trades into their own ledger.
+
+**Target mitigation**: Dual-signature protocol. Every TradeRecord must be signed by both the provider and the consumer. A node cannot credit itself CU without a counterparty's signature. Gossip sync means other nodes can verify both signatures independently.
+
+**Residual risk**: Collusion between provider and consumer to create fake trades. This is economically irrational — the colluding consumer gains nothing. Statistical anomaly detection on trade volume and frequency can flag suspicious patterns.
+
+### T11: Free Tier Abuse (Sybil)
+
+**Threat**: An attacker creates many new NodeIds to exploit the 1,000 CU free tier repeatedly.
+
+**Current mitigation**: If more than 100 unknown nodes (contributed = 0, consumed > 0) exist in the ledger, new free-tier requests are rejected. Each NodeId is an Ed25519 keypair — cheap to create but trackable.
+
+**Target mitigation**: Proof of Work on node registration (small computational cost to create a new identity), or stake-based entry (new nodes must contribute compute before consuming).
+
+### T12: Ledger Divergence
+
+**Threat**: Different nodes have incompatible views of the same trades, leading to economic inconsistency.
+
+**Current mitigation**: Each node maintains its own local view. No consistency guarantee across nodes.
+
+**Target mitigation**: Gossip-synced dual-signed TradeRecords. Both parties produce identical signed records. Any node receiving a gossip update can verify signatures and reject inconsistencies. Periodic summary anchoring to Bitcoin (OP_RETURN) provides an optional immutable audit trail.
+
+### T13: Market Manipulation
+
+**Threat**: A node artificially inflates demand or supply factors to manipulate pricing.
+
+**Current mitigation**: Market price is computed locally from each node's own observations. No single node can force another node to adopt its price.
+
+**Target mitigation**: Gossip-based price signals weighted by reputation. High-reputation nodes' observations carry more weight. New or low-reputation nodes cannot significantly influence network-wide pricing.
+
+### T14: Inference Quality Attack
+
+**Threat**: A provider returns low-quality or truncated inference to earn CU without doing full computation.
+
+**Current mitigation**: Accept the risk. For most use cases, obviously wrong outputs are detectable by the consumer.
+
+**Target mitigation**: Consumer-side quality verification. The consumer can re-run a small sample of tokens locally to verify the provider's output is consistent. Reputation penalty for providers whose outputs fail spot checks.

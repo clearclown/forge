@@ -2,83 +2,81 @@
 
 ## Overview
 
-Forge has two bootstrap stories:
+Forge has two bootstrap paths:
 
 - the **current reference flow**, which is explicit and operator-driven
-- the **target flow**, where a local-first client expands into split inference across additional peers
-
-The current repository implements the first one.
+- the **target flow**, where a mesh-llm-based node joins a mesh and starts earning CU automatically
 
 ## Current Reference Flow
 
-The repo today exposes the bootstrap path through the daemon and CLI:
-
 ```text
-1. Start a model host: `forged seed -m model.gguf -t tokenizer.json`
+1. Start a model host: forge seed -m "qwen2.5:0.5b"
 2. Copy the printed public key
-3. Connect a requester: `forge worker --seed <seed_public_key>`
-4. Inspect runtime state: `forge status --url http://127.0.0.1:3000`
+3. Connect a requester: forge worker --seed <seed_public_key>
+4. Check status: forge status --url http://127.0.0.1:3000
+5. Check CU balance: curl http://127.0.0.1:3000/v1/forge/balance
 ```
 
-This keeps the operator path explicit while the protocol surface remains small.
+The HTTP API binds to `127.0.0.1` by default. If exposed, set `--api-token`.
 
-Operational default:
-- the daemon HTTP API binds to `127.0.0.1` unless you override `--bind`
-- if you expose the API beyond loopback, set `--api-token` and use the same token on `forge status`, `forge topology`, and `forge settle`
+## Target Bootstrap (mesh-llm fork)
 
-## Target Bootstrap (planned)
+Once Forge integrates with mesh-llm:
 
-The intended bootstrap path for future clients is still:
+```text
+1. forge --auto                          # join best public mesh
+2. forge --model Qwen2.5-32B --publish   # create public mesh, earn CU
+3. forge --join <token>                  # join with GPU, earn CU
+4. forge --client --join <token>         # join as consumer, spend CU
+```
 
-1. local model works first
-2. LAN peers are discovered and evaluated
-3. layers are assigned across a small trusted cluster
-4. WAN expansion happens only after the split runtime is stable
-5. the system degrades back toward local execution as peers leave
+Every inference served earns CU. Every inference consumed spends CU. The economic layer is automatic — no separate configuration needed.
 
-That remains the target, not the current reference bootstrap.
+## Economic Bootstrap
 
-## Degradation & Recovery (design target)
+### New Node (Zero Balance)
 
-These are target properties for split inference, not guarantees of the current reference CLI flow.
+```text
+1. Node joins mesh
+2. Free tier: 1,000 CU available immediately
+3. Node serves first inference request → earns CU
+4. CU balance grows with each request served
+5. Node can now spend CU on other nodes' inference
+```
 
-| Event | Response | User Impact |
+### Existing Node (Has Balance)
+
+```text
+1. Node restarts, loads persisted ledger (forge-ledger.json)
+2. HMAC-SHA256 integrity verified
+3. Previous balance, trades, and reputation restored
+4. Node resumes earning and spending CU
+```
+
+## Degradation & Recovery
+
+| Event | Economic Impact | Inference Impact |
 |---|---|---|
-| 1 remote node disconnects | Rebalance remaining nodes, possibly downgrade model | Brief pause, then continue |
-| All remote nodes disconnect | Fall back to local 1.5B model instantly | Quality drops, but chat continues |
-| Phone loses network | 100% local mode | Same as above |
-| Phone low battery (<20%) | Offload all layers to remote, phone only does tokenization | Reduced battery drain |
-| Phone regains network | Re-discover peers, re-expand | Quality improves again |
+| 1 remote node disconnects | Remaining nodes absorb work, CU flow continues | Brief pause, model rebalanced |
+| All remote nodes disconnect | CU economy pauses, local-only mode | Fall back to local small model |
+| Node low battery (<20%) | Stop serving (earning pauses), can still consume | Offload layers to remote |
+| Node regains network | Resume earning CU, reputation recovers | Re-discover peers, re-expand |
 
-**Key invariant:** the coordinator should always retain a viable local execution path before it starts delegating layers outward.
+**Key invariant**: A node's CU balance persists across restarts and disconnections. Earned CU is never lost.
 
 ## Node Contribution Model
 
-Forge uses a reciprocity model similar to BitTorrent:
-
-- **Contributors**: Devices running `forged seed` donate idle compute
-- **Consumers**: Devices requesting inference consume compute
-- **Balance**: Nodes that contribute more get priority access to other nodes' compute
-- **Free tier**: New nodes with no contribution history can still use the network, but with lower priority
-- **No payment required**: The protocol works on mutual benefit first; any crypto/fiat payout is an optional adapter layered on top
-
-This creates a natural flywheel only after split inference exists in the runtime.
-
-## Bootstrap Relay Servers
-
-Minimal infrastructure required to seed the network:
-
-- 2-3 Iroh relay nodes on cheap VPS instances
-- Purpose: help nodes find each other when DHT is sparse
-- Do NOT carry inference traffic (zero knowledge of prompts/responses)
-- Can be run by anyone (open source relay software)
-- Network should function without them once direct discovery and peer learning are mature enough
+- **Contributors**: Devices serving inference earn CU
+- **Consumers**: Devices requesting inference spend CU
+- **Balance**: More contribution → more CU → more access to others' compute
+- **Free tier**: 1,000 CU for new nodes, consumed from first request
+- **Yield**: Online nodes earn 0.1% yield per hour (reputation-weighted)
+- **No mandatory payment**: The protocol runs on CU. External bridges (Lightning, fiat) are optional.
 
 ## Security During Bootstrap
 
 - Ed25519 identity created before any network activity
-- First network message is already inside a Noise-encrypted QUIC tunnel
-- Relay servers see only encrypted packets (connection metadata, not content)
-- Peer discovery reveals only: node ID, capabilities, region — never prompts or responses
-- In the current seed/worker flow, the seed sees prompt text because it runs the full model
-- In the target split-inference flow, middle-stage peers should see only activation tensors for their assigned layers
+- All connections encrypted via QUIC + Noise
+- In the current seed/worker flow, the seed sees prompt text (explicit trust boundary)
+- CU trades are recorded locally with HMAC-SHA256 integrity
+- Target: dual-signed trades gossip-synced across the mesh

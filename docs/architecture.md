@@ -2,309 +2,181 @@
 
 ## Overview
 
-Forge is a 5-layer protocol stack with a clear distinction between the current reference implementation and the target architecture.
+Forge is a two-layer system: **inference** and **economy**.
 
-Current reference implementation:
-- encrypted seed/worker inference over Iroh
-- full-model execution on the seed
-- CU-native local accounting and settlement export
-- capability handshake and topology planning from model metadata + connected peers
+The inference layer handles model distribution, mesh networking, and API serving. It is built on [mesh-llm](https://github.com/michaelneale/mesh-llm).
 
-Target architecture:
-- topology-driven split inference by contiguous layer ranges
-- activation forwarding between peers
-- graceful degradation back toward local execution
-
-Optional billing, payout, and exchange integrations sit above the protocol rather than inside it.
+The economy layer handles CU accounting, trade recording, pricing, and agent budgets. This is Forge's original contribution.
 
 ```
 ┌─────────────────────────────────────────────────┐
 │  SDK / Integration Boundary                     │
-│  forge-node as embeddable Rust library          │
-│  Third-party clients build on this API          │
+│  Any client can embed forge-node as a library   │
+│  Third-party agents, dashboards, adapters       │
 └──────────────────┬──────────────────────────────┘
-                   │ Rust crate API
+                   │
 ┌──────────────────▼──────────────────────────────┐
-│  Layer 5: Orchestrator (forge-node)             │
-│  Manages local model shard                      │
-│  Coordinates pipeline across peers              │
-│  Decides: run locally or distribute?            │
+│  Economic Layer (Forge-original)                │
+│                                                  │
+│  ┌──────────────┐ ┌──────────┐ ┌─────────────┐ │
+│  │ forge-ledger │ │ pricing  │ │ agent       │ │
+│  │ CU trades    │ │ supply/  │ │ budgets     │ │
+│  │ reputation   │ │ demand   │ │ /v1/forge/* │ │
+│  │ yield        │ │          │ │             │ │
+│  └──────────────┘ └──────────┘ └─────────────┘ │
+│                                                  │
+│  ┌──────────────┐ ┌──────────────────────────┐  │
+│  │ forge-verify │ │ forge-bridge (optional)  │  │
+│  │ dual-sign    │ │ CU ↔ BTC Lightning      │  │
+│  │ gossip sync  │ │ CU ↔ stablecoin         │  │
+│  └──────────────┘ └──────────────────────────┘  │
 └──────────────────┬──────────────────────────────┘
-         ┌─────────┼──────────┐
-┌────────▼───┐ ┌───▼────────────────────┐
-│  Layer 4   │ │  Layer 3: Ledger       │
-│  forge-net │ │  forge-ledger          │
-│  P2P       │ │  Proof of Useful Work  │
-│  Iroh/QUIC │ │  Compute accounting    │
-│  Noise enc │ │  Reputation + Balance  │
-└────────────┘ └────────────────────────┘
-         ┌─────────┼──────────┐
-┌────────▼───┐ ┌───▼────┐ ┌──▼──────────┐
-│  Layer 2   │ │Layer 1b│ │  Layer 1a   │
-│  forge-net │ │ shard  │ │ forge-infer │
-│  (shared)  │ │ mgmt   │ │ Candle+GGUF │
-│            │ │ assign │ │ Metal/CPU   │
-│            │ │ rebal. │ │ KV cache    │
-└────────────┘ └────────┘ └─────────────┘
+                   │
+┌──────────────────▼──────────────────────────────┐
+│  Inference Layer (mesh-llm-derived)             │
+│                                                  │
+│  ┌────────────┐ ┌───────────┐ ┌──────────────┐ │
+│  │ iroh mesh  │ │ llama.cpp │ │ OpenAI API   │ │
+│  │ QUIC+Noise │ │ pipeline  │ │ /v1/chat/    │ │
+│  │ Nostr disc │ │ MoE shard │ │ completions  │ │
+│  └────────────┘ └───────────┘ └──────────────┘ │
+└─────────────────────────────────────────────────┘
 ```
 
-## Layer 1: Inference Engine (forge-infer)
+## Inference Layer (mesh-llm)
 
-Loads GGUF model files and runs transformer inference. Partial-layer execution is the intended next step, but the current engine still loads and executes whole-model inference on one node.
+The inference layer is responsible for:
 
-**Responsibilities:**
-- Load GGUF files and tokenizer state
-- Run local text generation for the current seed/runtime flow
-- Evolve toward partial-layer execution for split inference
-- Use Metal on Apple Silicon when available, CPU fallback elsewhere
+- **Mesh networking**: iroh-based QUIC connections with Noise encryption
+- **Peer discovery**: Nostr relays for public meshes, mDNS for LAN
+- **Model distribution**: Pipeline parallelism for dense models, expert sharding for MoE
+- **Inference execution**: llama.cpp via llama-server and rpc-server subprocesses
+- **API serving**: OpenAI-compatible `/v1/chat/completions` and `/v1/models`
 
-**Key interface:**
+Forge inherits all of this from mesh-llm. The inference layer does not know about CU, trades, or pricing.
+
+## Economic Layer (Forge)
+
+The economic layer sits above inference and is responsible for:
+
+### forge-ledger — The Economic Engine
+
 ```rust
-pub trait InferenceEngine: Send + Sync {
-    fn load(
-        &mut self,
-        model_path: &Path,
-        tokenizer_path: &Path,
-        layer_range: Option<LayerRange>,
-    ) -> Result<(), ForgeError>;
-
-    fn is_loaded(&self) -> bool;
-
-    fn generate(
-        &mut self,
-        prompt: &str,
-        max_tokens: u32,
-        temperature: f32,
-        top_p: Option<f64>,
-    ) -> Result<Vec<String>, ForgeError>;
+pub struct ComputeLedger {
+    balances: HashMap<NodeId, NodeBalance>,
+    work_log: Vec<WorkUnit>,
+    trade_log: Vec<TradeRecord>,
+    price: MarketPrice,
 }
 ```
 
-## Layer 2: Shard Management (forge-shard)
+Core responsibilities:
+- Track per-node CU balance (contributed, consumed, reserved)
+- Record every inference trade (provider, consumer, CU amount, tokens)
+- Compute dynamic market prices from supply/demand
+- Apply yield to contributing nodes
+- Export settlement statements for off-protocol bridges
+- Persist snapshots to disk with HMAC-SHA256 integrity
 
-Decides how to split a model across available nodes.
+### forge-verify — Proof of Useful Work (target)
 
-**Responsibilities:**
-- Parse GGUF metadata to determine layer structure
-- Assign contiguous layer ranges to nodes based on their capabilities
-- Rebalance when nodes join or leave
-- Ensure the phone always holds layers 0..k (embedding + early layers)
+Ensures CU claims are legitimate:
+- Dual-sign protocol: both provider and consumer sign each TradeRecord
+- Gossip sync: signed trades propagate across the network
+- Verification: any node can validate both signatures
+- Fraud detection: mismatched or unsigned trades are rejected
 
-**Assignment algorithm:**
-```
-1. Sort peers by compute_power descending
-2. Calculate memory budget per peer
-3. Greedily assign contiguous layer ranges
-   - Phone gets layers 0..k (always)
-   - Faster peers get more layers
-4. If total memory < model size → try smaller quantization or smaller model
-5. Return ShardPlan { assignments: Vec<(NodeId, LayerRange)> }
-```
+### forge-bridge — External Settlement (optional)
 
-**Rebalancing triggers:**
-- Node joins → steal layers from most-loaded peer
-- Node leaves (heartbeat timeout 10s) → remaining peers absorb orphaned layers
-- Insufficient memory → downgrade to smaller model (graceful degradation)
+Converts CU to external value for operators who need it:
+- Bitcoin Lightning: CU → msats via configurable exchange rate
+- Stablecoin: CU → USDC/USDT via adapter
+- Fiat: CU → bank transfer via operator dashboard
 
-## Layer 3: Compute Ledger (forge-ledger)
+The bridge layer is outside the core protocol. Different operators can use different bridges.
 
-Tracks the flow of compute value across the network. This is Forge's economic engine.
+### API Surface
 
-**Core principle:** Compute + Electricity = Value. Every forward pass a node executes is *useful work* — unlike Bitcoin's PoW, it directly produces intelligence.
+| Route | Layer | Description |
+|-------|-------|-------------|
+| `POST /v1/chat/completions` | Inference + Economy | Run inference, record CU trade |
+| `GET /v1/models` | Inference | List loaded models |
+| `GET /v1/forge/balance` | Economy | CU balance, reputation |
+| `GET /v1/forge/pricing` | Economy | Market price, cost estimates |
+| `GET /status` | Economy | Market price, network stats, recent trades |
+| `GET /topology` | Inference | Model manifest, peers, shard plan |
+| `GET /settlement` | Economy | Exportable trade history |
+| `GET /health` | Inference | Basic health check |
 
-**Current role:** local accounting for observed inference trades and optional contribution records.
+## Data Flow
 
-**Target role:** account for split-inference work once the runtime really routes activations across nodes.
-
-**Compute accounting:**
-```rust
-pub struct WorkUnit {
-    pub node_id: NodeId,
-    pub timestamp: u64,
-    pub layers_computed: LayerRange,
-    pub model_id: ModelId,
-    pub tokens_processed: u64,
-    pub estimated_flops: u64,
-}
-
-pub struct NodeBalance {
-    pub node_id: NodeId,
-    pub contributed: u64,    // total compute units contributed
-    pub consumed: u64,       // total compute units consumed
-    pub reserved: u64,       // budget held for in-flight work
-    pub reputation: f64,     // 0.0 - 1.0, based on uptime and reliability
-}
-```
-
-**Incentive design:**
-- Nodes that contribute more compute earn higher balance
-- Higher balance = priority access to the network's compute
-- Nodes with zero balance can still use the network (free tier) but at lower priority
-- The core protocol stays CU-only; any payout rail lives outside this layer
-- Each node maintains its own local view of the ledger today
-
-**MVP:** Off-chain local ledger per node. Each node records what it has observed.
-**Future:** Signed settlement statements, stronger reconciliation, and optional exchange adapters run by third parties.
-
-## Layer 4: P2P Networking (forge-net)
-
-Encrypted peer-to-peer communication using Iroh.
-
-**Transport:** QUIC over UDP
-**Encryption:** Noise Protocol (ChaCha20-Poly1305) with forward secrecy
-**Identity:** Ed25519 keypair per node, stored in platform keychain
-
-**Discovery target:**
-
-| Method | Scope | Latency | Use Case |
-|---|---|---|---|
-| mDNS (`_forge._udp.local`) | LAN | <1s | Same-network devices |
-| DHT (Mainline) | WAN | 2-10s | Global device discovery |
-| Bootstrap relays | WAN | 1-3s | Initial network entry |
-| QUIC hole-punch | WAN | 1-5s | Direct NAT traversal |
-| Relay fallback | WAN | 10-50ms overhead | When hole-punch fails |
-
-Current reference implementation is narrower:
-- direct seed address sharing
-- connected-peer tracking
-- capability exchange during handshake
-
-**Peer capability advertisement:**
-```rust
-pub struct PeerCapability {
-    pub node_id: NodeId,
-    pub cpu_cores: u16,
-    pub memory_gb: f32,
-    pub metal_available: bool,
-    pub bandwidth_mbps: f32,
-    pub battery_pct: Option<u8>,  // None for plugged-in devices
-    pub available_layers: u32,     // how many layers this node can hold
-    pub region: String,
-}
-```
-
-## Layer 5: Orchestrator (forge-node)
-
-The main event loop that ties everything together.
-
-**Modes:**
-- **Seed mode**: Hosts a GGUF model, accepts encrypted inference requests, checks CU affordability, and streams text back
-- **Worker / requester mode**: Connects to a seed, sends prompt text over the encrypted channel, and spends CU
-- **Future hybrid mode**: A node both consumes and contributes layers in a multi-hop pipeline
-
-**Current execution path:**
-```
-Worker sends `InferenceRequest { prompt_text, ... }`
-  ↓
-Seed checks CU affordability
-  ↓
-Seed runs whole-model generation locally
-  ↓
-Seed streams `TokenStreamMsg { text, is_final }`
-  ↓
-Ledger records the completed trade
-```
-
-**Target split-inference path:**
-```
-Coordinator keeps early layers local
-  ↓
-`Forward` carries activation tensors to the next stage
-  ↓
-Remote peers execute contiguous layer ranges
-  ↓
-Final logits or token results return to the coordinator
-```
-
-**Activation tensor size (Llama-7B target model):**
-- FP16: `seq_len × 4096 × 2 bytes` = ~8KB per token position
-- INT8 (WAN-optimized): ~4KB per token position
-
-## SDK / Integration Boundary
-
-Forge is a protocol, not an application. The `forge-node` crate is the integration point for third-party clients, but the current API surface still reflects a seed/worker remote inference runtime more than a full split-inference runtime.
-
-**Public API surface:**
-```rust
-// Start a node
-let node = ForgeNode::new(config);
-node.load_model(&model_path, &tokenizer_path).await?;
-
-// Local inference
-let response = node.chat("What is gravity?", 256, 0.7).await?;
-
-// P2P seed mode (serve inference to network, earn CU)
-node.run_seed().await?;
-
-// P2P worker mode (connect to seed, spend CU)
-let transport = node.connect_to_seed(seed_addr).await?;
-
-// Network statistics
-let stats = node.network_stats().await;
-
-// Local daemon status over HTTP
-// Bound to 127.0.0.1 by default; operators opt into wider exposure explicitly
-// GET /status -> model_loaded + market price + network stats + recent trades
-// GET /topology -> model manifest + connected peer capabilities + planned shard topology
-// GET /settlement -> export settlement statement for a time window
-```
-
-**Reference binaries:** `forged` (daemon) and `forge` (operator/client CLI)
-**Protocol spec:** `docs/protocol-spec.md`
-**Anyone can build:** desktop apps, web dashboards, mobile clients, agent integrations
-
-## Data Flow (End to End)
+### Inference with CU Accounting
 
 ```
-Current implementation:
-  Client sends prompt "What is gravity?"
+Consumer sends request
     ↓
-  forge worker → encrypted QUIC connection
+API receives POST /v1/chat/completions
     ↓
-  forge-proto::InferenceRequest { prompt_text, max_tokens, ... }
+Ledger checks: can_afford(consumer, estimated_cost)?
+    ↓ yes
+Inference layer executes (llama-server / rpc-server)
     ↓
-  Seed checks `can_afford`
+Tokens stream back to consumer
     ↓
-  forge-infer tokenizes prompt and generates text
+Ledger records trade:
+  - provider.contributed += cu_cost
+  - consumer.consumed += cu_cost
+  - trade_log.push(TradeRecord)
     ↓
-  forge-proto::TokenStreamMsg { text, is_final }
-    ↓
-  Worker prints the streamed text
-    ↓
-  forge-ledger records the completed trade
-    ↓
-  persisted ledger snapshot + optional settlement export
-
-Future multi-hop execution:
-  Seed keeps early layers locally
-    ↓ activation tensor (encrypted)
-  Remote peers execute contiguous layer ranges
-    ↓ text fragments stream back to the requester
+Response includes x_forge: { cu_cost, effective_balance }
 ```
 
-## Worker Node Schema
+### Settlement Export
 
-```json
-{
-  "node_id": "forge_2b8f...a3c1",
-  "hardware": {
-    "cpu": "Apple M4",
-    "cores": 10,
-    "memory_gb": 16,
-    "metal": true,
-    "unified_memory": true
-  },
-  "network": {
-    "bandwidth_mbps": 200,
-    "region": "JP",
-    "nat_type": "restricted_cone"
-  },
-  "status": {
-    "available_memory_gb": 12.5,
-    "battery_pct": null,
-    "power_state": "plugged_in",
-    "assigned_layers": [8, 15],
-    "reputation": 0.95
-  }
-}
+```
+Operator runs: forge settle --hours 24
+    ↓
+API reads trade_log for time window
+    ↓
+Aggregates per-node: gross_earned, gross_spent, net_cu
+    ↓
+Exports JSON statement with optional reference price
+    ↓
+Operator uses bridge adapter to convert net CU to BTC/fiat
+```
+
+## Security Model
+
+```
+Layer 0: Bitcoin mainchain    ← Optional anchoring (future)
+Layer 1: Dual signatures      ← Provider + consumer sign each trade
+Layer 2: HMAC-SHA256 ledger   ← Local integrity protection
+Layer 3: iroh (QUIC + Noise)  ← Transport encryption
+Layer 4: Inference execution  ← Model runs locally on provider
+```
+
+Each layer protects against different threats:
+- Layer 4: Model integrity (GGUF hash verification)
+- Layer 3: Transport confidentiality (eavesdropping)
+- Layer 2: Local tampering (file modification)
+- Layer 1: Network fraud (fake CU claims)
+- Layer 0: Historical immutability (optional Bitcoin anchor)
+
+## Crate Dependencies
+
+```
+forge-core ← shared types (NodeId, CU, Config)
+    ↑
+forge-ledger ← economic engine (trades, pricing, yield)
+    ↑
+forge-lightning ← external bridge (LDK wallet, CU↔sats)
+    ↑
+forge-node ← orchestrator (HTTP API, pipeline, ledger integration)
+    ↑
+forge-cli ← reference CLI (chat, seed, worker, settle)
+
+forge-net ← P2P transport (iroh, QUIC, Noise, mDNS)
+forge-proto ← wire messages (bincode, 14 payload types)
+forge-infer ← inference engine (llama.cpp, GGUF loader)
+forge-shard ← topology planner (layer assignment, rebalancing)
 ```
