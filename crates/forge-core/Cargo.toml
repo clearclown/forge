@@ -3,6 +3,7 @@ name = "forge-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Core types for the Forge compute economy: NodeId, CU, Config"
 
 [dependencies]
 serde = { workspace = true }

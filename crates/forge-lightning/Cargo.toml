@@ -3,6 +3,7 @@ name = "forge-lightning"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Bitcoin Lightning bridge for Forge CU settlement"
 
 [dependencies]
 forge-core = { workspace = true }

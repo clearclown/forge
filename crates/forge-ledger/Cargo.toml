@@ -3,6 +3,7 @@ name = "forge-ledger"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Economic engine for Forge: CU accounting, trades, safety, Merkle root"
 
 [dependencies]
 forge-core = { workspace = true }

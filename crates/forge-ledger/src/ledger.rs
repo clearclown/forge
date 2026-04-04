@@ -20,7 +20,19 @@ pub struct ComputeLedger {
     price: MarketPrice,
 }
 
-/// Dynamic pricing based on local supply/demand observation.
+/// Dynamic pricing based on supply/demand and network scale.
+///
+/// CU is deflationary: as the network grows, each CU buys MORE compute.
+/// Early contributors earn CU when it's expensive to earn (few nodes)
+/// and spend it when it's cheap to buy (many nodes). This mirrors
+/// Bitcoin's halving economics — early miners get the most value.
+///
+/// Price formula:
+///   effective_price = base × demand / supply × deflation_factor
+///
+/// deflation_factor decreases as total_trades grows:
+///   1.0 at 0 trades → 0.5 at 10K trades → 0.1 at 1M trades
+///   This means 1 CU buys 10x more inference on a mature network.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketPrice {
     /// Base: 1 CU per FLOPS_PER_CU of compute.
@@ -29,6 +41,9 @@ pub struct MarketPrice {
     pub supply_factor: f64,
     /// More requests than capacity → higher price.
     pub demand_factor: f64,
+    /// Total trades ever executed (drives deflation curve).
+    #[serde(default)]
+    pub total_trades_ever: u64,
 }
 
 impl Default for MarketPrice {
@@ -37,14 +52,36 @@ impl Default for MarketPrice {
             base_cu_per_token: 1.0,
             supply_factor: 1.0,
             demand_factor: 1.0,
+            total_trades_ever: 0,
         }
     }
 }
 
 impl MarketPrice {
-    /// Effective CU cost per token.
+    /// CU deflation factor based on network maturity.
+    /// As more trades happen, each CU becomes worth more (buys more compute).
+    ///
+    /// ```text
+    /// Trades:     0     1K    10K   100K   1M
+    /// Factor:   1.0    0.9   0.5    0.2   0.1
+    /// Meaning:  1 CU = 1 tok → 1 CU = 10 tok (10x more purchasing power)
+    /// ```
+    pub fn deflation_factor(&self) -> f64 {
+        // Logarithmic decay: 1.0 / (1.0 + log10(1 + total_trades / 1000))
+        let scale = self.total_trades_ever as f64 / 1000.0;
+        1.0 / (1.0 + scale.ln_1p().max(0.0))
+    }
+
+    /// Effective CU cost per token (incorporating deflation).
     pub fn effective_cu_per_token(&self) -> f64 {
-        self.base_cu_per_token * self.demand_factor / self.supply_factor
+        let raw = self.base_cu_per_token * self.demand_factor / self.supply_factor;
+        (raw * self.deflation_factor()).max(0.01) // floor: never free
+    }
+
+    /// CU purchasing power multiplier (inverse of deflation).
+    /// "1 CU buys this many tokens at base price"
+    pub fn cu_purchasing_power(&self) -> f64 {
+        1.0 / self.deflation_factor()
     }
 }
 
@@ -535,6 +572,7 @@ impl ComputeLedger {
         consumer.consumed += trade.cu_amount;
         consumer.reserved = consumer.reserved.saturating_sub(trade.cu_amount);
         self.trade_log.push(trade.clone());
+        self.price.total_trades_ever += 1;
     }
 
     /// Can a node afford a given CU cost?
@@ -1344,6 +1382,33 @@ mod tests {
 
         // After convergence, price should be higher than after one update (EMA smoothing)
         assert!(price_converged > price_after_one);
+    }
+
+    #[test]
+    fn cu_deflation_increases_purchasing_power() {
+        let mut price = MarketPrice::default();
+        let power_at_0 = price.cu_purchasing_power();
+        assert!((power_at_0 - 1.0).abs() < 0.01); // ~1.0 at start
+
+        price.total_trades_ever = 10_000;
+        let power_at_10k = price.cu_purchasing_power();
+        assert!(power_at_10k > power_at_0); // more power after 10K trades
+
+        price.total_trades_ever = 1_000_000;
+        let power_at_1m = price.cu_purchasing_power();
+        assert!(power_at_1m > power_at_10k); // even more at 1M
+
+        // Early CU is worth more over time
+        let cost_early = MarketPrice { total_trades_ever: 0, ..Default::default() }.effective_cu_per_token();
+        let cost_mature = MarketPrice { total_trades_ever: 100_000, ..Default::default() }.effective_cu_per_token();
+        assert!(cost_mature < cost_early); // cheaper per token on mature network
+    }
+
+    #[test]
+    fn deflation_factor_never_zero() {
+        let price = MarketPrice { total_trades_ever: u64::MAX, ..Default::default() };
+        assert!(price.deflation_factor() > 0.0);
+        assert!(price.effective_cu_per_token() >= 0.01); // floor
     }
 
     #[test]

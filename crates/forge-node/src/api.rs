@@ -328,6 +328,11 @@ pub struct ForgePricingResponse {
     pub cu_per_token: f64,
     pub supply_factor: f64,
     pub demand_factor: f64,
+    /// How much purchasing power 1 CU has (grows with network adoption).
+    pub cu_purchasing_power: f64,
+    /// Deflation factor (decreases as network matures).
+    pub deflation_factor: f64,
+    pub total_trades_ever: u64,
     pub estimated_cost_100_tokens: u64,
     pub estimated_cost_1000_tokens: u64,
 }
@@ -951,6 +956,9 @@ async fn forge_pricing(
         cu_per_token,
         supply_factor: price.supply_factor,
         demand_factor: price.demand_factor,
+        cu_purchasing_power: price.cu_purchasing_power(),
+        deflation_factor: price.deflation_factor(),
+        total_trades_ever: price.total_trades_ever,
         estimated_cost_100_tokens: ledger.estimate_cost(100, 1, 1),
         estimated_cost_1000_tokens: ledger.estimate_cost(1000, 1, 1),
     }))
