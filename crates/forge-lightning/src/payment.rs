@@ -89,6 +89,47 @@ impl PricingSummary {
     }
 }
 
+/// Result of computing a settlement invoice.
+#[derive(Debug, Clone)]
+pub struct SettlementInvoice {
+    /// Net CU owed to the provider.
+    pub net_cu: u64,
+    /// Equivalent amount in millisatoshis.
+    pub amount_msats: u64,
+    /// Equivalent amount in satoshis.
+    pub amount_sats: u64,
+    /// Description for the Lightning invoice.
+    pub description: String,
+}
+
+/// Create a settlement invoice from a settlement statement's net CU.
+///
+/// Only nodes with positive net CU (providers) get invoices.
+/// Returns None if net_cu is zero or negative.
+pub fn create_settlement_invoice(
+    net_cu: i64,
+    rate: &ExchangeRate,
+    window_hours: u64,
+) -> Option<SettlementInvoice> {
+    if net_cu <= 0 {
+        return None;
+    }
+
+    let cu = net_cu as u64;
+    let amount_msats = rate.cu_to_msats(cu);
+    let amount_sats = amount_msats / 1000;
+
+    Some(SettlementInvoice {
+        net_cu: cu,
+        amount_msats,
+        amount_sats,
+        description: format!(
+            "Forge settlement: {} CU over {}h",
+            cu, window_hours
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

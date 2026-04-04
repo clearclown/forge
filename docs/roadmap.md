@@ -29,15 +29,25 @@ Forge is a protocol. Like Bitcoin Core, we ship the daemon (`forged`), the CLI, 
 - CU balance checks before inference
 - Trade records after completion
 
-## Phase 4: Split Inference MVP (current)
+## Phase 4a: Economic API ✅
+
+**Goal:** Make Forge immediately useful to any tool or agent via OpenAI-compatible API with CU accounting.
+
+| Deliverable | Description |
+|---|---|
+| OpenAI-compatible API | `POST /v1/chat/completions` (streaming + sync), `GET /v1/models` |
+| CU metering on API | Every inference records a trade in the ledger, `x_forge` extension in responses |
+| Agent budget endpoints | `GET /v1/forge/balance`, `GET /v1/forge/pricing` |
+| CU→Lightning bridge | `forge settle --pay` creates Lightning invoices from net CU earned |
+| Seed model auto-resolve | `forge seed -m "qwen2.5:0.5b"` auto-downloads from HF Hub |
+| Graceful shutdown | Ctrl-C persists ledger before exit in seed and node modes |
+
+## Phase 4b: Split Inference MVP
 
 **Goal:** Close the gap between the story and the runtime.
 
 | Deliverable | Description |
 |---|---|
-| Honest docs/spec | Distinguish current seed/worker flow from planned split inference |
-| Capability handshake | Exchange peer capabilities and retain them in runtime state |
-| Topology planning | Build a shard plan from GGUF metadata + connected peers |
 | Partial layer load | `forge-infer` actually respects `LayerRange` |
 | Two-node activation path | `Forward` messages execute a real 2-stage inference path |
 | Runtime topology wiring | `forge-shard` output drives actual execution |

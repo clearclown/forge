@@ -40,13 +40,13 @@ enum Commands {
 
     /// Start as a seed node (holds model, serves inference)
     Seed {
-        /// Path to a GGUF model file
-        #[arg(short, long)]
+        /// Model name (e.g., "qwen2.5:0.5b") or path to GGUF file
+        #[arg(short, long, default_value = "qwen2.5:0.5b")]
         model: String,
 
-        /// Path to tokenizer.json file
+        /// Path to tokenizer.json (auto-resolved if using model name)
         #[arg(short, long)]
-        tokenizer: String,
+        tokenizer: Option<String>,
 
         /// Port for the local HTTP API
         #[arg(short, long, default_value = "3000")]
@@ -178,6 +178,10 @@ enum Commands {
         /// Optional output path for the exported JSON statement
         #[arg(long)]
         out: Option<String>,
+
+        /// Generate a Lightning invoice for net CU earned
+        #[arg(long)]
+        pay: bool,
     },
 }
 
@@ -332,11 +336,45 @@ async fn main() -> anyhow::Result<()> {
             };
             let mut node = forge_node::ForgeNode::new(config);
 
-            let model_path = PathBuf::from(&model);
-            let tokenizer_path = PathBuf::from(&tokenizer);
+            // Resolve model: either a registry name or a file path
+            let (model_path, tokenizer_path) = if PathBuf::from(&model).exists() {
+                let tp = tokenizer
+                    .map(PathBuf::from)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "when using a model file path, --tokenizer is required"
+                    ))?;
+                (PathBuf::from(&model), tp)
+            } else {
+                let spec = forge_infer::model_registry::find_model(&model)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "unknown model '{}'. Run 'forge models' to see available models.",
+                        model
+                    ))?;
+                let resolved = forge_infer::model_registry::resolve_model(&spec)?;
+                (resolved.model_path, resolved.tokenizer_path)
+            };
+
             node.load_model(&model_path, &tokenizer_path).await?;
 
             tracing::info!("Starting as SEED node with model: {}", model);
+
+            // Install Ctrl-C handler for graceful shutdown
+            let shutdown_ledger = node.ledger.clone();
+            let shutdown_ledger_path = node.config.ledger_path.clone();
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    tracing::info!("Received Ctrl-C, persisting ledger...");
+                    if let Some(path) = shutdown_ledger_path {
+                        if let Err(e) = shutdown_ledger.lock().await.save_to_path(&path) {
+                            tracing::warn!("Failed to persist ledger on shutdown: {}", e);
+                        } else {
+                            tracing::info!("Ledger persisted to {}", path.display());
+                        }
+                    }
+                    std::process::exit(0);
+                }
+            });
+
             node.run_seed().await?;
         }
         Commands::Worker { seed, relay } => {
@@ -463,6 +501,24 @@ async fn main() -> anyhow::Result<()> {
             }
 
             tracing::info!("Starting local API server on port {}", port);
+
+            // Install Ctrl-C handler for graceful shutdown
+            let shutdown_ledger = node.ledger.clone();
+            let shutdown_ledger_path = node.config.ledger_path.clone();
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    tracing::info!("Received Ctrl-C, persisting ledger...");
+                    if let Some(path) = shutdown_ledger_path {
+                        if let Err(e) = shutdown_ledger.lock().await.save_to_path(&path) {
+                            tracing::warn!("Failed to persist ledger on shutdown: {}", e);
+                        } else {
+                            tracing::info!("Ledger persisted to {}", path.display());
+                        }
+                    }
+                    std::process::exit(0);
+                }
+            });
+
             node.serve_api().await?;
         }
         Commands::Status { url, api_token } => {
@@ -612,6 +668,7 @@ async fn main() -> anyhow::Result<()> {
             hours,
             price,
             out,
+            pay,
         } => {
             let base = url.trim_end_matches('/');
             let mut endpoint = format!("{base}/settlement?hours={hours}");
@@ -633,6 +690,50 @@ async fn main() -> anyhow::Result<()> {
                 println!("Settlement statement written to {}", path);
             } else {
                 println!("{}", json);
+            }
+
+            if pay {
+                // Find the local node's net CU from the statement
+                // Use the node with the highest positive net_cu as the provider
+                let best_provider = statement
+                    .nodes
+                    .iter()
+                    .filter(|n| n.net_cu > 0)
+                    .max_by_key(|n| n.net_cu);
+
+                if let Some(provider) = best_provider {
+                    let rate = forge_lightning::payment::ExchangeRate::default();
+                    if let Some(invoice_info) =
+                        forge_lightning::payment::create_settlement_invoice(
+                            provider.net_cu,
+                            &rate,
+                            hours,
+                        )
+                    {
+                        println!("\n--- Lightning Settlement ---");
+                        println!("Provider: {}", provider.node_id);
+                        println!("Net CU earned: {}", invoice_info.net_cu);
+                        println!(
+                            "Amount: {} msats ({} sats)",
+                            invoice_info.amount_msats, invoice_info.amount_sats
+                        );
+
+                        // Create the actual LN invoice
+                        let wallet_config = forge_lightning::node::WalletConfig::default();
+                        let wallet = forge_lightning::ForgeWallet::start(wallet_config)?;
+                        let bolt11 = wallet.create_invoice(
+                            invoice_info.amount_msats,
+                            &invoice_info.description,
+                            3600,
+                        )?;
+                        println!("Lightning invoice: {}", bolt11);
+                        println!("Share this invoice with the consumer to receive payment.");
+                    } else {
+                        println!("\nNo positive net CU to settle.");
+                    }
+                } else {
+                    println!("\nNo provider with positive net CU in this window.");
+                }
             }
         }
     }

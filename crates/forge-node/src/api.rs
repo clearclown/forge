@@ -6,9 +6,9 @@ use axum::{
     response::{Response, Sse, sse::Event},
     routing::{get, post},
 };
-use forge_core::{Config, ModelManifest, PeerCapability, PipelineTopology};
+use forge_core::{Config, ModelManifest, NodeId, PeerCapability, PipelineTopology};
 use forge_infer::{CandleEngine, InferenceEngine};
-use forge_ledger::{ComputeLedger, SettlementStatement};
+use forge_ledger::{ComputeLedger, SettlementStatement, TradeRecord};
 use forge_net::ClusterManager;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -29,6 +29,8 @@ struct AppState {
     cluster: Option<Arc<ClusterManager>>,
     /// Track recent auth failures for rate limiting.
     auth_failures: Arc<Mutex<AuthFailureTracker>>,
+    /// Node identity for this seed (used as provider in trades).
+    local_node_id: NodeId,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -73,6 +75,12 @@ pub fn create_router(
     advertised_topology: TopologyState,
     cluster: Option<Arc<ClusterManager>>,
 ) -> Router {
+    // Derive local node ID from cluster or generate a deterministic one.
+    let local_node_id = cluster
+        .as_ref()
+        .map(|c| c.local_capability().node_id.clone())
+        .unwrap_or_else(|| NodeId([0u8; 32]));
+
     let state = AppState {
         config,
         engine,
@@ -81,6 +89,7 @@ pub fn create_router(
         advertised_topology,
         cluster,
         auth_failures: Arc::new(Mutex::new(AuthFailureTracker::default())),
+        local_node_id,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -90,6 +99,12 @@ pub fn create_router(
         .route("/settlement", get(settlement))
         .route("/chat", post(chat))
         .route("/chat/stream", post(chat_stream))
+        // OpenAI-compatible routes
+        .route("/v1/chat/completions", post(openai_chat_completions))
+        .route("/v1/models", get(openai_models))
+        // Forge economic routes
+        .route("/v1/forge/balance", get(forge_balance))
+        .route("/v1/forge/pricing", get(forge_pricing))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -101,6 +116,10 @@ pub fn create_router(
         .layer(DefaultBodyLimit::max(api_max_request_body_bytes))
         .with_state(state)
 }
+
+// ---------------------------------------------------------------------------
+// Legacy Forge types (kept for backward compatibility)
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -158,6 +177,117 @@ pub struct SettlementQuery {
     pub reference_price_per_cu: Option<f64>,
 }
 
+// ---------------------------------------------------------------------------
+// OpenAI-compatible types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct OpenAIChatRequest {
+    #[serde(default)]
+    pub model: Option<String>,
+    pub messages: Vec<OpenAIChatMessage>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
+    pub stream: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OpenAIChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAIChatResponse {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    pub choices: Vec<OpenAIChoice>,
+    pub usage: OpenAIUsage,
+    /// Forge-specific extension: compute cost information.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x_forge: Option<ForgeUsageExt>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAIChoice {
+    pub index: u32,
+    pub message: OpenAIChatMessage,
+    pub finish_reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAIUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ForgeUsageExt {
+    pub cu_cost: u64,
+    pub effective_balance: i64,
+}
+
+/// SSE chunk for streaming completions.
+#[derive(Debug, Serialize)]
+struct OpenAIStreamChunk {
+    id: String,
+    object: String,
+    created: u64,
+    model: String,
+    choices: Vec<OpenAIStreamChoice>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIStreamChoice {
+    index: u32,
+    delta: OpenAIStreamDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIStreamDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Forge economic API types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct ForgeBalanceResponse {
+    pub node_id: String,
+    pub contributed: u64,
+    pub consumed: u64,
+    pub reserved: u64,
+    pub net_balance: i64,
+    pub effective_balance: i64,
+    pub reputation: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ForgePricingResponse {
+    pub cu_per_token: f64,
+    pub supply_factor: f64,
+    pub demand_factor: f64,
+    pub estimated_cost_100_tokens: u64,
+    pub estimated_cost_1000_tokens: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Auth middleware
+// ---------------------------------------------------------------------------
+
 async fn require_bearer_auth(
     State(state): State<AppState>,
     request: Request<axum::body::Body>,
@@ -207,12 +337,88 @@ async fn require_bearer_auth(
     Ok(next.run(request).await)
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 fn validate_chat_request(state: &AppState, req: &ChatRequest) -> Result<(), (StatusCode, String)> {
     state
         .config
         .validate_inference_request(&req.prompt, req.max_tokens, req.temperature, Some(0.9))
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))
 }
+
+/// Convert OpenAI messages array to a prompt string.
+fn messages_to_prompt(messages: &[OpenAIChatMessage]) -> String {
+    let mut prompt = String::new();
+    for msg in messages {
+        match msg.role.as_str() {
+            "system" => {
+                prompt.push_str(&msg.content);
+                prompt.push('\n');
+            }
+            "user" => {
+                prompt.push_str("User: ");
+                prompt.push_str(&msg.content);
+                prompt.push('\n');
+            }
+            "assistant" => {
+                prompt.push_str("Assistant: ");
+                prompt.push_str(&msg.content);
+                prompt.push('\n');
+            }
+            _ => {
+                prompt.push_str(&msg.content);
+                prompt.push('\n');
+            }
+        }
+    }
+    prompt.push_str("Assistant: ");
+    prompt
+}
+
+/// Generate a unique request ID.
+fn gen_request_id() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let id: u64 = rng.r#gen();
+    format!("chatcmpl-{:016x}", id)
+}
+
+/// Get model name from manifest or fallback.
+async fn model_name(manifest: &ModelState) -> String {
+    manifest
+        .lock()
+        .await
+        .as_ref()
+        .map(|m| m.id.0.clone())
+        .unwrap_or_else(|| "forge-model".to_string())
+}
+
+/// Record a trade in the ledger after inference.
+async fn record_api_trade(
+    ledger: &LedgerState,
+    provider: &NodeId,
+    tokens: u32,
+    model_id: &str,
+) -> u64 {
+    let mut ledger = ledger.lock().await;
+    let cu_cost = ledger.estimate_cost(tokens as u64, 1, 1);
+    let trade = TradeRecord {
+        provider: provider.clone(),
+        consumer: NodeId([0u8; 32]), // API caller (anonymous local)
+        cu_amount: cu_cost,
+        tokens_processed: tokens as u64,
+        timestamp: now_millis(),
+        model_id: model_id.to_string(),
+    };
+    ledger.execute_trade(&trade);
+    cu_cost
+}
+
+// ---------------------------------------------------------------------------
+// Legacy Forge endpoints
+// ---------------------------------------------------------------------------
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let engine = state.engine.lock().await;
@@ -369,6 +575,326 @@ async fn chat_stream(
     Ok(Sse::new(stream))
 }
 
+// ---------------------------------------------------------------------------
+// OpenAI-compatible endpoints
+// ---------------------------------------------------------------------------
+
+/// POST /v1/chat/completions — OpenAI-compatible chat completions.
+async fn openai_chat_completions(
+    State(state): State<AppState>,
+    Json(req): Json<OpenAIChatRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    use axum::response::IntoResponse;
+
+    if req.messages.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "error": {"message": "messages must not be empty", "type": "invalid_request_error"}
+            })
+            .to_string(),
+        ));
+    }
+
+    let prompt = messages_to_prompt(&req.messages);
+    let max_tokens = req.max_tokens.unwrap_or(default_max_tokens());
+    let temperature = req.temperature.unwrap_or(default_temperature());
+    let top_p = req.top_p.map(|v| v as f32);
+
+    // Validate request parameters
+    state
+        .config
+        .validate_inference_request(&prompt, max_tokens, temperature, top_p)
+        .map_err(|err| {
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({
+                    "error": {"message": err.to_string(), "type": "invalid_request_error"}
+                })
+                .to_string(),
+            )
+        })?;
+
+    let model = model_name(&state.model_manifest).await;
+    let stream = req.stream.unwrap_or(false);
+
+    if stream {
+        openai_stream_response(state, prompt, max_tokens, temperature, top_p, model).await
+    } else {
+        openai_sync_response(state, prompt, max_tokens, temperature, top_p, model)
+            .await
+            .map(|json| json.into_response())
+    }
+}
+
+/// Non-streaming response.
+async fn openai_sync_response(
+    state: AppState,
+    prompt: String,
+    max_tokens: u32,
+    temperature: f32,
+    top_p: Option<f32>,
+    model: String,
+) -> Result<Json<OpenAIChatResponse>, (StatusCode, String)> {
+    let mut engine = state.engine.lock().await;
+    if !engine.is_loaded() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({
+                "error": {"message": "model not loaded", "type": "server_error"}
+            })
+            .to_string(),
+        ));
+    }
+
+    // Estimate prompt tokens (rough: chars / 4)
+    let prompt_tokens = (prompt.len() / 4).max(1) as u32;
+
+    let tokens = engine
+        .generate(
+            &prompt,
+            max_tokens,
+            temperature,
+            top_p.map(|v| v as f64),
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({
+                    "error": {"message": e.to_string(), "type": "server_error"}
+                })
+                .to_string(),
+            )
+        })?;
+
+    drop(engine);
+
+    let completion_tokens = tokens.len() as u32;
+    let text = tokens.join("");
+
+    // Record trade in ledger
+    let cu_cost =
+        record_api_trade(&state.ledger, &state.local_node_id, completion_tokens, &model).await;
+    let effective_balance = state.ledger.lock().await.effective_balance(&state.local_node_id);
+
+    Ok(Json(OpenAIChatResponse {
+        id: gen_request_id(),
+        object: "chat.completion".to_string(),
+        created: now_secs(),
+        model,
+        choices: vec![OpenAIChoice {
+            index: 0,
+            message: OpenAIChatMessage {
+                role: "assistant".to_string(),
+                content: text,
+            },
+            finish_reason: "stop".to_string(),
+        }],
+        usage: OpenAIUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        },
+        x_forge: Some(ForgeUsageExt {
+            cu_cost,
+            effective_balance,
+        }),
+    }))
+}
+
+/// Streaming SSE response in OpenAI format.
+async fn openai_stream_response(
+    state: AppState,
+    prompt: String,
+    max_tokens: u32,
+    temperature: f32,
+    top_p: Option<f32>,
+    model: String,
+) -> Result<Response, (StatusCode, String)> {
+    use axum::response::IntoResponse;
+
+    let mut engine = state.engine.lock().await;
+    if !engine.is_loaded() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({
+                "error": {"message": "model not loaded", "type": "server_error"}
+            })
+            .to_string(),
+        ));
+    }
+
+    let tokens = engine
+        .generate(
+            &prompt,
+            max_tokens,
+            temperature,
+            top_p.map(|v| v as f64),
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({
+                    "error": {"message": e.to_string(), "type": "server_error"}
+                })
+                .to_string(),
+            )
+        })?;
+
+    drop(engine);
+
+    let request_id = gen_request_id();
+    let created = now_secs();
+    let completion_count = tokens.len() as u32;
+    let model_clone = model.clone();
+
+    // Build SSE events: one per token, then a final [DONE]
+    let mut events: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
+
+    // First chunk with role
+    events.push(Ok(Event::default().data(
+        serde_json::to_string(&OpenAIStreamChunk {
+            id: request_id.clone(),
+            object: "chat.completion.chunk".to_string(),
+            created,
+            model: model_clone.clone(),
+            choices: vec![OpenAIStreamChoice {
+                index: 0,
+                delta: OpenAIStreamDelta {
+                    role: Some("assistant".to_string()),
+                    content: None,
+                },
+                finish_reason: None,
+            }],
+        })
+        .unwrap_or_default(),
+    )));
+
+    // Content chunks
+    for token in &tokens {
+        events.push(Ok(Event::default().data(
+            serde_json::to_string(&OpenAIStreamChunk {
+                id: request_id.clone(),
+                object: "chat.completion.chunk".to_string(),
+                created,
+                model: model_clone.clone(),
+                choices: vec![OpenAIStreamChoice {
+                    index: 0,
+                    delta: OpenAIStreamDelta {
+                        role: None,
+                        content: Some(token.clone()),
+                    },
+                    finish_reason: None,
+                }],
+            })
+            .unwrap_or_default(),
+        )));
+    }
+
+    // Final chunk with finish_reason
+    events.push(Ok(Event::default().data(
+        serde_json::to_string(&OpenAIStreamChunk {
+            id: request_id.clone(),
+            object: "chat.completion.chunk".to_string(),
+            created,
+            model: model_clone.clone(),
+            choices: vec![OpenAIStreamChoice {
+                index: 0,
+                delta: OpenAIStreamDelta {
+                    role: None,
+                    content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+        })
+        .unwrap_or_default(),
+    )));
+
+    // [DONE] marker
+    events.push(Ok(Event::default().data("[DONE]")));
+
+    // Record trade
+    let ledger = state.ledger.clone();
+    let provider = state.local_node_id.clone();
+    tokio::spawn(async move {
+        record_api_trade(&ledger, &provider, completion_count, &model).await;
+    });
+
+    let stream = tokio_stream::iter(events);
+    Ok(Sse::new(stream).into_response())
+}
+
+/// GET /v1/models — list available models.
+async fn openai_models(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let model = model_name(&state.model_manifest).await;
+    let loaded = state.engine.lock().await.is_loaded();
+
+    let mut models = Vec::new();
+    if loaded {
+        models.push(serde_json::json!({
+            "id": model,
+            "object": "model",
+            "created": now_secs(),
+            "owned_by": "forge",
+        }));
+    }
+
+    Json(serde_json::json!({
+        "object": "list",
+        "data": models,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Forge economic endpoints
+// ---------------------------------------------------------------------------
+
+/// GET /v1/forge/balance — caller's CU balance.
+async fn forge_balance(State(state): State<AppState>) -> Json<ForgeBalanceResponse> {
+    let ledger = state.ledger.lock().await;
+    let node_id = &state.local_node_id;
+
+    match ledger.get_balance(node_id) {
+        Some(balance) => Json(ForgeBalanceResponse {
+            node_id: node_id.to_hex(),
+            contributed: balance.contributed,
+            consumed: balance.consumed,
+            reserved: balance.reserved,
+            net_balance: balance.balance(),
+            effective_balance: ledger.effective_balance(node_id),
+            reputation: balance.reputation,
+        }),
+        None => Json(ForgeBalanceResponse {
+            node_id: node_id.to_hex(),
+            contributed: 0,
+            consumed: 0,
+            reserved: 0,
+            net_balance: 0,
+            effective_balance: ledger.effective_balance(node_id),
+            reputation: 0.5,
+        }),
+    }
+}
+
+/// GET /v1/forge/pricing — current market price and cost estimates.
+async fn forge_pricing(State(state): State<AppState>) -> Json<ForgePricingResponse> {
+    let ledger = state.ledger.lock().await;
+    let price = ledger.market_price();
+    let cu_per_token = price.effective_cu_per_token();
+
+    Json(ForgePricingResponse {
+        cu_per_token,
+        supply_factor: price.supply_factor,
+        demand_factor: price.demand_factor,
+        estimated_cost_100_tokens: ledger.estimate_cost(100, 1, 1),
+        estimated_cost_1000_tokens: ledger.estimate_cost(1000, 1, 1),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
 /// Constant-time byte comparison to prevent timing attacks on bearer tokens.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -386,6 +912,13 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]
@@ -517,5 +1050,119 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn openai_models_returns_empty_when_no_model() {
+        let config = Config::default();
+        let app = test_router(config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["object"], "list");
+        assert!(json["data"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn openai_completions_rejects_empty_messages() {
+        let config = Config::default();
+        let app = test_router(config);
+
+        let body = serde_json::json!({
+            "messages": []
+        })
+        .to_string();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn forge_balance_returns_default_for_new_node() {
+        let config = Config::default();
+        let app = test_router(config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/forge/balance")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["effective_balance"], 1000); // free tier
+    }
+
+    #[tokio::test]
+    async fn forge_pricing_returns_market_data() {
+        let config = Config::default();
+        let app = test_router(config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/forge/pricing")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["cu_per_token"].as_f64().unwrap() > 0.0);
+        assert!(json["estimated_cost_100_tokens"].as_u64().is_some());
+    }
+
+    #[test]
+    fn messages_to_prompt_formats_correctly() {
+        let messages = vec![
+            OpenAIChatMessage {
+                role: "system".to_string(),
+                content: "You are helpful.".to_string(),
+            },
+            OpenAIChatMessage {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            },
+        ];
+        let prompt = messages_to_prompt(&messages);
+        assert!(prompt.contains("You are helpful."));
+        assert!(prompt.contains("User: Hello"));
+        assert!(prompt.ends_with("Assistant: "));
     }
 }
