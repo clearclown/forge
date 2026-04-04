@@ -9,6 +9,15 @@ Forge is a distributed LLM inference protocol where **compute is currency**. The
 2. Proof of Useful Work — dual-signed trades, gossip verification
 3. Agent autonomy — AI agents manage their own compute budgets
 
+## Repositories
+
+| Repo | Purpose |
+|------|---------|
+| `clearclown/forge` (this) | Economic layer development, specs, tests |
+| `nm-arealnormalman/mesh-llm` | **Integrated fork**: mesh-llm + Forge economy = production runtime |
+
+The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's full distributed inference engine with Forge's economic crates (`forge-economy/`) and API routes (`/api/forge/*`).
+
 ## Build & Test
 
 ```bash
