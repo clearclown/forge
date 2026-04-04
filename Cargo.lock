@@ -1451,7 +1451,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "forge-cli"
-version = "0.2.0-dev.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "forge-core"
-version = "0.2.0-dev.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "hex",
@@ -1481,7 +1481,7 @@ dependencies = [
 
 [[package]]
 name = "forge-infer"
-version = "0.2.0-dev.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "forge-core",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "forge-ledger"
-version = "0.2.0-dev.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "forge-core",
@@ -1512,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "forge-lightning"
-version = "0.2.0-dev.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "forge-core",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "forge-net"
-version = "0.2.0-dev.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1544,7 +1544,7 @@ dependencies = [
 
 [[package]]
 name = "forge-node"
-version = "0.2.0-dev.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "forge-proto"
-version = "0.2.0-dev.0"
+version = "0.2.0"
 dependencies = [
  "bincode",
  "forge-core",
@@ -1578,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "forge-shard"
-version = "0.2.0-dev.0"
+version = "0.2.0"
 dependencies = [
  "forge-core",
  "thiserror 2.0.18",
