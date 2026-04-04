@@ -29,6 +29,8 @@ struct AppState {
     cluster: Option<Arc<ClusterManager>>,
     /// Track recent auth failures for rate limiting.
     auth_failures: Arc<Mutex<AuthFailureTracker>>,
+    /// Rate limiter for economic endpoints (Issue #5).
+    forge_rate_limiter: Arc<Mutex<RateLimiter>>,
     /// Node identity for this seed (used as provider in trades).
     local_node_id: NodeId,
 }
@@ -67,6 +69,34 @@ impl AuthFailureTracker {
     }
 }
 
+/// Simple sliding-window rate limiter for economic endpoints (Issue #5).
+struct RateLimiter {
+    count: u32,
+    window_start: std::time::Instant,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            window_start: std::time::Instant::now(),
+        }
+    }
+}
+
+impl RateLimiter {
+    const MAX_REQUESTS_PER_SECOND: u32 = 30;
+
+    fn check(&mut self) -> bool {
+        if self.window_start.elapsed() > std::time::Duration::from_secs(1) {
+            self.count = 0;
+            self.window_start = std::time::Instant::now();
+        }
+        self.count += 1;
+        self.count <= Self::MAX_REQUESTS_PER_SECOND
+    }
+}
+
 pub fn create_router(
     config: Config,
     engine: EngineState,
@@ -89,6 +119,7 @@ pub fn create_router(
         advertised_topology,
         cluster,
         auth_failures: Arc::new(Mutex::new(AuthFailureTracker::default())),
+        forge_rate_limiter: Arc::new(Mutex::new(RateLimiter::default())),
         local_node_id,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
@@ -108,6 +139,7 @@ pub fn create_router(
         .route("/v1/forge/trades", get(forge_trades))
         .route("/v1/forge/invoice", post(forge_invoice))
         .route("/v1/forge/network", get(forge_network))
+        .route("/v1/forge/providers", get(forge_providers))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -852,12 +884,26 @@ async fn openai_models(State(state): State<AppState>) -> Json<serde_json::Value>
 // Forge economic endpoints
 // ---------------------------------------------------------------------------
 
+/// Check rate limit for forge economic endpoints.
+async fn check_forge_rate_limit(state: &AppState) -> Result<(), (StatusCode, String)> {
+    if !state.forge_rate_limiter.lock().await.check() {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate limit exceeded on forge endpoints".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// GET /v1/forge/balance — caller's CU balance.
-async fn forge_balance(State(state): State<AppState>) -> Json<ForgeBalanceResponse> {
+async fn forge_balance(
+    State(state): State<AppState>,
+) -> Result<Json<ForgeBalanceResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
     let ledger = state.ledger.lock().await;
     let node_id = &state.local_node_id;
 
-    match ledger.get_balance(node_id) {
+    Ok(match ledger.get_balance(node_id) {
         Some(balance) => Json(ForgeBalanceResponse {
             node_id: node_id.to_hex(),
             contributed: balance.contributed,
@@ -876,34 +922,38 @@ async fn forge_balance(State(state): State<AppState>) -> Json<ForgeBalanceRespon
             effective_balance: ledger.effective_balance(node_id),
             reputation: 0.5,
         }),
-    }
+    })
 }
 
 /// GET /v1/forge/pricing — current market price and cost estimates.
-async fn forge_pricing(State(state): State<AppState>) -> Json<ForgePricingResponse> {
+async fn forge_pricing(
+    State(state): State<AppState>,
+) -> Result<Json<ForgePricingResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
     let ledger = state.ledger.lock().await;
     let price = ledger.market_price();
     let cu_per_token = price.effective_cu_per_token();
 
-    Json(ForgePricingResponse {
+    Ok(Json(ForgePricingResponse {
         cu_per_token,
         supply_factor: price.supply_factor,
         demand_factor: price.demand_factor,
         estimated_cost_100_tokens: ledger.estimate_cost(100, 1, 1),
         estimated_cost_1000_tokens: ledger.estimate_cost(1000, 1, 1),
-    })
+    }))
 }
 
 /// GET /v1/forge/trades — recent trade history.
 async fn forge_trades(
     State(state): State<AppState>,
     Query(params): Query<TradesQuery>,
-) -> Json<ForgeTradesResponse> {
+) -> Result<Json<ForgeTradesResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
     let ledger = state.ledger.lock().await;
     let limit = params.limit.unwrap_or(20).min(100) as usize;
     let trades = ledger.recent_trades(limit);
 
-    Json(ForgeTradesResponse {
+    Ok(Json(ForgeTradesResponse {
         count: trades.len(),
         trades: trades
             .into_iter()
@@ -916,7 +966,7 @@ async fn forge_trades(
                 model_id: t.model_id,
             })
             .collect(),
-    })
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -941,19 +991,22 @@ pub struct TradeEntry {
 }
 
 /// GET /v1/forge/network — mesh-wide economic summary.
-async fn forge_network(State(state): State<AppState>) -> Json<ForgeNetworkResponse> {
+async fn forge_network(
+    State(state): State<AppState>,
+) -> Result<Json<ForgeNetworkResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
     let ledger = state.ledger.lock().await;
     let stats = ledger.network_stats();
     let merkle_root = hex::encode(ledger.compute_trade_merkle_root());
 
-    Json(ForgeNetworkResponse {
+    Ok(Json(ForgeNetworkResponse {
         total_nodes: stats.total_nodes,
         total_contributed_cu: stats.total_contributed_cu,
         total_consumed_cu: stats.total_consumed_cu,
         total_trades: stats.total_trades,
         avg_reputation: stats.avg_reputation,
         merkle_root,
-    })
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -965,6 +1018,38 @@ pub struct ForgeNetworkResponse {
     pub avg_reputation: f64,
     /// SHA-256 Merkle root of the entire trade log.
     pub merkle_root: String,
+}
+
+/// GET /v1/forge/providers — list known providers with reputation and pricing (Issue #16).
+/// Enables agents to compare providers and choose based on cost/quality.
+async fn forge_providers(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let ledger = state.ledger.lock().await;
+    let ranked = ledger.ranked_nodes();
+    let price = ledger.market_price().effective_cu_per_token();
+
+    let providers: Vec<serde_json::Value> = ranked
+        .iter()
+        .filter(|n| n.contributed > 0)
+        .take(50)
+        .map(|n| {
+            let rep_cost = ledger.reputation_adjusted_cost(&n.node_id, 100);
+            serde_json::json!({
+                "node_id": n.node_id.to_hex(),
+                "contributed_cu": n.contributed,
+                "reputation": n.reputation,
+                "cu_per_100_tokens": rep_cost,
+                "base_cu_per_token": price,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "count": providers.len(),
+        "providers": providers,
+    })))
 }
 
 /// POST /v1/forge/invoice — create a Lightning invoice from CU balance.

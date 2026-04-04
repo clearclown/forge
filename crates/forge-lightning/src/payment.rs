@@ -102,6 +102,27 @@ pub struct SettlementInvoice {
     pub description: String,
 }
 
+/// Tracks payment status for settlements (Issue #15).
+#[derive(Debug, Clone)]
+pub enum SettlementPaymentStatus {
+    /// Invoice created, awaiting payment.
+    Pending { bolt11: String, expires_at: u64 },
+    /// Payment confirmed with proof.
+    Paid { payment_hash: String, paid_at: u64 },
+    /// Payment expired without settlement.
+    Expired,
+    /// Payment explicitly cancelled.
+    Cancelled,
+}
+
+/// A tracked settlement with payment lifecycle (Issue #15).
+#[derive(Debug, Clone)]
+pub struct TrackedSettlement {
+    pub invoice: SettlementInvoice,
+    pub status: SettlementPaymentStatus,
+    pub created_at: u64,
+}
+
 /// Create a settlement invoice from a settlement statement's net CU.
 ///
 /// Only nodes with positive net CU (providers) get invoices.
