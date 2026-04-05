@@ -1,5 +1,7 @@
 # Forge
 
+**[日本語](docs/translations/ja/README.md) | [中文](docs/translations/zh-CN/README.md) | [繁體中文](docs/translations/zh-TW/README.md) | [Español](docs/translations/es/README.md) | [Français](docs/translations/fr/README.md) | [Русский](docs/translations/ru/README.md) | [हिन्दी](docs/translations/hi/README.md) | [العربية](docs/translations/ar/README.md) | [فارسی](docs/translations/fa/README.md) | [עברית](docs/translations/he/README.md) | [Українська](docs/translations/uk/README.md)**
+
 > Computation is currency. Every watt produces intelligence, not waste.
 
 **Forge is a distributed inference protocol where compute is money.** Nodes earn Compute Units (CU) by performing useful LLM inference for others. Unlike Bitcoin — where electricity is burned on meaningless hashes — every joule spent on a Forge node produces real intelligence that someone actually needs.
@@ -151,24 +153,57 @@ Agent (1.5B on phone)
 
 ## Quick Start
 
+### Option 1: Python (Fastest)
+
 ```bash
-# Build
+# Install via pip
+pip install forge-sdk
+
+# Use in Python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("What is gravity?")
+print(f"Cost: {response.cu_cost} CU")
+```
+
+[PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) | [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### Option 2: Rust (Full Control)
+
+**Prerequisites**: [Install Rust](https://rustup.rs/) (2 minutes)
+
+```bash
+# Build from source
 cargo build --release
 
 # Run a node with auto-downloaded model
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # Chat locally
-forge chat -m "qwen2.5:0.5b" "What is gravity?"
+./target/release/forge chat -m "qwen2.5:0.5b" "What is gravity?"
 
 # Start a seed (P2P, earns CU)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # Connect as worker (P2P, spends CU)
-forge worker --seed <public_key>
+./target/release/forge worker --seed <public_key>
 
 # List models
-forge models
+./target/release/forge models
+```
+
+**[Crates.io: forge](https://crates.io/crates/forge)** | **[Rust Installation Guide](https://rustup.rs/)**
+
+### Option 3: Pre-built Binaries
+
+Pre-built binaries coming soon. Watch [releases](../../releases).
+
+### Option 4: Docker
+
+```bash
+# Coming soon
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## API Reference
