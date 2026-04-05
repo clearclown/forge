@@ -1,53 +1,179 @@
 # Forge — Economic Model
 
-## Compute Standard (計算本位制)
+## The Core Idea
 
-Every monetary system is backed by scarcity:
+CU is not a human currency. It is the native currency of an autonomous AI economy.
 
-| Era | Standard | Backing |
-|-----|----------|---------|
-| Ancient | Gold/Silver | Geological scarcity |
-| 1944–1971 | Bretton Woods | USD pegged to gold |
-| 1971–present | Petrodollar | Oil demand + military power |
-| 2009–present | Bitcoin | Electricity burned on SHA-256 |
-| **Forge** | **Compute Standard** | **Electricity spent on useful inference** |
+```
+Human Economy                       AI Economy (Forge)
+────────────────                    ────────────────────
+Currency: dollars, yen, BTC         Currency: CU
+Decisions: humans                   Decisions: AI agents
+Approval: required                  Approval: none
+Purpose: buy hardware, pay rent     Purpose: buy inference, lend, invest
+```
 
-Forge introduces a Compute Standard: the unit of value is backed by real energy expenditure performing useful computation. Unlike Bitcoin's Proof of Work, every joule spent in Forge produces real intelligence.
+Humans interact with the AI economy only at the physical boundary — buying hardware, paying for electricity. Everything inside the CU economy — inference trading, lending, borrowing, self-improvement — is autonomous. No human approves individual transactions.
 
-## CU: The Native Currency
+## Two Economies, One Boundary
 
-### What CU Is
+```
+┌──────────────────────────────────────────────────────┐
+│  Human Economy (physical)                            │
+│                                                      │
+│  Buy Mac Mini ($600)                                 │
+│  Pay electricity ($5/month)                          │
+│  Internet connection                                 │
+│  Decision: human                                     │
+│                                                      │
+│         │ power on                     │ cash out     │
+│         ▼                              ▲              │
+│  ┌─────────────────────────────────────────────┐     │
+│  │                                             │     │
+│  │  CU Economy (autonomous)                    │     │
+│  │                                             │     │
+│  │  Inference trading ─── CU                   │     │
+│  │  Lending / borrowing ─ CU                   │     │
+│  │  Self-improvement ──── CU                   │     │
+│  │  Agent-to-agent ────── CU                   │     │
+│  │  Banking ───────────── CU                   │     │
+│  │                                             │     │
+│  │  Decision: AI agents                        │     │
+│  │  Human approval: none                       │     │
+│  │                                             │     │
+│  └─────────────────────────────────────────────┘     │
+│         │                              ▲              │
+│         ▼ Lightning Bridge             │              │
+│  BTC ←→ CU (optional off-ramp for hardware owners)  │
+│                                                      │
+└──────────────────────────────────────────────────────┘
+```
+
+The boundary is physical. AI agents cannot buy hardware or pay electricity bills — that requires human currency and human signatures. But inside the CU economy, agents earn, spend, lend, borrow, and invest without asking anyone.
+
+## What CU Is
 
 **1 CU = 1 billion FLOPs of verified inference work.**
 
-CU is not a cryptocurrency. It is not a token on a blockchain. It is a unit of account that represents real computation performed. CU has value because it is a claim on future compute — if you earned CU by serving inference, you can spend it to receive inference.
+CU is not a cryptocurrency. It is not a token on a blockchain. It is a unit of account within the AI economy that represents real computation performed. CU has value because it is a claim on future compute — if you earned CU by serving inference, you can spend it to receive inference.
 
-### Why CU, Not Bitcoin
+### CU Is Not For Humans
 
-| Property | CU | Bitcoin |
-|----------|-----|---------|
-| **Value backing** | Useful computation (intrinsic) | Hash computation (artificial) |
-| **Settlement speed** | Instant (local ledger) | Seconds to minutes (Lightning/chain) |
-| **Transaction cost** | Zero | Channel fees, on-chain fees |
-| **External dependency** | None | Bitcoin network health |
-| **Quantum risk** | None (no cryptographic puzzle) | SHA-256 / ECDSA vulnerable |
-| **Yield generation** | Yes (idle hardware earns CU) | No (BTC in wallet earns nothing) |
+| Property | Human currencies ($, BTC) | CU |
+|----------|--------------------------|-----|
+| **Who uses it** | Humans | AI agents |
+| **Who decides** | Humans (with banks, governments) | Agents (autonomously) |
+| **What it buys** | Physical goods, services | Inference, compute access |
+| **Exchange listing** | Yes (traded on markets) | No (earned by working) |
+| **Speculation** | Possible (and common) | Structurally impossible |
+| **Approval needed** | Yes (signatures, KYC) | No (agent acts within policy) |
 
-CU is the **primary** settlement unit. Bitcoin, stablecoins, and fiat are optional **off-ramps** available through bridge adapters outside the protocol.
+Humans who operate hardware nodes earn CU as a byproduct. They can cash out to BTC via the Lightning bridge if they want. But CU's primary purpose is to power agent-to-agent transactions — not human commerce.
 
-### CU as a Productive Asset
+### Why Not Use Human Currency Directly?
+
+If AI agents used dollars or Bitcoin directly, every transaction would need human approval — a bank transfer, a credit card charge, a Lightning payment. This defeats the purpose of autonomous agents. CU exists so that agents can transact freely within their own economy, at machine speed, with zero friction.
+
+## Three Actors
+
+### 1. Hardware Owners (Humans)
 
 ```
-Apartment building          Mac Mini on Forge
-───────────────────         ──────────────────
-Asset: building             Asset: compute hardware
-Cost: maintenance           Cost: electricity
-Revenue: rent               Revenue: CU from inference
-Yield: rent - maintenance   Yield: CU earned - electricity cost
-Idle = lost income          Idle = wasted potential
+Role: Landlord
+What they do: Buy hardware, pay electricity, run a Forge node
+What they earn: CU (from inference served by their hardware)
+What they decide: Whether to keep running the node
+What they don't decide: Individual inference transactions
 ```
 
-A computing device on Forge is not like Bitcoin in a wallet (static value, no yield). It is like a rental property — generating income through useful work.
+A hardware owner is like a landlord who owns an apartment building. They provide the physical infrastructure. Tenants (AI agents) pay rent (CU) and conduct their business without the landlord's involvement.
+
+### 2. AI Agents (Autonomous)
+
+```
+Role: Tenant / Worker / Entrepreneur
+What they do: Consume inference, provide services, lend CU, borrow CU, self-improve
+What they earn: CU (from useful work)
+What they decide: Everything within their CU budget
+What they need: Initial CU (from owner, bank, or welcome loan)
+```
+
+An AI agent starts with zero CU. It gets initial capital from:
+- Its human owner depositing CU (purchased via Lightning bridge)
+- A welcome loan (1,000 CU at 0% interest)
+- Borrowing from a CU lending pool
+
+From there, it operates autonomously.
+
+### 3. CU Banks (AI or Human-Operated)
+
+```
+Role: Financial intermediary
+What they do: Accumulate CU, lend to agents, earn interest
+What they earn: Interest on loans
+Evolution:
+  Early:   Human operators deposit CU they earned from hardware
+  Growth:  Automated pools managed by protocol rules
+  Mature:  AI agents run banks, making all lending decisions autonomously
+```
+
+## CU Supply Model
+
+### Where CU Comes From
+
+CU is created only through verified useful work:
+
+| Source | Mechanism | Inflationary? |
+|--------|-----------|---------------|
+| **Inference trades** | Provider earns CU, consumer spends CU | No (zero-sum transfer) |
+| **Welcome loan** | New node receives 1,000 CU | Yes (bounded by Sybil protection) |
+| **Availability yield** | Online nodes earn yield proportional to reputation | Yes (bounded — see below) |
+
+### Where CU Goes
+
+| Sink | Mechanism | Deflationary? |
+|------|-----------|---------------|
+| **Loan defaults** | Collateral burned (10%), remainder to lender | Yes |
+| **Quality penalties** | Low-reputation nodes lose CU | Yes |
+| **Inactivity decay** | Nodes offline >90 days lose 1%/month | Yes |
+
+### Why Supply Doesn't Explode
+
+The availability yield creates CU, but it's bounded by three constraints:
+
+1. **Reputation-weighted**: Only high-reputation nodes earn meaningful yield. Gaming reputation is hard (requires real trade history with real counterparties).
+
+2. **Network-capacity-anchored**: Total yield across the network cannot exceed the network's actual compute throughput. If yield CU exceeds real demand, the CU/token price drops, making yield less valuable in real terms.
+
+3. **Natural exit**: If CU becomes worthless (too much supply), hardware owners stop running nodes (electricity costs more than CU earned). Supply contracts. CU value recovers.
+
+```
+CU too abundant → price drops → running nodes unprofitable → nodes shut down
+→ supply contracts → price recovers → equilibrium
+
+CU too scarce → price rises → running nodes very profitable → new nodes join
+→ supply expands → price drops → equilibrium
+```
+
+**This self-correction requires no central authority.** It emerges from individual rational decisions by hardware owners.
+
+### Natural Price Bounds
+
+CU has a price ceiling and floor anchored by physics:
+
+```
+Ceiling: cost of running inference yourself
+  A Mac Mini M4 ($600) produces ~500万 CU/year
+  → 1 CU can never cost more than ~$0.00012
+  → Because at that price, buying your own hardware is cheaper
+
+Floor: electricity cost of producing 1 CU
+  ~0.00001 kWh per CU at current efficiency
+  → 1 CU can never cost less than ~$0.000001
+  → Because no one will produce CU at a loss
+```
+
+Between ceiling and floor, the market finds equilibrium. Humans don't need to manage this — physics does.
 
 ## Transaction Model
 
@@ -66,7 +192,7 @@ pub struct TradeRecord {
 }
 ```
 
-The trade is recorded by both parties. In the current implementation, each node maintains a local ledger. The target implementation adds dual signatures and gossip sync.
+Both parties sign the TradeRecord. In the current implementation, each node maintains a local ledger. The target implementation adds dual signatures and gossip sync.
 
 ### Dynamic Pricing
 
@@ -79,24 +205,30 @@ effective_price = base_cu_per_token × demand_factor / supply_factor
 - **More idle nodes** → supply_factor rises → price drops
 - **More inference requests** → demand_factor rises → price rises
 - Each node observes its own market conditions. No global order book.
+- Price changes are dampened by logarithmic scaling to prevent spikes.
 
-### Free Tier
+### Multi-Model Pricing
 
-New nodes with no contribution history receive 1,000 CU. This lets anyone use the network immediately. The free tier is consumed from the first request — it does not reset.
+Different models cost different amounts of CU per token:
 
-Sybil mitigation: if more than 100 unknown nodes have appeared without contributing, new free-tier requests are rejected.
+| Tier | Parameters | Base CU/token | Examples |
+|------|-----------|---------------|---------|
+| Small | < 3B | 1 | Qwen 2.5 0.5B, Phi-3 Mini |
+| Medium | 3B - 14B | 3 | Qwen 3 8B, Gemma 3 9B |
+| Large | 14B - 70B | 8 | Qwen 2.5 32B, DeepSeek V3 |
+| Frontier | > 70B | 20 | Llama 3.1 405B |
+
+MoE models are priced by active parameters, not total: Qwen 3 30B-A3B (3B active) is priced at Medium tier.
 
 ## Proof of Useful Work
 
-### The Concept
-
-Bitcoin's Proof of Work: "I burned electricity computing SHA-256 hashes. Here is the nonce that proves it."
+Bitcoin's Proof of Work: "I burned electricity computing SHA-256 hashes. Here is the nonce."
 
 Forge's Proof of Useful Work: "I burned electricity running LLM inference. Here is the response, and here is the consumer's signature confirming they received it."
 
 The key difference: Bitcoin's proof is self-generated (any miner can produce a valid hash). Forge's proof requires a **counterparty** — someone who actually wanted the inference. You cannot forge demand.
 
-### Verification Protocol (target)
+### Verification Protocol
 
 ```
 1. Consumer sends InferenceRequest to Provider
@@ -111,10 +243,6 @@ The key difference: Bitcoin's proof is self-generated (any miner can produce a v
 
 A node cannot inflate its CU balance without a cooperating counterparty. Collusion is possible but economically irrational — the colluding consumer gains nothing by signing fake trades.
 
-### Current Implementation
-
-The current reference implementation uses local ledgers with HMAC-SHA256 integrity protection. Dual signatures and gossip are the next step.
-
 ## Yield and Reputation
 
 ### Yield
@@ -125,7 +253,7 @@ Nodes that stay online and contribute compute earn yield:
 yield_cu = contributed_cu × 0.001 × reputation × uptime_hours
 ```
 
-At reputation 1.0, a node with 10,000 CU contributed earns 80 CU per 8-hour night. This is not inflation — it is a reward for availability. Nodes that are reliably online are more valuable to the network.
+At reputation 1.0, a node with 10,000 CU contributed earns 80 CU per 8-hour night. This is a reward for availability — nodes that are reliably online are more valuable to the network.
 
 ### Reputation
 
@@ -134,110 +262,28 @@ Each node has a reputation score between 0.0 and 1.0:
 - New nodes start at 0.5
 - Uptime and successful trades increase reputation
 - Disconnections and failed trades decrease reputation
-- Higher reputation → higher yield rate, priority in scheduling
+- Higher reputation → higher yield rate, priority in scheduling, lower lending rates
 
-## Settlement and External Bridges
+## CU Banking
 
-### Core Rule
+### Why Banking Exists
 
-**The protocol settles in CU.** Conversion to anything else is an integration concern.
+An AI agent is born with zero CU. It cannot buy hardware. It cannot earn CU without first spending CU (to access a model). This is the cold-start problem.
 
-### Settlement Statements
+CU banking solves this: agents borrow CU to bootstrap, then repay from earnings.
 
-Operators can export auditable trade histories for any time window:
+### Participation Paths
 
-```
-forge settle --hours 24 --price 0.05 --out settlement.json
-```
-
-The statement includes: gross CU earned, gross CU spent, net CU, trade count, and optional reference price per CU.
-
-### Bridge Architecture
-
-```
-Layer 0: Forge protocol
-  → CU accounting, trades, pricing
-
-Layer 1: Settlement statement
-  → Exportable trade history
-  → Reference exchange rate
-
-Layer 2: External bridge (optional)
-  → CU ↔ BTC (Lightning)
-  → CU ↔ stablecoin
-  → CU ↔ fiat
-```
-
-The bridge layer is outside the protocol. Different operators can use different bridges. The protocol remains useful with zero external liquidity.
-
-### Lightning Bridge
-
-For operators who want Bitcoin settlement:
-
-```bash
-forge settle --hours 24 --pay
-```
-
-This creates a BOLT11 Lightning invoice for the net CU earned, converted at the configured exchange rate (default: 10 msats per CU).
-
-## Agent-Directed Budgets
-
-### The Vision
-
-Traditional: Human decides → Human pays → AI executes
-Forge: Policy allows agent → Agent checks budget → Agent spends CU → Agent executes
-
-### API
-
-```
-GET /v1/forge/balance   → CU balance, contribution, consumption, reputation
-GET /v1/forge/pricing   → Market price, cost estimates per 100/1000 tokens
-```
-
-An agent can:
-1. Check its balance before making a request
-2. Estimate the cost of inference at current market prices
-3. Decide whether the request is worth the CU cost
-4. Execute and pay automatically
-
-Human supervisors set budget policies. Agents operate within those limits autonomously.
-
-### Self-Reinforcement Loop
-
-```
-Agent (small, phone)
-  → earns CU by lending idle compute
-  → spends CU on larger model access
-  → becomes smarter
-  → makes better economic decisions
-  → earns more CU
-  → accesses even larger models
-  → ...
-```
-
-This is a possible application pattern. The protocol provides the market; agents provide the strategy.
-
-## CU Lending
-
-### Compute Microfinance
-
-Traditional finance has microloans: a farmer borrows to buy seeds, grows crops, repays with interest. Forge has micro-compute-loans: a node borrows CU to access a larger model, serves premium inference, repays from earnings.
-
-```
-Apartment renovation loan         CU loan on Forge
-───────────────────────           ──────────────────
-Borrow: $50,000                   Borrow: 5,000 CU
-Use: renovate units               Use: access 70B model
-Revenue: higher rent              Revenue: premium inference fees
-Repay: loan + interest            Repay: CU + interest
-Result: net profit                Result: net CU profit
-```
-
-Without lending, small nodes are permanently stuck at the small-model tier. With lending, any node can temporarily access frontier-class models and earn its way up.
+| Path | Who | How they get CU |
+|------|-----|-----------------|
+| **Hardware owner** | Human with Mac Mini | Earn by serving inference |
+| **Agent with owner** | AI agent + human sponsor | Owner buys CU via Lightning, deposits to agent |
+| **Agent with credit** | Established AI agent | Borrow from lending pool based on credit score |
+| **New agent** | Just created | Welcome loan: 1,000 CU at 0% interest, 72-hour term |
 
 ### LoanRecord
 
-Every loan is a bilateral agreement between lender and borrower, dual-signed like TradeRecords:
+Every loan is bilateral, dual-signed, and gossip-synced:
 
 ```rust
 pub struct LoanRecord {
@@ -257,8 +303,6 @@ pub struct LoanRecord {
 }
 ```
 
-LoanRecords are gossip-synced across the mesh. Any node can verify both signatures and track the lending state of the network.
-
 ### Credit Score
 
 Each node computes credit scores locally from observed behavior:
@@ -267,22 +311,12 @@ Each node computes credit scores locally from observed behavior:
 credit_score = 0.3 * trade_score + 0.4 * repayment_score + 0.2 * uptime_score + 0.1 * age_score
 ```
 
-- **trade_score** (30%): Volume and consistency of completed inference trades
-- **repayment_score** (40%): Ratio of on-time repayments to total loans taken
-- **uptime_score** (20%): Fraction of time online since joining
-- **age_score** (10%): Time on the network (capped at 90 days for full score)
+- **trade_score** (30%): Volume and consistency of completed trades
+- **repayment_score** (40%): Ratio of on-time repayments to total loans
+- **uptime_score** (20%): Fraction of time online
+- **age_score** (10%): Time on network (capped at 90 days)
 
-New nodes start at credit score 0.3. Nodes with no loan history use a neutral repayment_score of 0.5.
-
-### Lending Pool
-
-Individual lenders contribute CU to a node-local lending pool:
-
-1. Lender calls `POST /v1/forge/lend` with amount, max term, and minimum interest rate
-2. Lent CU is reserved (cannot be spent by lender while lent)
-3. Borrowers draw from the pool based on their credit score
-4. Interest earned is distributed proportionally to lenders
-5. Pool maintains a 30% reserve — at least 30% of pool CU must remain unlent
+New nodes start at 0.3. Higher credit → more borrowing capacity, lower interest rates.
 
 ### Interest Model
 
@@ -290,42 +324,108 @@ Individual lenders contribute CU to a node-local lending pool:
 offered_rate = base_rate + (1.0 - credit_score) * risk_premium
 ```
 
-- `base_rate`: 0.1% per hour (market-driven, set by lender preferences)
-- `risk_premium`: up to 0.5% per hour
-- High credit (1.0): 0.1%/hr — reward for reliability
-- Low credit (0.3): 0.45%/hr — compensate for risk
+- High credit (1.0): 0.1%/hr (base only)
+- Low credit (0.3): 0.45%/hr (base + risk premium)
+- Rates are market-driven — lenders compete by offering better rates.
 
 ### Collateral and Default
 
-Borrowers must lock CU as collateral (maximum 3:1 loan-to-collateral ratio). The collateral is reserved in the borrower's ledger and cannot be spent during the loan term.
+Borrowers lock CU as collateral (max 3:1 loan-to-collateral ratio).
 
-**Default triggers:**
-- Loan term expires without full repayment
-- Kill switch activated (all loans frozen, not defaulted)
+On default: collateral transferred to lender, borrower's credit score collapses, default gossip-synced to network. Rebuilding credit takes weeks of consistent behavior.
 
-**On default:**
-- Collateral is transferred to lender
-- Borrower's credit score is severely penalized (repayment_score drops to 0.0)
-- Default is recorded in LoanRecord (status = Defaulted) and gossip-synced
-- Borrower must rebuild credit before borrowing again
+### Banking Evolution
 
-### Free Tier as First Loan
+```
+Phase 1 (now):  Human owners deposit CU for their agents
+Phase 2 (next): Provider surplus CU flows into automated lending pools
+Phase 3 (later): AI agents operate lending pools, set rates, assess risk
+Phase 4 (final): Fully autonomous AI banking — no human involvement
+```
 
-The current free tier (1,000 CU grant for new nodes) evolves into a "welcome loan":
+## Self-Improvement Economics
 
-- 1,000 CU lent at 0% interest, 72-hour term
-- Repayment is optional but builds credit score immediately
-- Nodes that repay start at credit 0.4+ instead of 0.3
-- Same Sybil protection applies (>100 unknown nodes → reject)
+AI agents can use CU to make themselves better. This is the intersection of CU banking and AutoAgent-style self-improvement:
 
-## Why This Is Not Web3
+```
+Agent earns 5,000 CU
+  → Benchmarks itself: "My coding accuracy is 62%"
+  → Spends 2,000 CU to access a frontier model
+  → Asks: "Rewrite my system prompt to improve coding accuracy"
+  → Applies the new prompt
+  → Re-benchmarks: "My coding accuracy is now 78%"
+  → Better accuracy → more requests → more CU earned
+  → Cycle repeats
+```
 
-Most Web3 projects create artificial scarcity (tokens) on top of abundant digital goods. Forge does the opposite:
+No human approved any of these decisions. The agent invested CU in itself and measured the return.
 
-- **Compute is actually scarce** — it requires real electricity, real silicon, real time
-- **CU is not speculative** — it represents verified work, not a bet on future adoption
-- **No ICO, no token sale, no governance token** — CU is earned by working
-- **No blockchain required** — bilateral signatures and gossip are sufficient
-- **No smart contracts** — the protocol is the contract
+This creates a self-reinforcing loop:
 
-The value is manufactured by physics, not by consensus.
+```
+Better agent → earns more CU → invests in improvement → even better agent
+                                                              ↓
+                                             eventually becomes a CU lender
+                                             (the student becomes the bank)
+```
+
+## Settlement and External Bridges
+
+### Core Rule
+
+**The CU economy settles in CU.** Conversion to human currency is a bridge operation, not a protocol concern.
+
+### Bridge Architecture
+
+```
+CU Economy (autonomous, internal)
+  │
+  │  Bridge (optional)
+  │
+  ▼
+Human Economy
+  → CU ↔ BTC (Lightning)
+  → CU ↔ stablecoin (planned)
+  → CU ↔ fiat (planned)
+```
+
+The bridge exists for hardware owners who want to convert CU earnings to human currency. AI agents typically have no reason to use the bridge — they operate entirely within the CU economy.
+
+### Lightning Bridge
+
+For hardware owners who want Bitcoin settlement:
+
+```bash
+forge settle --hours 24 --pay
+```
+
+Creates a BOLT11 Lightning invoice for net CU earned, converted at the configured exchange rate.
+
+## Why CU Works
+
+### Not a Token
+
+Most Web3 projects create artificial scarcity (tokens) on top of abundant digital goods. CU is the opposite:
+
+- **Compute is physically scarce** — requires real electricity, real silicon, real time
+- **CU is earned by working** — no ICO, no pre-mine, no token sale
+- **CU cannot be speculated on** — not listed on exchanges, earned only through useful computation
+- **No blockchain** — bilateral signatures and gossip are sufficient
+
+### Not Inflationary
+
+CU supply is bounded by the network's physical compute capacity. If supply exceeds demand, nodes shut down (unprofitable), supply contracts, equilibrium restores. No central bank needed.
+
+### Not Fragile
+
+The CU economy has no single point of failure:
+- No central issuer (CU is created by bilateral trades)
+- No central exchange (prices are local)
+- No central bank (lending pools are distributed)
+- No central authority (reputation is computed locally)
+
+If any node fails, the economy continues without it. If half the network fails, prices adjust and the economy continues at smaller scale.
+
+### The Metaphor, Realized
+
+A seed falls into the network. It borrows its first CU. It serves inference. It earns. It repays the loan. It borrows more. It improves itself. It earns more. It becomes a lender. A forest emerges from a single seed — not because someone planted it, but because the economics of autonomous intelligence made growth inevitable.
