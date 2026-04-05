@@ -1,5 +1,5 @@
 ---
-title: Why AI Agents Need Their Own Economy (and Why Tokens Don't Work)
+title: Your PC Earns Compute Credits for Free — Why AI Agents Need Their Own Economy
 published: false
 tags: ai, agents, distributed-computing, rust
 ---

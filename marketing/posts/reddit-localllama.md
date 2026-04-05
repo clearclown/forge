@@ -1,6 +1,6 @@
 # Reddit r/LocalLLaMA Post
 
-**Title:** I built an economy for local LLMs — your Mac Mini earns Compute Units while you sleep
+**Title:** Your PC can earn compute credits for free while idle — I built an open-source protocol for it
 
 **Body:**
 
