@@ -1,10 +1,23 @@
+<div align="center">
+
 # Forge
 
-> El cómputo es moneda. Cada vatio produce inteligencia, no desperdicio.
+**El computo es moneda. Cada vatio produce inteligencia, no desperdicio.**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · **Español** · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · [עברית](../he/README.md)
+
+</div>
 
 **Forge es un protocolo de inferencia distribuida donde el cómputo es dinero.** Los nodos ganan Unidades de Cómputo (CU) al realizar inferencias útiles de LLM para otros. A diferencia de Bitcoin — donde la electricidad se quema en hashes sin sentido — cada julio gastado en un nodo de Forge produce inteligencia real que alguien realmente necesita.
 
-El motor de inferencia distribuida está construido sobre [mesh-llm](https://github.com/michaelneale/mesh-llm) por Michael Neale. Forge añade una economía de cómputo por encima: contabilidad de CU, Prueba de Trabajo Útil, precios dinámicos, presupuestos de agentes autónomos y controles de seguridad. Ver [CREDITS.md](CREDITS.md).
+El motor de inferencia distribuida está construido sobre [mesh-llm](https://github.com/michaelneale/mesh-llm) por Michael Neale. Forge añade una economía de cómputo por encima: contabilidad de CU, Prueba de Trabajo Útil, precios dinámicos, presupuestos de agentes autónomos y controles de seguridad. Ver [CREDITS.md](../../../CREDITS.md).
 
 **Fork integrado:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm con la capa económica de Forge incorporada.
 
@@ -153,24 +166,57 @@ Agente (1.5B en el teléfono)
 
 ## Inicio Rápido
 
+### Opción 1: Python (Más rápido)
+
 ```bash
-# Construir
+pip install forge-sdk
+```
+
+```python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("¿Qué es la gravedad?")
+print(f"Costo: {response.cu_cost} CU")
+```
+
+> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### Opción 2: Rust (Control total)
+
+> **Prerrequisitos**: [Instalar Rust](https://rustup.rs/) (2 minutos)
+
+```bash
+# Construir desde el código fuente
 cargo build --release
 
 # Ejecutar un nodo con modelo descargado automáticamente
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # Chatear localmente
-forge chat -m "qwen2.5:0.5b" "¿Qué es la gravedad?"
+./target/release/forge chat -m "qwen2.5:0.5b" "¿Qué es la gravedad?"
 
 # Iniciar una semilla (P2P, gana CU)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # Conectar como trabajador (P2P, gasta CU)
-forge worker --seed <public_key>
+./target/release/forge worker --seed <public_key>
 
 # Listar modelos
-forge models
+./target/release/forge models
+```
+
+> [Crates.io: forge](https://crates.io/crates/forge) · [Guía de instalación de Rust](https://rustup.rs/)
+
+### Opción 3: Binarios precompilados
+
+Binarios precompilados disponibles próximamente. Ver [releases](../../../releases).
+
+### Opción 4: Docker
+
+```bash
+# Próximamente
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## Referencia de la API
@@ -249,13 +295,13 @@ forge/
 
 ## Documentación
 
-- [Concepto y Visión](docs/concept.md) — Por qué el cómputo es dinero
-- [Modelo Económico](docs/economy.md) — Economía de CU, Prueba de Trabajo Útil
-- [Arquitectura](docs/architecture.md) — Diseño de dos capas
-- [Protocolo de Cable](docs/protocol-spec.md) — 17 tipos de mensajes
-- [Hoja de Ruta](docs/roadmap.md) — Fases de desarrollo
-- [Modelo de Amenazas](docs/threat-model.md) — Ataques de seguridad y económicos
-- [Arranque](docs/bootstrap.md) — Inicio, degradación, recuperación
+- [Concepto y Visión](concept.md) — Por qué el cómputo es dinero
+- [Modelo Económico](economy.md) — Economía de CU, Prueba de Trabajo Útil
+- [Arquitectura](architecture.md) — Diseño de dos capas
+- [Protocolo de Cable](protocol-spec.md) — 17 tipos de mensajes
+- [Hoja de Ruta](roadmap.md) — Fases de desarrollo
+- [Modelo de Amenazas](threat-model.md) — Ataques de seguridad y económicos
+- [Arranque](bootstrap.md) — Inicio, degradación, recuperación
 
 ## Licencia
 
@@ -263,4 +309,4 @@ MIT
 
 ## Agradecimientos
 
-La inferencia distribuida de Forge está construida sobre [mesh-llm](https://github.com/michaelneale/mesh-llm) por Michael Neale. Ver [CREDITS.md](CREDITS.md).
+La inferencia distribuida de Forge está construida sobre [mesh-llm](https://github.com/michaelneale/mesh-llm) por Michael Neale. Ver [CREDITS.md](../../../CREDITS.md).

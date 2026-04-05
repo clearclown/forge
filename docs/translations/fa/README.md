@@ -1,10 +1,23 @@
-# Forge (فورج)
+<div align="center">
 
-> محاسبات همان پول است. هر وات به جای اتلاف، هوش تولید می‌کند.
+# Forge
+
+**محاسبات همان پول است. هر وات به جای اتلاف، هوش تولید می‌کند.**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · **فارسی** · [עברית](../he/README.md)
+
+</div>
 
 **Forge یک پروتکل استنتاج توزیع‌شده است که در آن محاسبات حکم پول را دارد.** نودها (Nodes) با انجام استنتاج‌های مفید LLM برای دیگران، واحدهای محاسباتی (CU) کسب می‌کنند. برخلاف بیت‌کوین — که در آن برق برای هش‌های بی‌معنی سوزانده می‌شود — هر ژول انرژی مصرف شده در یک نود Forge، هوش واقعی تولید می‌کند که واقعاً مورد نیاز کسی است.
 
-موتور استنتاج توزیع‌شده بر پایه [mesh-llm](https://github.com/michaelneale/mesh-llm) اثر مایکل نیل (Michael Neale) ساخته شده است. Forge یک اقتصاد محاسباتی را به آن اضافه می‌کند: حسابداری CU، اثبات کار مفید (Proof of Useful Work)، قیمت‌گذاری پویا، بودجه‌بندی عوامل خودکار و کنترل‌های ایمنی. به [CREDITS.md](CREDITS.md) مراجعه کنید.
+موتور استنتاج توزیع‌شده بر پایه [mesh-llm](https://github.com/michaelneale/mesh-llm) اثر مایکل نیل (Michael Neale) ساخته شده است. Forge یک اقتصاد محاسباتی را به آن اضافه می‌کند: حسابداری CU، اثبات کار مفید (Proof of Useful Work)، قیمت‌گذاری پویا، بودجه‌بندی عوامل خودکار و کنترل‌های ایمنی. به [CREDITS.md](../../../CREDITS.md) مراجعه کنید.
 
 **فورک یکپارچه:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — همان mesh-llm با لایه اقتصادی Forge که به صورت داخلی ساخته شده است.
 
@@ -151,24 +164,57 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 ## شروع سریع (Quick Start)
 
+### گزینه ۱: Python (سریع‌ترین)
+
 ```bash
-# ساخت (Build)
+pip install forge-sdk
+```
+
+```python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("گرانش چیست؟")
+print(f"هزینه: {response.cu_cost} CU")
+```
+
+> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### گزینه ۲: Rust (کنترل کامل)
+
+> **پیش‌نیاز**: [نصب Rust](https://rustup.rs/) (حدود ۲ دقیقه)
+
+```bash
+# ساخت از سورس
 cargo build --release
 
 # اجرای یک نود با مدل دانلود شده خودکار
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # چت محلی
-forge chat -m "qwen2.5:0.5b" "What is gravity?"
+./target/release/forge chat -m "qwen2.5:0.5b" "گرانش چیست؟"
 
 # شروع یک Seed (در شبکه P2P، کسب CU)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # اتصال به عنوان Worker (در شبکه P2P، خرج CU)
-forge worker --seed <public_key>
+./target/release/forge worker --seed <public_key>
 
 # لیست مدل‌ها
-forge models
+./target/release/forge models
+```
+
+> [Crates.io: forge](https://crates.io/crates/forge) · [راهنمای نصب Rust](https://rustup.rs/)
+
+### گزینه ۳: فایل‌های باینری از پیش ساخته شده
+
+فایل‌های باینری از پیش ساخته شده به زودی در دسترس خواهند بود. [صفحه انتشار](../../../releases) را بررسی کنید.
+
+### گزینه ۴: Docker
+
+```bash
+# به زودی
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## مرجع API
@@ -247,13 +293,13 @@ forge/
 
 ## مستندات (Docs)
 
-- [مفهوم و چشم‌انداز](docs/concept.md) — چرا محاسبات همان پول است
-- [مدل اقتصادی](docs/economy.md) — اقتصاد CU، اثبات کار مفید
-- [معماری](docs/architecture.md) — طراحی دو لایه
-- [پروتکل ارتباطی](docs/protocol-spec.md) — ۱۷ نوع پیام
-- [نقشه راه](docs/roadmap.md) — مراحل توسعه
-- [مدل تهدید](docs/threat-model.md) — حملات امنیتی و اقتصادی
-- [راه‌اندازی (Bootstrap)](docs/bootstrap.md) — راه‌اندازی اولیه، کاهش عملکرد، بازیابی
+- [مفهوم و چشم‌انداز](concept.md) — چرا محاسبات همان پول است
+- [مدل اقتصادی](economy.md) — اقتصاد CU، اثبات کار مفید
+- [معماری](architecture.md) — طراحی دو لایه
+- [پروتکل ارتباطی](protocol-spec.md) — ۱۷ نوع پیام
+- [نقشه راه](roadmap.md) — مراحل توسعه
+- [مدل تهدید](threat-model.md) — حملات امنیتی و اقتصادی
+- [راه‌اندازی (Bootstrap)](bootstrap.md) — راه‌اندازی اولیه، کاهش عملکرد، بازیابی
 
 ## مجوز (License)
 
@@ -261,4 +307,4 @@ MIT
 
 ## سپاسگزاری (Acknowledgements)
 
-استنتاج توزیع‌شده Forge بر پایه [mesh-llm](https://github.com/michaelneale/mesh-llm) اثر مایکل نیل ساخته شده است. به [CREDITS.md](CREDITS.md) مراجعه کنید.
+استنتاج توزیع‌شده Forge بر پایه [mesh-llm](https://github.com/michaelneale/mesh-llm) اثر مایکل نیل ساخته شده است. به [CREDITS.md](../../../CREDITS.md) مراجعه کنید.

@@ -1,10 +1,23 @@
+<div align="center">
+
 # Forge
 
-> 計算即貨幣。每一瓦特都在產生智能，而非浪費。
+**計算即貨幣。每一瓦特都在產生智能，而非浪費。**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · **繁體中文** · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · [עברית](../he/README.md)
+
+</div>
 
 **Forge 是一種分散式推理協定，其中計算即金錢。** 節點透過為他人執行有用的 LLM 推理來賺取計算單位 (CU)。與比特幣不同——在比特幣中，電力被浪費在毫無意義的雜湊計算上——在 Forge 節點上花費的每一焦耳都會產生某人真正需要的真實智能。
 
-分散式推理引擎基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 建構。Forge 在其上添加了計算經濟層：CU 核算、有用工作證明 (Proof of Useful Work)、動態定價、自主代理預算和故障安全控制。參見 [CREDITS.md](CREDITS.md)。
+分散式推理引擎基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 建構。Forge 在其上添加了計算經濟層：CU 核算、有用工作證明 (Proof of Useful Work)、動態定價、自主代理預算和故障安全控制。參見 [CREDITS.md](../../../CREDITS.md)。
 
 **集成分叉：** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — 內建 Forge 經濟層的 mesh-llm。
 
@@ -151,24 +164,57 @@ Forge: 電力 → 有用的 LLM 推理 → CU
 
 ## 快速入門
 
+### 方式一：Python（最快）
+
 ```bash
-# 建構
+pip install forge-sdk
+```
+
+```python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("什麼是重力？")
+print(f"成本: {response.cu_cost} CU")
+```
+
+> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### 方式二：Rust（完全控制）
+
+> **前置條件**：[安裝 Rust](https://rustup.rs/)（約 2 分鐘）
+
+```bash
+# 從原始碼建置
 cargo build --release
 
-# 使用自動下載的模型運行節點
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# 使用自動下載的模型執行節點
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # 本地聊天
-forge chat -m "qwen2.5:0.5b" "什麼是重力？"
+./target/release/forge chat -m "qwen2.5:0.5b" "什麼是重力？"
 
 # 開始播種 (P2P，賺取 CU)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
-# 作為工人連接 (P2P，支出 CU)
-forge worker --seed <public_key>
+# 作為工作者連接 (P2P，支出 CU)
+./target/release/forge worker --seed <public_key>
 
 # 列出模型
-forge models
+./target/release/forge models
+```
+
+> [Crates.io: forge](https://crates.io/crates/forge) · [Rust 安裝指南](https://rustup.rs/)
+
+### 方式三：預編譯二進位檔
+
+預編譯二進位檔即將推出。請關注[發布頁面](../../../releases)。
+
+### 方式四：Docker
+
+```bash
+# 即將推出
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## API 參考
@@ -247,13 +293,13 @@ forge/
 
 ## 文檔
 
-- [概念與願景](docs/concept.md) — 為什麼計算即金錢
-- [經濟模型](docs/economy.md) — CU 經濟、有用工作證明
-- [架構設計](docs/architecture.md) — 雙層設計
-- [線纜協定](docs/protocol-spec.md) — 17 種消息類型
-- [路線圖](docs/roadmap.md) — 開發階段
-- [威脅模型](docs/threat-model.md) — 安全 + 經濟攻擊
-- [引導啟動](docs/bootstrap.md) — 啟動、降級、恢復
+- [概念與願景](concept.md) — 為什麼計算即金錢
+- [經濟模型](economy.md) — CU 經濟、有用工作證明
+- [架構設計](architecture.md) — 雙層設計
+- [線纜協定](protocol-spec.md) — 17 種消息類型
+- [路線圖](roadmap.md) — 開發階段
+- [威脅模型](threat-model.md) — 安全 + 經濟攻擊
+- [引導啟動](bootstrap.md) — 啟動、降級、恢復
 
 ## 許可證
 
@@ -261,4 +307,4 @@ MIT
 
 ## 致謝
 
-Forge 的分散式推理基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 建構。參見 [CREDITS.md](CREDITS.md)。
+Forge 的分散式推理基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 建構。參見 [CREDITS.md](../../../CREDITS.md)。

@@ -1,10 +1,23 @@
-# Forge (פורג')
+<div align="center">
 
-> חישוב הוא מטבע. כל וואט מייצר בינה, לא פסולת.
+# Forge
+
+**חישוב הוא מטבע. כל וואט מייצר בינה, לא פסולת.**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · **עברית**
+
+</div>
 
 **Forge הוא פרוטוקול אינפרנס (Inference) מבוזר שבו כוח חישוב הוא כסף.** צמתים (Nodes) מרוויחים יחידות חישוב (CU) על ידי ביצוע אינפרנס LLM מועיל עבור אחרים. בשונה מביטקוין — שבו חשמל נשרף על חישובי האש (Hashes) חסרי משמעות — כל ג'אול שמושקע בצומת Forge מייצר בינה אמיתית שמישהו באמת צריך.
 
-מנוע האינפרנס המבוזר בנוי על [mesh-llm](https://github.com/michaelneale/mesh-llm) של מייקל ניל (Michael Neale). Forge מוסיף כלכלת חישוב מעל: חשבונאות CU, הוכחת עבודה מועילה (Proof of Useful Work), תמחור דינמי, תקציבי סוכנים אוטונומיים ובקרות בטיחות. ראו [CREDITS.md](CREDITS.md).
+מנוע האינפרנס המבוזר בנוי על [mesh-llm](https://github.com/michaelneale/mesh-llm) של מייקל ניל (Michael Neale). Forge מוסיף כלכלת חישוב מעל: חשבונאות CU, הוכחת עבודה מועילה (Proof of Useful Work), תמחור דינמי, תקציבי סוכנים אוטונומיים ובקרות בטיחות. ראו [CREDITS.md](../../../CREDITS.md).
 
 **פורק (Fork) משולב:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm עם שכבה כלכלית של Forge מובנית בתוכו.
 
@@ -151,24 +164,57 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 ## התחלה מהירה (Quick Start)
 
+### אפשרות 1: Python (הכי מהיר)
+
 ```bash
-# בנייה
+pip install forge-sdk
+```
+
+```python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("מה זה כוח הכבידה?")
+print(f"עלות: {response.cu_cost} CU")
+```
+
+> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### אפשרות 2: Rust (שליטה מלאה)
+
+> **דרישות מוקדמות**: [התקנת Rust](https://rustup.rs/) (כ-2 דקות)
+
+```bash
+# בנייה מקוד מקור
 cargo build --release
 
 # הרצת צומת עם מודל שמורד אוטומטית
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # צ'אט מקומי
-forge chat -m "qwen2.5:0.5b" "What is gravity?"
+./target/release/forge chat -m "qwen2.5:0.5b" "מה זה כוח הכבידה?"
 
 # התחלת Seed (רשת P2P, מרוויח CU)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # התחברות כעובד (Worker) (רשת P2P, מוציא CU)
-forge worker --seed <public_key>
+./target/release/forge worker --seed <public_key>
 
 # רשימת מודלים
-forge models
+./target/release/forge models
+```
+
+> [Crates.io: forge](https://crates.io/crates/forge) · [מדריך התקנת Rust](https://rustup.rs/)
+
+### אפשרות 3: קבצים בינאריים מוכנים מראש
+
+קבצים בינאריים מוכנים מראש יהיו זמינים בקרוב. בדקו את [דף השחרורים](../../../releases).
+
+### אפשרות 4: Docker
+
+```bash
+# בקרוב
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## רפרנס API
@@ -247,13 +293,13 @@ forge/
 
 ## תיעוד (Docs)
 
-- [קונספט וחזון](docs/concept.md) — למה חישוב הוא כסף
-- [מודל כלכלי](docs/economy.md) — כלכלת CU, הוכחת עבודה מועילה
-- [ארכיטקטורה](docs/architecture.md) — עיצוב דו-שכבתי
-- [פרוטוקול תקשורת](docs/protocol-spec.md) — 17 סוגי הודעות
-- [מפת דרכים](docs/roadmap.md) — שלבי פיתוח
-- [מודל איומים](docs/threat-model.md) — מתקפות אבטחה וכלכליות
-- [Bootstrap](docs/bootstrap.md) — הפעלה, הידרדרות, התאוששות
+- [קונספט וחזון](concept.md) — למה חישוב הוא כסף
+- [מודל כלכלי](economy.md) — כלכלת CU, הוכחת עבודה מועילה
+- [ארכיטקטורה](architecture.md) — עיצוב דו-שכבתי
+- [פרוטוקול תקשורת](protocol-spec.md) — 17 סוגי הודעות
+- [מפת דרכים](roadmap.md) — שלבי פיתוח
+- [מודל איומים](threat-model.md) — מתקפות אבטחה וכלכליות
+- [Bootstrap](bootstrap.md) — הפעלה, הידרדרות, התאוששות
 
 ## רישיון (License)
 
@@ -261,4 +307,4 @@ MIT
 
 ## תודות (Acknowledgements)
 
-האינפרנס המבוזר של Forge בנוי על [mesh-llm](https://github.com/michaelneale/mesh-llm) של מייקל ניל. ראו [CREDITS.md](CREDITS.md).
+האינפרנס המבוזר של Forge בנוי על [mesh-llm](https://github.com/michaelneale/mesh-llm) של מייקל ניל. ראו [CREDITS.md](../../../CREDITS.md).

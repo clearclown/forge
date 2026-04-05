@@ -1,8 +1,19 @@
+<div align="center">
+
 # Forge
 
-**[日本語](docs/translations/ja/README.md) | [中文](docs/translations/zh-CN/README.md) | [繁體中文](docs/translations/zh-TW/README.md) | [Español](docs/translations/es/README.md) | [Français](docs/translations/fr/README.md) | [Русский](docs/translations/ru/README.md) | [हिन्दी](docs/translations/hi/README.md) | [العربية](docs/translations/ar/README.md) | [فارسی](docs/translations/fa/README.md) | [עברית](docs/translations/he/README.md) | [Українська](docs/translations/uk/README.md)**
+**Computation is currency. Every watt produces intelligence, not waste.**
 
-> Computation is currency. Every watt produces intelligence, not waste.
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
+
+---
+
+**English** · [日本語](docs/translations/ja/README.md) · [简体中文](docs/translations/zh-CN/README.md) · [繁體中文](docs/translations/zh-TW/README.md) · [Español](docs/translations/es/README.md) · [Français](docs/translations/fr/README.md) · [Русский](docs/translations/ru/README.md) · [Українська](docs/translations/uk/README.md) · [हिन्दी](docs/translations/hi/README.md) · [العربية](docs/translations/ar/README.md) · [فارسی](docs/translations/fa/README.md) · [עברית](docs/translations/he/README.md)
+
+</div>
 
 **Forge is a distributed inference protocol where compute is money.** Nodes earn Compute Units (CU) by performing useful LLM inference for others. Unlike Bitcoin — where electricity is burned on meaningless hashes — every joule spent on a Forge node produces real intelligence that someone actually needs.
 

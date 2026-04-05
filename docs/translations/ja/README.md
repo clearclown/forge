@@ -1,10 +1,23 @@
+<div align="center">
+
 # Forge
 
-> 計算は通貨である。すべてのワットは廃棄物ではなく知能を生み出す。
+**計算は通貨である。すべてのワットは廃棄物ではなく知能を生み出す。**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · **日本語** · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · [עברית](../he/README.md)
+
+</div>
 
 **Forgeは、計算能力がお金となる分散型推論プロトコルです。** ノードは他者のために有用なLLM推論を実行することで、計算ユニット（CU: Compute Unit）を獲得します。無意味なハッシュ計算に電力を消費するBitcoinとは異なり、Forgeノードで費やされるすべてのジュールは、誰かが実際に必要としている本物の知能を生み出します。
 
-分散型推論エンジンは、Michael Neale氏による [mesh-llm](https://github.com/michaelneale/mesh-llm) に基づいて構築されています。Forgeはその上に、CU会計、有益な仕事の証明（Proof of Useful Work）、動的価格設定、自律エージェント予算、およびフェイルセーフ制御といった計算経済層を追加します。[CREDITS.md](CREDITS.md) を参照してください。
+分散型推論エンジンは、Michael Neale氏による [mesh-llm](https://github.com/michaelneale/mesh-llm) に基づいて構築されています。Forgeはその上に、CU会計、有益な仕事の証明（Proof of Useful Work）、動的価格設定、自律エージェント予算、およびフェイルセーフ制御といった計算経済層を追加します。[CREDITS.md](../../../CREDITS.md) を参照してください。
 
 **統合フォーク:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — Forge経済層が組み込まれたmesh-llm。
 
@@ -127,7 +140,7 @@ Bitcoinは「電力 → 計算 → お金」を証明しました。しかし、
 ```
 ┌─────────────────────────────────────────────────┐
 │  推論層 (Inference Layer: mesh-llm)             │
-│  パイプライン並列化、MoEエキスパートシャッディング、 │
+│  パイプライン並列化、MoEエキスパートシャーディング、│
 │  irohメッシュ、Nostrディスカバリ、OpenAI API       │
 └──────────────────┬──────────────────────────────┘
                    │
@@ -139,7 +152,7 @@ Bitcoinは「電力 → 計算 → お金」を証明しました。しかし、
                    │
 ┌──────────────────▼──────────────────────────────┐
 │  安全層 (Safety Layer)                          │
-│  キルスイッチ、予算ポリシー、サーキットブレーカー、 │
+│  キルスイッチ、予算ポリシー、サーキットブレーカー、│
 │  速度検出、人間による承認しきい値                 │
 └──────────────────┬──────────────────────────────┘
                    │ 任意
@@ -151,24 +164,57 @@ Bitcoinは「電力 → 計算 → お金」を証明しました。しかし、
 
 ## クイックスタート
 
+### 方法1: Python（最速）
+
 ```bash
-# ビルド
+pip install forge-sdk
+```
+
+```python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("重力とは何ですか？")
+print(f"コスト: {response.cu_cost} CU")
+```
+
+> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### 方法2: Rust（フルコントロール）
+
+> **前提条件**: [Rustをインストール](https://rustup.rs/)（約2分）
+
+```bash
+# ソースからビルド
 cargo build --release
 
 # 自動ダウンロードされたモデルでノードを実行
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # ローカルでチャット
-forge chat -m "qwen2.5:0.5b" "重力とは何ですか？"
+./target/release/forge chat -m "qwen2.5:0.5b" "重力とは何ですか？"
 
 # シードを開始 (P2P、CUを稼ぐ)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # ワーカーとして接続 (P2P、CUを支払う)
-forge worker --seed <public_key>
+./target/release/forge worker --seed <public_key>
 
 # モデル一覧を表示
-forge models
+./target/release/forge models
+```
+
+> [Crates.io: forge](https://crates.io/crates/forge) · [Rustインストールガイド](https://rustup.rs/)
+
+### 方法3: ビルド済みバイナリ
+
+ビルド済みバイナリは近日公開予定です。[リリースページ](../../../releases)をご覧ください。
+
+### 方法4: Docker
+
+```bash
+# 近日公開予定
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## APIリファレンス
@@ -247,13 +293,13 @@ Rustで約10,000行。76のテスト。2回のセキュリティ監査完了。
 
 ## ドキュメント
 
-- [コンセプトとビジョン](docs/concept.md) — なぜ計算がお金なのか
-- [経済モデル](docs/economy.md) — CU経済、有益な仕事の証明
-- [アーキテクチャ](docs/architecture.md) — 二層設計
-- [通信プロトコル](docs/protocol-spec.md) — 17種類のメッセージ
-- [ロードマップ](docs/roadmap.md) — 開発フェーズ
-- [脅威モデル](docs/threat-model.md) — セキュリティ + 経済的攻撃
-- [ブートストラップ](docs/bootstrap.md) — 起動、劣化、回復
+- [コンセプトとビジョン](concept.md) — なぜ計算がお金なのか
+- [経済モデル](economy.md) — CU経済、有益な仕事の証明
+- [アーキテクチャ](architecture.md) — 二層設計
+- [通信プロトコル](protocol-spec.md) — 17種類のメッセージ
+- [ロードマップ](roadmap.md) — 開発フェーズ
+- [脅威モデル](threat-model.md) — セキュリティ + 経済的攻撃
+- [ブートストラップ](bootstrap.md) — 起動、劣化、回復
 
 ## ライセンス
 
@@ -261,4 +307,4 @@ MIT
 
 ## 謝辞
 
-Forgeの分散型推論は、Michael Neale氏による [mesh-llm](https://github.com/michaelneale/mesh-llm) に基づいて構築されています。[CREDITS.md](CREDITS.md) を参照してください。
+Forgeの分散型推論は、Michael Neale氏による [mesh-llm](https://github.com/michaelneale/mesh-llm) に基づいて構築されています。[CREDITS.md](../../../CREDITS.md) を参照してください。

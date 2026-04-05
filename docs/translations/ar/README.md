@@ -1,10 +1,23 @@
-# Forge (فورج)
+<div align="center">
 
-> الحوسبة هي العملة. كل واط ينتج ذكاءً، وليس نفايات.
+# Forge
+
+**الحوسبة هي العملة. كل واط ينتج ذكاءً، وليس نفايات.**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · **العربية** · [فارسی](../fa/README.md) · [עברית](../he/README.md)
+
+</div>
 
 **Forge هو بروتوكول استدلال موزّع حيث تكون الحوسبة هي المال.** تكسب العقد (Nodes) وحدات حوسبة (CU) من خلال أداء استدلال LLM مفيد للآخرين. على عكس بيتكوين — حيث يتم حرق الكهرباء على هاشات بلا معنى — فإن كل جول يتم إنفاقه على عقدة Forge ينتج ذكاءً حقيقياً يحتاجه شخص ما بالفعل.
 
-محرك الاستدلال الموزع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) بواسطة مايكل نيل (Michael Neale). يضيف Forge اقتصاداً حوسبياً فوقه: محاسبة CU، إثبات العمل المفيد (Proof of Useful Work)، التسعير الديناميكي، ميزانيات الوكلاء المستقلين، وضوابط السلامة. انظر [CREDITS.md](CREDITS.md).
+محرك الاستدلال الموزع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) بواسطة مايكل نيل (Michael Neale). يضيف Forge اقتصاداً حوسبياً فوقه: محاسبة CU، إثبات العمل المفيد (Proof of Useful Work)، التسعير الديناميكي، ميزانيات الوكلاء المستقلين، وضوابط السلامة. انظر [CREDITS.md](../../../CREDITS.md).
 
 **نسخة مدمجة (Integrated fork):** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — وهو mesh-llm مع طبقة Forge الاقتصادية المدمجة.
 
@@ -151,24 +164,57 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 ## البداية السريعة (Quick Start)
 
+### الخيار 1: Python (الأسرع)
+
 ```bash
-# بناء (Build)
+pip install forge-sdk
+```
+
+```python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("ما هي الجاذبية؟")
+print(f"التكلفة: {response.cu_cost} CU")
+```
+
+> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### الخيار 2: Rust (تحكم كامل)
+
+> **المتطلبات المسبقة**: [تثبيت Rust](https://rustup.rs/) (حوالي دقيقتين)
+
+```bash
+# بناء من المصدر
 cargo build --release
 
 # تشغيل عقدة مع نموذج يتم تنزيله تلقائياً
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # دردشة محلية
-forge chat -m "qwen2.5:0.5b" "What is gravity?"
+./target/release/forge chat -m "qwen2.5:0.5b" "ما هي الجاذبية؟"
 
 # ابدأ بذرة (Seed) (P2P، تكسب CU)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # اتصل كعامل (Worker) (P2P، تنفق CU)
-forge worker --seed <public_key>
+./target/release/forge worker --seed <public_key>
 
 # عرض النماذج
-forge models
+./target/release/forge models
+```
+
+> [Crates.io: forge](https://crates.io/crates/forge) · [دليل تثبيت Rust](https://rustup.rs/)
+
+### الخيار 3: ملفات ثنائية مبنية مسبقاً
+
+الملفات الثنائية المبنية مسبقاً ستتوفر قريباً. تحقق من [صفحة الإصدارات](../../../releases).
+
+### الخيار 4: Docker
+
+```bash
+# قريباً
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## مرجع API
@@ -247,13 +293,13 @@ forge/
 
 ## المستندات (Docs)
 
-- [المفهوم والرؤية](docs/concept.md) — لماذا الحوسبة هي المال
-- [النموذج الاقتصادي](docs/economy.md) — اقتصاد CU، إثبات العمل المفيد
-- [الهندسة المعمارية](docs/architecture.md) — تصميم من طبقتين
-- [بروتوكول الأسلاك](docs/protocol-spec.md) — ١٧ نوعاً من الرسائل
-- [خارطة الطريق](docs/roadmap.md) — مراحل التطوير
-- [نموذج التهديد](docs/threat-model.md) — الهجمات الأمنية والاقتصادية
-- [التمهيد (Bootstrap)](docs/bootstrap.md) — بدء التشغيل، التدهور، التعافي
+- [المفهوم والرؤية](concept.md) — لماذا الحوسبة هي المال
+- [النموذج الاقتصادي](economy.md) — اقتصاد CU، إثبات العمل المفيد
+- [الهندسة المعمارية](architecture.md) — تصميم من طبقتين
+- [بروتوكول الأسلاك](protocol-spec.md) — ١٧ نوعاً من الرسائل
+- [خارطة الطريق](roadmap.md) — مراحل التطوير
+- [نموذج التهديد](threat-model.md) — الهجمات الأمنية والاقتصادية
+- [التمهيد (Bootstrap)](bootstrap.md) — بدء التشغيل، التدهور، التعافي
 
 ## الترخيص (License)
 
@@ -261,4 +307,4 @@ MIT
 
 ## شكر وتقدير (Acknowledgements)
 
-استدلال Forge الموزع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) بواسطة مايكل نيل. انظر [CREDITS.md](CREDITS.md).
+استدلال Forge الموزع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) بواسطة مايكل نيل. انظر [CREDITS.md](../../../CREDITS.md).

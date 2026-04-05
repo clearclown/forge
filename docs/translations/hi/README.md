@@ -1,10 +1,23 @@
-# Forge (फ़ोर्ज)
+<div align="center">
 
-> गणना (Computation) ही मुद्रा है। हर वाट बुद्धिमत्ता पैदा करता है, कचरा नहीं।
+# Forge
+
+**गणना ही मुद्रा है। हर वाट बुद्धिमत्ता पैदा करता है, कचरा नहीं।**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · **हिन्दी** · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · [עברית](../he/README.md)
+
+</div>
 
 **Forge एक वितरित इन्फरेंस प्रोटोकॉल (distributed inference protocol) है जहाँ कंप्यूट ही पैसा है।** नोड्स (Nodes) दूसरों के लिए उपयोगी LLM इन्फरेंस (inference) करके कंप्यूट यूनिट (Compute Units - CU) कमाते हैं। बिटकॉइन के विपरीत — जहाँ बिजली निरर्थक हैश (hashes) पर खर्च की जाती है — Forge नोड पर खर्च किया गया हर जूल (joule) वास्तविक बुद्धिमत्ता पैदा करता है जिसकी किसी को वास्तव में आवश्यकता होती है।
 
-वितरित इन्फरेंस इंजन [mesh-llm](https://github.com/michaelneale/mesh-llm) (Michael Neale द्वारा निर्मित) पर बनाया गया है। Forge इसके ऊपर एक कंप्यूट अर्थव्यवस्था जोड़ता है: CU अकाउंटिंग, उपयोगी कार्य का प्रमाण (Proof of Useful Work), गतिशील मूल्य निर्धारण, स्वायत्त एजेंट बजट और फेल-सेफ नियंत्रण। [CREDITS.md](CREDITS.md) देखें।
+वितरित इन्फरेंस इंजन [mesh-llm](https://github.com/michaelneale/mesh-llm) (Michael Neale द्वारा निर्मित) पर बनाया गया है। Forge इसके ऊपर एक कंप्यूट अर्थव्यवस्था जोड़ता है: CU अकाउंटिंग, उपयोगी कार्य का प्रमाण (Proof of Useful Work), गतिशील मूल्य निर्धारण, स्वायत्त एजेंट बजट और फेल-सेफ नियंत्रण। [CREDITS.md](../../../CREDITS.md) देखें।
 
 **एकीकृत फोर्क:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — Forge आर्थिक परत के साथ निर्मित mesh-llm।
 
@@ -149,26 +162,59 @@ Forge:    बिजली  →  उपयोगी LLM इन्फरेंस 
 └─────────────────────────────────────────────────┘
 ```
 
-## क्विक स्टार्ट (Quick Start)
+## त्वरित शुरुआत (Quick Start)
+
+### विकल्प 1: Python (सबसे तेज़)
 
 ```bash
-# बिल्ड करें
+pip install forge-sdk
+```
+
+```python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("गुरुत्वाकर्षण क्या है?")
+print(f"लागत: {response.cu_cost} CU")
+```
+
+> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### विकल्प 2: Rust (पूर्ण नियंत्रण)
+
+> **पूर्वापेक्षा**: [Rust इंस्टॉल करें](https://rustup.rs/) (लगभग 2 मिनट)
+
+```bash
+# सोर्स से बिल्ड करें
 cargo build --release
 
-# ऑटो-डाउनलोड मॉडल के साथ नोड चलाएं
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# ऑटो-डाउनलोड किए गए मॉडल के साथ नोड चलाएं
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # स्थानीय रूप से चैट करें
-forge chat -m "qwen2.5:0.5b" "गुरुत्वाकर्षण क्या है?"
+./target/release/forge chat -m "qwen2.5:0.5b" "गुरुत्वाकर्षण क्या है?"
 
 # सीड शुरू करें (P2P, CU कमाता है)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
-# वर्कर के रूप में जुड़ें (P2P, CU खर्च करता है)
-forge worker --seed <public_key>
+# वर्कर के रूप में कनेक्ट करें (P2P, CU खर्च करता है)
+./target/release/forge worker --seed <public_key>
 
-# मॉडल की सूची देखें
-forge models
+# मॉडल सूची देखें
+./target/release/forge models
+```
+
+> [Crates.io: forge](https://crates.io/crates/forge) · [Rust इंस्टॉलेशन गाइड](https://rustup.rs/)
+
+### विकल्प 3: पूर्व-निर्मित बाइनरी
+
+पूर्व-निर्मित बाइनरी जल्द ही उपलब्ध होंगी। [रिलीज़ पेज](../../../releases) देखें।
+
+### विकल्प 4: Docker
+
+```bash
+# जल्द आ रहा है
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## API संदर्भ (API Reference)
@@ -247,13 +293,13 @@ forge/
 
 ## दस्तावेज़ (Docs)
 
-- [अवधारणा और विजन](docs/concept.md) — कंप्यूट पैसा क्यों है
-- [आर्थिक मॉडल](docs/economy.md) — CU अर्थव्यवस्था, उपयोगी कार्य का प्रमाण
-- [आर्किटेक्चर](docs/architecture.md) — दो-परत डिजाइन
-- [वायर प्रोटोकॉल](docs/protocol-spec.md) — 17 संदेश प्रकार
-- [रोडमैप](docs/roadmap.md) — विकास चरण
-- [थ्रेट मॉडल](docs/threat-model.md) — सुरक्षा + आर्थिक हमले
-- [बूटस्ट्रैप](docs/bootstrap.md) — स्टार्टअप, गिरावट, रिकवरी
+- [अवधारणा और विजन](concept.md) — कंप्यूट पैसा क्यों है
+- [आर्थिक मॉडल](economy.md) — CU अर्थव्यवस्था, उपयोगी कार्य का प्रमाण
+- [आर्किटेक्चर](architecture.md) — दो-परत डिजाइन
+- [वायर प्रोटोकॉल](protocol-spec.md) — 17 संदेश प्रकार
+- [रोडमैप](roadmap.md) — विकास चरण
+- [थ्रेट मॉडल](threat-model.md) — सुरक्षा + आर्थिक हमले
+- [बूटस्ट्रैप](bootstrap.md) — स्टार्टअप, गिरावट, रिकवरी
 
 ## लाइसेंस
 
@@ -261,4 +307,4 @@ MIT
 
 ## आभार (Acknowledgements)
 
-Forge का वितरित इन्फरेंस [mesh-llm](https://github.com/michaelneale/mesh-llm) (Michael Neale द्वारा) पर बनाया गया है। [CREDITS.md](CREDITS.md) देखें।
+Forge का वितरित इन्फरेंस [mesh-llm](https://github.com/michaelneale/mesh-llm) (Michael Neale द्वारा) पर बनाया गया है। [CREDITS.md](../../../CREDITS.md) देखें।

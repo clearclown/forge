@@ -1,10 +1,23 @@
+<div align="center">
+
 # Forge
 
-> Вычисления — это валюта. Каждый ватт создает интеллект, а не отходы.
+**Вычисления — это валюта. Каждый ватт создает интеллект, а не отходы.**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · **Русский** · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · [עברית](../he/README.md)
+
+</div>
 
 **Forge — это протокол децентрализованного инференса, в котором вычисления являются деньгами.** Узлы зарабатывают вычислительные единицы (Compute Units, CU), выполняя полезный инференс LLM для других. В отличие от Bitcoin, где электричество сжигается на бессмысленные хеши, каждый джоуль, потраченный на узле Forge, создает реальный интеллект, который кому-то действительно нужен.
 
-Распределенный движок инференса построен на [mesh-llm](https://github.com/michaelneale/mesh-llm) Майкла Нила. Forge добавляет сверху вычислительную экономику: учет CU, доказательство полезной работы (Proof of Useful Work), динамическое ценообразование, бюджеты автономных агентов и средства безопасности. См. [CREDITS.md](CREDITS.md).
+Распределенный движок инференса построен на [mesh-llm](https://github.com/michaelneale/mesh-llm) Майкла Нила. Forge добавляет сверху вычислительную экономику: учет CU, доказательство полезной работы (Proof of Useful Work), динамическое ценообразование, бюджеты автономных агентов и средства безопасности. См. [CREDITS.md](../../../CREDITS.md).
 
 **Интегрированный форк:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm со встроенным экономическим слоем Forge.
 
@@ -153,24 +166,57 @@ Bitcoin доказал: `электричество → вычисления →
 
 ## Быстрый старт
 
+### Вариант 1: Python (Самый быстрый)
+
 ```bash
-# Сборка
+# Установка через pip
+pip install forge-sdk
+
+# Использование в Python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("Что такое гравитация?")
+print(f"Стоимость: {response.cu_cost} CU")
+```
+
+> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) | [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### Вариант 2: Rust (Полный контроль)
+
+**Предварительные требования**: [Установить Rust](https://rustup.rs/) (2 минуты)
+
+```bash
+# Сборка из исходников
 cargo build --release
 
 # Запуск узла с автоматической загрузкой модели
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # Локальный чат
-forge chat -m "qwen2.5:0.5b" "Что такое гравитация?"
+./target/release/forge chat -m "qwen2.5:0.5b" "Что такое гравитация?"
 
 # Запуск сида (P2P, зарабатывает CU)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # Подключение как воркер (P2P, тратит CU)
-forge worker --seed <public_key>
+./target/release/forge worker --seed <public_key>
 
 # Список моделей
-forge models
+./target/release/forge models
+```
+
+> **[Crates.io: forge](https://crates.io/crates/forge)** | **[Руководство по установке Rust](https://rustup.rs/)**
+
+### Вариант 3: Готовые бинарные файлы
+
+Готовые бинарные файлы скоро появятся. Следите за [релизами](../../../releases).
+
+### Вариант 4: Docker
+
+```bash
+# Скоро
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## API Справочник
@@ -249,13 +295,13 @@ forge/
 
 ## Документация
 
-- [Концепция и видение](docs/concept.md) — Почему вычисления — это деньги
-- [Экономическая модель](docs/economy.md) — Экономика CU, доказательство полезной работы
-- [Архитектура](docs/architecture.md) — Двухслойный дизайн
-- [Протокол передачи](docs/protocol-spec.md) — 17 типов сообщений
-- [Роадмап](docs/roadmap.md) — Фазы разработки
-- [Модель угроз](docs/threat-model.md) — Безопасность + экономические атаки
-- [Бутстрап](docs/bootstrap.md) — Запуск, деградация, восстановление
+- [Концепция и видение](concept.md) — Почему вычисления — это деньги
+- [Экономическая модель](economy.md) — Экономика CU, доказательство полезной работы
+- [Архитектура](architecture.md) — Двухслойный дизайн
+- [Протокол передачи](protocol-spec.md) — 17 типов сообщений
+- [Роадмап](roadmap.md) — Фазы разработки
+- [Модель угроз](threat-model.md) — Безопасность + экономические атаки
+- [Бутстрап](bootstrap.md) — Запуск, деградация, восстановление
 
 ## Лицензия
 
@@ -263,4 +309,4 @@ MIT
 
 ## Благодарности
 
-Распределенный инференс Forge построен на [mesh-llm](https://github.com/michaelneale/mesh-llm) Майкла Нила. См. [CREDITS.md](CREDITS.md).
+Распределенный инференс Forge построен на [mesh-llm](https://github.com/michaelneale/mesh-llm) Майкла Нила. См. [CREDITS.md](../../../CREDITS.md).

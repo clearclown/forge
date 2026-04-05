@@ -1,10 +1,23 @@
+<div align="center">
+
 # Forge
 
-> Le calcul est une monnaie. Chaque watt produit de l'intelligence, pas du gaspillage.
+**Le calcul est une monnaie. Chaque watt produit de l'intelligence, pas du gaspillage.**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · **Français** · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · [עברית](../he/README.md)
+
+</div>
 
 **Forge est un protocole d'inférence distribuée où le calcul est de l'argent.** Les nœuds gagnent des Unités de Calcul (CU) en effectuant des inférences LLM utiles pour les autres. Contrairement au Bitcoin — où l'électricité est brûlée dans des hachages sans signification — chaque joule dépensé sur un nœud Forge produit une intelligence réelle dont quelqu'un a réellement besoin.
 
-Le moteur d'inférence distribuée est basé sur [mesh-llm](https://github.com/michaelneale/mesh-llm) par Michael Neale. Forge y ajoute une économie du calcul : comptabilité des CU, Preuve de Travail Utile, tarification dynamique, budgets d'agents autonomes et contrôles de sécurité. Voir [CREDITS.md](CREDITS.md).
+Le moteur d'inférence distribuée est basé sur [mesh-llm](https://github.com/michaelneale/mesh-llm) par Michael Neale. Forge y ajoute une économie du calcul : comptabilité des CU, Preuve de Travail Utile, tarification dynamique, budgets d'agents autonomes et contrôles de sécurité. Voir [CREDITS.md](../../../CREDITS.md).
 
 **Fork intégré :** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm avec la couche économique Forge intégrée.
 
@@ -151,26 +164,59 @@ Agent (1.5B sur téléphone)
 └─────────────────────────────────────────────────┘
 ```
 
-## Démarrage Rapide
+## Démarrage rapide
+
+### Option 1 : Python (le plus rapide)
 
 ```bash
-# Compiler
+pip install forge-sdk
+```
+
+```python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("Qu'est-ce que la gravité ?")
+print(f"Coût : {response.cu_cost} CU")
+```
+
+> [PyPI : forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI : forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### Option 2 : Rust (contrôle total)
+
+> **Prérequis** : [Installer Rust](https://rustup.rs/) (2 minutes)
+
+```bash
+# Compiler depuis les sources
 cargo build --release
 
-# Lancer un nœud avec téléchargement automatique du modèle
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# Exécuter un nœud avec un modèle téléchargé automatiquement
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
-# Chat localement
-forge chat -m "qwen2.5:0.5b" "Qu'est-ce que la gravité ?"
+# Discuter localement
+./target/release/forge chat -m "qwen2.5:0.5b" "Qu'est-ce que la gravité ?"
 
-# Lancer un germe (seed) (P2P, gagne des CU)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# Démarrer un seed (P2P, gagne des CU)
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
-# Se connecter comme travailleur (worker) (P2P, dépense des CU)
-forge worker --seed <clé_publique>
+# Se connecter en tant que worker (P2P, dépense des CU)
+./target/release/forge worker --seed <public_key>
 
 # Lister les modèles
-forge models
+./target/release/forge models
+```
+
+> [Crates.io : forge](https://crates.io/crates/forge) · [Guide d'installation de Rust](https://rustup.rs/)
+
+### Option 3 : Binaires précompilés
+
+Les binaires précompilés arrivent bientôt. Voir les [releases](../../../releases).
+
+### Option 4 : Docker
+
+```bash
+# Bientôt disponible
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## Référence API
@@ -249,13 +295,13 @@ forge/
 
 ## Documentation
 
-- [Concept & Vision](docs/concept.md) — Pourquoi le calcul est de l'argent
-- [Modèle Économique](docs/economy.md) — Économie CU, Preuve de Travail Utile
-- [Architecture](docs/architecture.md) — Conception à deux couches
-- [Protocole Filaire](docs/protocol-spec.md) — 17 types de messages
-- [Feuille de Route](docs/roadmap.md) — Phases de développement
-- [Modèle de Menaces](docs/threat-model.md) — Attaques sécuritaires + économiques
-- [Bootstrap](docs/bootstrap.md) — Démarrage, dégradation, récupération
+- [Concept & Vision](concept.md) — Pourquoi le calcul est de l'argent
+- [Modèle Économique](economy.md) — Économie CU, Preuve de Travail Utile
+- [Architecture](architecture.md) — Conception à deux couches
+- [Protocole Filaire](protocol-spec.md) — 17 types de messages
+- [Feuille de Route](roadmap.md) — Phases de développement
+- [Modèle de Menaces](threat-model.md) — Attaques sécuritaires + économiques
+- [Bootstrap](bootstrap.md) — Démarrage, dégradation, récupération
 
 ## Licence
 
@@ -263,4 +309,4 @@ MIT
 
 ## Remerciements
 
-L'inférence distribuée de Forge est basée sur [mesh-llm](https://github.com/michaelneale/mesh-llm) par Michael Neale. Voir [CREDITS.md](CREDITS.md).
+L'inférence distribuée de Forge est basée sur [mesh-llm](https://github.com/michaelneale/mesh-llm) par Michael Neale. Voir [CREDITS.md](../../../CREDITS.md).

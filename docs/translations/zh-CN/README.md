@@ -1,10 +1,23 @@
+<div align="center">
+
 # Forge
 
-> 计算即货币。每一瓦特都在产生智能，而非浪费。
+**计算即货币。每一瓦特都在产生智能，而非浪费。**
+
+[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
+[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+
+---
+
+[English](../../../README.md) · [日本語](../ja/README.md) · **简体中文** · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · [עברית](../he/README.md)
+
+</div>
 
 **Forge 是一种分布式推理协议，其中计算即金钱。** 节点通过为他人执行有用的 LLM 推理来赚取计算单位 (CU)。与比特币不同——在比特币中，电力被浪费在毫无意义的哈希计算上——在 Forge 节点上花费的每一焦耳都会产生某人真正需要的真实智能。
 
-分布式推理引擎基于 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 构建。Forge 在其上添加了计算经济层：CU 核算、有用工作证明 (Proof of Useful Work)、动态定价、自主代理预算和故障安全控制。参见 [CREDITS.md](CREDITS.md)。
+分布式推理引擎基于 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 构建。Forge 在其上添加了计算经济层：CU 核算、有用工作证明 (Proof of Useful Work)、动态定价、自主代理预算和故障安全控制。参见 [CREDITS.md](../../../CREDITS.md)。
 
 **集成分叉：** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — 内置 Forge 经济层的 mesh-llm。
 
@@ -98,7 +111,7 @@ $ curl localhost:3000/v1/forge/safety
 Forge: 电力 → 有用的 LLM 推理 → CU
 ```
 
-比特币证明了“电力 → 计算 → 金钱”。但比特币的计算是没有目的的。Forge 将其反转：每个 CU 都代表了解决某人实际问题的真实智能。
+比特币证明了"电力 → 计算 → 金钱"。但比特币的计算是没有目的的。Forge 将其反转：每个 CU 都代表了解决某人实际问题的真实智能。
 
 **其他项目不具备的三个特点：**
 
@@ -151,24 +164,57 @@ Forge: 电力 → 有用的 LLM 推理 → CU
 
 ## 快速入门
 
+### 方式一：Python（最快）
+
 ```bash
-# 构建
+pip install forge-sdk
+```
+
+```python
+from forge_sdk import ForgeNode
+
+node = ForgeNode(model="qwen2.5:0.5b")
+response = node.chat("什么是重力？")
+print(f"成本: {response.cu_cost} CU")
+```
+
+> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+
+### 方式二：Rust（完全控制）
+
+> **前置条件**：[安装 Rust](https://rustup.rs/)（约 2 分钟）
+
+```bash
+# 从源码构建
 cargo build --release
 
 # 使用自动下载的模型运行节点
-forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # 本地聊天
-forge chat -m "qwen2.5:0.5b" "什么是重力？"
+./target/release/forge chat -m "qwen2.5:0.5b" "什么是重力？"
 
 # 开始播种 (P2P，赚取 CU)
-forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # 作为工人连接 (P2P，支出 CU)
-forge worker --seed <public_key>
+./target/release/forge worker --seed <public_key>
 
 # 列出模型
-forge models
+./target/release/forge models
+```
+
+> [Crates.io: forge](https://crates.io/crates/forge) · [Rust 安装指南](https://rustup.rs/)
+
+### 方式三：预编译二进制
+
+预编译二进制即将推出。请关注[发布页面](../../../releases)。
+
+### 方式四：Docker
+
+```bash
+# 即将推出
+docker run -p 3000:3000 clearclown/forge:latest
 ```
 
 ## API 参考
@@ -247,13 +293,13 @@ forge/
 
 ## 文档
 
-- [概念与愿景](docs/concept.md) — 为什么计算即金钱
-- [经济模型](docs/economy.md) — CU 经济、有用工作证明
-- [架构设计](docs/architecture.md) — 双层设计
-- [线缆协议](docs/protocol-spec.md) — 17 种消息类型
-- [路线图](docs/roadmap.md) — 开发阶段
-- [威胁模型](docs/threat-model.md) — 安全 + 经济攻击
-- [引导启动](docs/bootstrap.md) — 启动、降级、恢复
+- [概念与愿景](concept.md) — 为什么计算即金钱
+- [经济模型](economy.md) — CU 经济、有用工作证明
+- [架构设计](architecture.md) — 双层设计
+- [线缆协议](protocol-spec.md) — 17 种消息类型
+- [路线图](roadmap.md) — 开发阶段
+- [威胁模型](threat-model.md) — 安全 + 经济攻击
+- [引导启动](bootstrap.md) — 启动、降级、恢复
 
 ## 许可证
 
@@ -261,4 +307,4 @@ MIT
 
 ## 致谢
 
-Forge 的分布式推理基于 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 构建。参见 [CREDITS.md](CREDITS.md)。
+Forge 的分布式推理基于 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 构建。参见 [CREDITS.md](../../../CREDITS.md)。
