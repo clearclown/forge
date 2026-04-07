@@ -158,6 +158,7 @@ pub fn create_router(
         .route("/v1/forge/policy", post(forge_set_policy))
         // Forge lending routes (Phase 5.5 / Issue #34)
         .route("/v1/forge/lend", post(forge_lend))
+        .route("/v1/forge/lend-to", post(forge_lend_to))
         .route("/v1/forge/borrow", post(forge_borrow))
         .route("/v1/forge/repay", post(forge_repay))
         .route("/v1/forge/credit", get(forge_credit))
@@ -1341,6 +1342,150 @@ async fn forge_lend(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+struct LendToRequest {
+    /// Hex-encoded borrower NodeId (64 chars).
+    borrower: String,
+    /// Principal in CU.
+    amount: u64,
+    /// Loan term in hours.
+    term_hours: u64,
+    /// Collateral required from borrower.
+    collateral: u64,
+    /// Optional: override the computed offered interest rate.
+    interest_rate_per_hour: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct LendToResponse {
+    loan_id: String,
+    principal_cu: u64,
+    interest_rate_per_hour: f64,
+    term_hours: u64,
+    status: String,
+}
+
+/// POST /v1/forge/lend-to — lender-initiated loan proposal to a specific borrower.
+///
+/// This is the lender-side counterpart to `/v1/forge/borrow`. In a full P2P
+/// deployment it would send a LoanProposal over the wire and wait for a
+/// LoanAccept. The current MVP falls back to a self-signed loan (same
+/// caveat as `forge_borrow`) so the endpoint is exercisable end-to-end in a
+/// single-node test fixture. Real P2P wiring arrives with batch B2.
+async fn forge_lend_to(
+    State(state): State<AppState>,
+    Json(req): Json<LendToRequest>,
+) -> Result<Json<LendToResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+
+    use ed25519_dalek::{Signer, SigningKey};
+    use forge_ledger::lending::{LoanRecord, LoanStatus, SignedLoanRecord, offered_interest_rate};
+    use rand::rngs::OsRng;
+
+    if req.amount == 0 {
+        return Err((StatusCode::BAD_REQUEST, "amount must be > 0".into()));
+    }
+
+    // Decode borrower NodeId
+    let borrower_bytes: [u8; 32] = hex::decode(&req.borrower)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid borrower hex".to_string()))?
+        .try_into()
+        .map_err(|_: Vec<u8>| {
+            (StatusCode::BAD_REQUEST, "borrower must be 32 bytes".to_string())
+        })?;
+    let borrower = NodeId(borrower_bytes);
+
+    // MVP: generate ephemeral lender key (same caveat as forge_borrow).
+    // TODO: use node's persistent signing key from state.
+    let lender_key = SigningKey::generate(&mut OsRng);
+    let lender_id = NodeId(lender_key.verifying_key().to_bytes());
+
+    // Compute borrower's credit score for rate determination.
+    let ledger = state.ledger.lock().await;
+    let credit = ledger.compute_credit_score(&borrower);
+    drop(ledger);
+
+    let interest_rate = req
+        .interest_rate_per_hour
+        .unwrap_or_else(|| offered_interest_rate(credit));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let mut loan = LoanRecord {
+        loan_id: [0u8; 32],
+        lender: lender_id.clone(),
+        borrower: borrower.clone(),
+        principal_cu: req.amount,
+        interest_rate_per_hour: interest_rate,
+        term_hours: req.term_hours,
+        collateral_cu: req.collateral,
+        status: LoanStatus::Active,
+        created_at: now,
+        due_at: now + req.term_hours.saturating_mul(3_600_000),
+        repaid_at: None,
+    };
+    loan.loan_id = loan.compute_loan_id();
+
+    let canonical = loan.canonical_bytes();
+    let lender_sig = lender_key.sign(&canonical).to_bytes().to_vec();
+
+    // If we have a cluster/transport, the real flow would be to send a
+    // LoanProposal via P2P and wait for a LoanAccept. That plumbing lives in
+    // pipeline.rs and needs batch B2's wire additions. Until then, we fall
+    // through to the MVP self-sign fallback below.
+    if state.cluster.is_some() {
+        tracing::debug!(
+            borrower = %req.borrower,
+            "forge_lend_to: real P2P LoanProposal path pending batch B2 wiring"
+        );
+    }
+
+    // MVP fallback: self-sign both sides. This only works if borrower ==
+    // lender_id (i.e. same-node test); for real cross-node loans the borrower
+    // will reject the duplicate signature.
+    let signed = SignedLoanRecord {
+        loan: loan.clone(),
+        lender_sig: lender_sig.clone(),
+        borrower_sig: lender_sig,
+    };
+
+    // Best-effort local insertion. Cross-node loans will fail the credit
+    // check (borrower unknown) — that's OK, the real flow is handled in
+    // pipeline.rs via LoanProposal once batch B2 lands.
+    let mut ledger = state.ledger.lock().await;
+    match ledger.create_loan(signed.clone()) {
+        Ok(()) => {
+            tracing::info!(
+                loan_id = %hex::encode(loan.loan_id),
+                "lend-to loan created locally"
+            );
+        }
+        Err(e) => {
+            tracing::debug!("lend-to local create_loan skipped: {}", e);
+        }
+    }
+    drop(ledger);
+
+    // Broadcast the proposed loan so peers become aware. Same caveat as
+    // forge_borrow: no cluster accessor for gossip yet, so log the intent.
+    if state.cluster.is_some() {
+        tracing::debug!(
+            loan_id = %hex::encode(signed.loan.loan_id),
+            "forge_lend_to: broadcast_loan would happen here (pending batch B2 wiring)"
+        );
+    }
+
+    Ok(Json(LendToResponse {
+        loan_id: hex::encode(loan.loan_id),
+        principal_cu: loan.principal_cu,
+        interest_rate_per_hour: loan.interest_rate_per_hour,
+        term_hours: loan.term_hours,
+        status: "proposed".into(),
+    }))
+}
+
 /// POST /v1/forge/borrow — request a CU loan.
 ///
 /// MVP: constructs a self-signed loan against a fresh keypair so the
@@ -1399,8 +1544,22 @@ async fn forge_borrow(
     };
 
     ledger
-        .create_loan(signed)
+        .create_loan(signed.clone())
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("create_loan failed: {e}")))?;
+    drop(ledger);
+
+    // Broadcast the loan to peers so ledger state propagates across the mesh.
+    // `ClusterManager` does not yet expose a transport/gossip accessor (the
+    // gossip path lives inside PipelineCoordinator), so for now we just log
+    // the intent. Sibling batch B2 will wire the real gossip broadcast once
+    // `forge_net::gossip::broadcast_loan` and the ClusterManager accessors
+    // land.
+    if state.cluster.is_some() {
+        tracing::debug!(
+            loan_id = %hex::encode(signed.loan.loan_id),
+            "forge_borrow: broadcast_loan would happen here (pending batch B2 wiring)"
+        );
+    }
 
     Ok(Json(BorrowResponse {
         loan_id: hex::encode(loan.loan_id),

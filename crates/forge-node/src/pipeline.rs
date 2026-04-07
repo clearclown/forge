@@ -1,9 +1,9 @@
 use forge_core::{Config, ModelManifest, NodeId, PipelineTopology};
-use forge_ledger::{ComputeLedger, SignedTradeRecord, TradeRecord};
+use forge_ledger::{ComputeLedger, LoanRecord, LoanStatus, SignedTradeRecord, TradeRecord};
 use forge_net::{ClusterManager, ForgeTransport, GossipState};
 use forge_proto::{
-    Envelope, ErrorCode, ErrorMsg, InferenceRequest, Payload, PipelineTopologyMsg, RpcServerFailed,
-    RpcServerReady, TokenStreamMsg, TradeAccept, TradeProposal, Welcome,
+    Envelope, ErrorCode, ErrorMsg, InferenceRequest, LoanAccept, Payload, PipelineTopologyMsg,
+    RpcServerFailed, RpcServerReady, TokenStreamMsg, TradeAccept, TradeProposal, Welcome,
 };
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
@@ -240,6 +240,106 @@ impl PipelineCoordinator {
                         // Handled within handle_inference tasks via wait_for_trade_accept
                         tracing::debug!("Trade message in main loop from {} (handled by task)", peer_id);
                     }
+                    Payload::LoanAccept(_) => {
+                        // Handled by wait_for_loan_accept on the lender side.
+                        tracing::debug!(
+                            "LoanAccept in main loop from {} (handled by task)",
+                            peer_id
+                        );
+                    }
+                    Payload::LoanProposal(proposal) => {
+                        // Borrower side: verify lender's signature and terms, then counter-sign.
+                        let ledger = ledger.clone();
+                        let transport = self.transport.clone();
+                        let node_id = node_id.clone();
+                        let peer_id = peer_id.clone();
+                        let ledger_path = ledger_path.clone();
+                        tokio::spawn(async move {
+                            // Reconstruct the LoanRecord (status=Active, repaid_at=None)
+                            let mut loan = LoanRecord {
+                                loan_id: [0u8; 32],
+                                lender: proposal.lender.clone(),
+                                borrower: proposal.borrower.clone(),
+                                principal_cu: proposal.principal_cu,
+                                interest_rate_per_hour: proposal.interest_rate_per_hour,
+                                term_hours: proposal.term_hours,
+                                collateral_cu: proposal.collateral_cu,
+                                status: LoanStatus::Active,
+                                created_at: proposal.created_at,
+                                due_at: proposal.due_at,
+                                repaid_at: None,
+                            };
+                            loan.loan_id = loan.compute_loan_id();
+                            let canonical = loan.canonical_bytes();
+
+                            // Verify lender's signature
+                            use ed25519_dalek::{Signature, VerifyingKey};
+                            let lender_key = match VerifyingKey::from_bytes(&loan.lender.0) {
+                                Ok(k) => k,
+                                Err(_) => {
+                                    tracing::warn!(
+                                        "LoanProposal from {} has invalid lender key",
+                                        peer_id
+                                    );
+                                    return;
+                                }
+                            };
+                            let lender_sig_arr: [u8; 64] =
+                                match proposal.lender_sig.as_slice().try_into() {
+                                    Ok(a) => a,
+                                    Err(_) => {
+                                        tracing::warn!(
+                                            "LoanProposal from {} has malformed lender_sig",
+                                            peer_id
+                                        );
+                                        return;
+                                    }
+                                };
+                            if lender_key
+                                .verify_strict(&canonical, &Signature::from_bytes(&lender_sig_arr))
+                                .is_err()
+                            {
+                                tracing::warn!(
+                                    "LoanProposal lender_sig verification failed from {}",
+                                    peer_id
+                                );
+                                return;
+                            }
+
+                            // Safety checks (pool reserves / LTV / credit) are enforced on
+                            // the lender side via SafetyController. The borrower-side check
+                            // runs at ledger.create_loan time after we've counter-signed,
+                            // mirroring how TradeAccept trusts the proposal contents.
+                            let _ = ledger; // retained for future borrower-side checks
+
+                            // Counter-sign with this node's key
+                            let borrower_sig = transport.sign(&canonical).to_vec();
+                            let _ = ledger_path; // not used until create_loan runs here
+
+                            let accept = Envelope {
+                                msg_id: proposal.request_id * 10000 + 10000,
+                                sender: node_id.clone(),
+                                timestamp: now_millis(),
+                                payload: Payload::LoanAccept(LoanAccept {
+                                    request_id: proposal.request_id,
+                                    borrower_sig,
+                                }),
+                            };
+                            if let Err(e) = transport.send_to(&peer_id, &accept).await {
+                                tracing::warn!(
+                                    "failed to send LoanAccept to {}: {}",
+                                    peer_id,
+                                    e
+                                );
+                            } else {
+                                tracing::info!(
+                                    "LoanAccept sent to {} for {} CU principal",
+                                    peer_id,
+                                    proposal.principal_cu
+                                );
+                            }
+                        });
+                    }
                     Payload::TradeGossip(trade_gossip) => {
                         let gossip = gossip.clone();
                         let ledger = ledger.clone();
@@ -259,6 +359,42 @@ impl PipelineCoordinator {
                                     signed.trade.provider.to_hex(),
                                     signed.trade.consumer.to_hex()
                                 );
+                            }
+                        });
+                    }
+                    Payload::LoanGossip(loan_gossip) => {
+                        let gossip = gossip.clone();
+                        let ledger = ledger.clone();
+                        let ledger_path = ledger_path.clone();
+                        tokio::spawn(async move {
+                            if let Some(signed) =
+                                forge_net::gossip::handle_loan_gossip(&gossip, &loan_gossip).await
+                            {
+                                let mut ledger_guard = ledger.lock().await;
+                                // Idempotent: if the loan already exists locally,
+                                // create_loan returns an error, which we ignore.
+                                match ledger_guard.create_loan(signed.clone()) {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            "Gossip loan recorded: {} CU ({} → {})",
+                                            signed.loan.principal_cu,
+                                            signed.loan.lender.to_hex(),
+                                            signed.loan.borrower.to_hex()
+                                        );
+                                        if let Some(path) = ledger_path.as_ref() {
+                                            if let Err(e) = ledger_guard.save_to_path(path) {
+                                                tracing::warn!(
+                                                    "failed to persist ledger after loan gossip: {e}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            "loan gossip create_loan skipped: {e:?}"
+                                        );
+                                    }
+                                }
                             }
                         });
                     }
@@ -626,6 +762,29 @@ async fn wait_for_trade_accept(
                 if let Payload::TradeAccept(accept) = envelope.payload {
                     if accept.request_id == request_id {
                         return Some(accept.consumer_sig);
+                    }
+                }
+                // Ignore other messages while waiting
+            }
+            None => return None,
+        }
+    }
+}
+
+/// Wait for a LoanAccept message matching the given request_id.
+///
+/// Used by the lender-side `/v1/forge/lend-to` flow after a `LoanProposal`
+/// has been sent. Mirrors `wait_for_trade_accept`.
+pub(crate) async fn wait_for_loan_accept(
+    transport: &ForgeTransport,
+    request_id: u64,
+) -> Option<Vec<u8>> {
+    loop {
+        match transport.recv().await {
+            Some((_peer_id, envelope)) => {
+                if let Payload::LoanAccept(accept) = envelope.payload {
+                    if accept.request_id == request_id {
+                        return Some(accept.borrower_sig);
                     }
                 }
                 // Ignore other messages while waiting

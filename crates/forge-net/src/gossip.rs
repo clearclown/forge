@@ -6,8 +6,8 @@
 //! eventually-consistent view of trade history across the network.
 
 use crate::transport::ForgeTransport;
-use forge_ledger::SignedTradeRecord;
-use forge_proto::{Envelope, Payload, TradeGossip};
+use forge_ledger::{LoanRecord, LoanStatus, SignedLoanRecord, SignedTradeRecord};
+use forge_proto::{Envelope, LoanGossip, Payload, TradeGossip};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -24,6 +24,9 @@ const MAX_GOSSIP_TRADES_PER_SEC: u32 = 100;
 pub struct GossipState {
     seen: HashSet<[u8; 32]>,
     order: VecDeque<[u8; 32]>,
+    /// Separate dedup set for loans to avoid hash collision domain mixing.
+    seen_loans: HashSet<[u8; 32]>,
+    order_loans: VecDeque<[u8; 32]>,
     /// Rate limiting for incoming gossip (Issue #14).
     ingest_count: u32,
     ingest_window: std::time::Instant,
@@ -34,6 +37,8 @@ impl GossipState {
         Self {
             seen: HashSet::new(),
             order: VecDeque::new(),
+            seen_loans: HashSet::new(),
+            order_loans: VecDeque::new(),
             ingest_count: 0,
             ingest_window: std::time::Instant::now(),
         }
@@ -68,6 +73,26 @@ impl GossipState {
     /// Number of unique trades seen.
     pub fn seen_count(&self) -> usize {
         self.seen.len()
+    }
+
+    /// Check if we've already seen this loan. Returns true if new.
+    pub fn mark_loan_seen(&mut self, signed: &SignedLoanRecord) -> bool {
+        let hash = loan_hash(signed);
+        if !self.seen_loans.insert(hash) {
+            return false;
+        }
+        self.order_loans.push_back(hash);
+        while self.order_loans.len() > MAX_GOSSIP_SEEN {
+            if let Some(evicted) = self.order_loans.pop_front() {
+                self.seen_loans.remove(&evicted);
+            }
+        }
+        true
+    }
+
+    /// Number of unique loans seen.
+    pub fn seen_loan_count(&self) -> usize {
+        self.seen_loans.len()
     }
 }
 
@@ -159,6 +184,101 @@ pub async fn handle_trade_gossip(
     Some(signed)
 }
 
+/// Broadcast a signed loan to all connected peers.
+pub async fn broadcast_loan(
+    transport: &ForgeTransport,
+    gossip: &Arc<Mutex<GossipState>>,
+    signed: &SignedLoanRecord,
+) {
+    // Mark as seen locally first
+    gossip.lock().await.mark_loan_seen(signed);
+
+    let node_id = transport.forge_node_id();
+    let peers = transport.connected_peers().await;
+
+    if peers.is_empty() {
+        return;
+    }
+
+    let msg = Envelope {
+        msg_id: rand::random(),
+        sender: node_id,
+        timestamp: now_millis(),
+        payload: Payload::LoanGossip(LoanGossip {
+            lender: signed.loan.lender.clone(),
+            borrower: signed.loan.borrower.clone(),
+            principal_cu: signed.loan.principal_cu,
+            interest_rate_per_hour: signed.loan.interest_rate_per_hour,
+            term_hours: signed.loan.term_hours,
+            collateral_cu: signed.loan.collateral_cu,
+            created_at: signed.loan.created_at,
+            due_at: signed.loan.due_at,
+            lender_sig: signed.lender_sig.clone(),
+            borrower_sig: signed.borrower_sig.clone(),
+        }),
+    };
+
+    for peer_id in &peers {
+        if let Err(e) = transport.send_to(peer_id, &msg).await {
+            tracing::debug!("Loan gossip to {} failed: {}", peer_id, e);
+        }
+    }
+
+    tracing::trace!(
+        "broadcasting loan {} to {} peers",
+        hex::encode(signed.loan.loan_id),
+        peers.len()
+    );
+}
+
+/// Handle an incoming gossip loan. Verifies signatures and returns the
+/// SignedLoanRecord if new and valid, None if already seen or invalid.
+pub async fn handle_loan_gossip(
+    gossip: &Arc<Mutex<GossipState>>,
+    loan_gossip: &LoanGossip,
+) -> Option<SignedLoanRecord> {
+    // Backpressure: reject if rate limit exceeded (Issue #14)
+    if !gossip.lock().await.can_ingest() {
+        tracing::debug!("Gossip rate limit exceeded, dropping loan");
+        return None;
+    }
+
+    let mut loan = LoanRecord {
+        loan_id: [0u8; 32],
+        lender: loan_gossip.lender.clone(),
+        borrower: loan_gossip.borrower.clone(),
+        principal_cu: loan_gossip.principal_cu,
+        interest_rate_per_hour: loan_gossip.interest_rate_per_hour,
+        term_hours: loan_gossip.term_hours,
+        collateral_cu: loan_gossip.collateral_cu,
+        status: LoanStatus::Active,
+        created_at: loan_gossip.created_at,
+        due_at: loan_gossip.due_at,
+        repaid_at: None,
+    };
+    loan.loan_id = loan.compute_loan_id();
+
+    let signed = SignedLoanRecord {
+        loan,
+        lender_sig: loan_gossip.lender_sig.clone(),
+        borrower_sig: loan_gossip.borrower_sig.clone(),
+    };
+
+    // Verify both signatures
+    if let Err(e) = signed.verify() {
+        tracing::warn!("Gossip loan failed verification: {}", e);
+        return None;
+    }
+
+    // Check if we've already seen this loan
+    let is_new = gossip.lock().await.mark_loan_seen(&signed);
+    if !is_new {
+        return None;
+    }
+
+    Some(signed)
+}
+
 /// Check for network partition by comparing local Merkle root with a peer's.
 /// Returns true if roots match (consistent), false if divergent (partition detected).
 pub fn check_consistency(local_root: &[u8; 32], peer_root: &[u8; 32]) -> bool {
@@ -184,6 +304,17 @@ fn trade_hash(signed: &SignedTradeRecord) -> [u8; 32] {
     hasher.update(&signed.trade.canonical_bytes());
     hasher.update(&signed.provider_sig);
     hasher.update(&signed.consumer_sig);
+    hasher.finalize().into()
+}
+
+/// Compute a SHA-256 hash of a loan's canonical bytes for deduplication.
+fn loan_hash(signed: &SignedLoanRecord) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"loan:");
+    hasher.update(signed.loan.canonical_bytes());
+    hasher.update(&signed.lender_sig);
+    hasher.update(&signed.borrower_sig);
     hasher.finalize().into()
 }
 
@@ -280,6 +411,113 @@ mod tests {
         let root_b = [2u8; 32];
         assert!(check_consistency(&root_a, &root_a));
         assert!(!check_consistency(&root_a, &root_b));
+    }
+
+    fn make_signed_loan() -> SignedLoanRecord {
+        let mut rng = rand::thread_rng();
+        let lender_key = SigningKey::generate(&mut rng);
+        let borrower_key = SigningKey::generate(&mut rng);
+
+        let created_at = now_millis();
+        let term_hours: u64 = 24;
+        let due_at = created_at + term_hours * 3_600_000;
+
+        let mut loan = forge_ledger::LoanRecord {
+            loan_id: [0u8; 32],
+            lender: NodeId(lender_key.verifying_key().to_bytes()),
+            borrower: NodeId(borrower_key.verifying_key().to_bytes()),
+            principal_cu: 1_000,
+            interest_rate_per_hour: 0.001,
+            term_hours,
+            collateral_cu: 200,
+            status: forge_ledger::LoanStatus::Active,
+            created_at,
+            due_at,
+            repaid_at: None,
+        };
+        loan.loan_id = loan.compute_loan_id();
+
+        let canonical = loan.canonical_bytes();
+        SignedLoanRecord {
+            loan,
+            lender_sig: lender_key.sign(&canonical).to_bytes().to_vec(),
+            borrower_sig: borrower_key.sign(&canonical).to_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn gossip_state_dedupes_loans() {
+        let mut state = GossipState::new();
+        // Dummy sigs are fine: mark_loan_seen only hashes, does not verify.
+        let loan = forge_ledger::LoanRecord {
+            loan_id: [7u8; 32],
+            lender: NodeId([1u8; 32]),
+            borrower: NodeId([2u8; 32]),
+            principal_cu: 500,
+            interest_rate_per_hour: 0.002,
+            term_hours: 12,
+            collateral_cu: 100,
+            status: forge_ledger::LoanStatus::Active,
+            created_at: now_millis(),
+            due_at: now_millis() + 12 * 3_600_000,
+            repaid_at: None,
+        };
+        let signed = SignedLoanRecord {
+            loan,
+            lender_sig: vec![0u8; 64],
+            borrower_sig: vec![0u8; 64],
+        };
+
+        assert!(state.mark_loan_seen(&signed));
+        assert!(!state.mark_loan_seen(&signed));
+        assert_eq!(state.seen_loan_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn handle_loan_gossip_rejects_invalid_signature() {
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let created_at = now_millis();
+        let msg = LoanGossip {
+            lender: NodeId([1u8; 32]),
+            borrower: NodeId([2u8; 32]),
+            principal_cu: 1_000,
+            interest_rate_per_hour: 0.001,
+            term_hours: 24,
+            collateral_cu: 200,
+            created_at,
+            due_at: created_at + 24 * 3_600_000,
+            lender_sig: vec![0u8; 64],
+            borrower_sig: vec![0u8; 64],
+        };
+
+        let result = handle_loan_gossip(&gossip, &msg).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_loan_gossip_accepts_valid_dual_signed_loan() {
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let signed = make_signed_loan();
+
+        let msg = LoanGossip {
+            lender: signed.loan.lender.clone(),
+            borrower: signed.loan.borrower.clone(),
+            principal_cu: signed.loan.principal_cu,
+            interest_rate_per_hour: signed.loan.interest_rate_per_hour,
+            term_hours: signed.loan.term_hours,
+            collateral_cu: signed.loan.collateral_cu,
+            created_at: signed.loan.created_at,
+            due_at: signed.loan.due_at,
+            lender_sig: signed.lender_sig.clone(),
+            borrower_sig: signed.borrower_sig.clone(),
+        };
+
+        let result = handle_loan_gossip(&gossip, &msg).await;
+        assert!(result.is_some());
+
+        // Second time should be deduplicated
+        let result2 = handle_loan_gossip(&gossip, &msg).await;
+        assert!(result2.is_none());
     }
 
     #[test]
