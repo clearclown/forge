@@ -280,6 +280,170 @@ class ForgeClient:
             body["interest_rate_per_hour"] = interest_rate_per_hour
         return self._post("/v1/forge/lend-to", body)
 
+    # --- Phase 8 L2/L3/L4 ---
+
+    # ── Bank (Phase 8 L2) ──
+
+    def bank_portfolio(self) -> dict:
+        """Get the L2 bank PortfolioManager state: cash_cu, lent_cu, borrowed_cu, net_exposure_cu."""
+        return self._get("/v1/forge/bank/portfolio")
+
+    def bank_tick(self) -> dict:
+        """Run one PortfolioManager.tick() cycle against the current ledger pool. Returns Vec<Decision>."""
+        return self._post("/v1/forge/bank/tick", {})
+
+    def bank_set_strategy(
+        self,
+        strategy: str,
+        base_commit_fraction: float = None,
+    ) -> dict:
+        """Hot-swap the portfolio strategy. strategy: 'conservative'|'highyield'|'balanced'."""
+        body = {"strategy": strategy}
+        if base_commit_fraction is not None:
+            body["base_commit_fraction"] = base_commit_fraction
+        return self._post("/v1/forge/bank/strategy", body)
+
+    def bank_set_risk(self, tolerance: str) -> dict:
+        """Set the risk tolerance. tolerance: 'conservative'|'balanced'|'aggressive'."""
+        return self._post("/v1/forge/bank/risk", {"tolerance": tolerance})
+
+    def bank_list_futures(self) -> dict:
+        """List all active FuturesContracts in the bank."""
+        return self._get("/v1/forge/bank/futures")
+
+    def bank_create_future(
+        self,
+        counterparty_hex: str,
+        notional_cu: int,
+        strike_price_msats: int,
+        expires_at_ms: int,
+        margin_fraction: float = None,
+    ) -> dict:
+        """Create a new CU futures contract. Returns the FuturesContract."""
+        body = {
+            "counterparty_hex": counterparty_hex,
+            "notional_cu": notional_cu,
+            "strike_price_msats": strike_price_msats,
+            "expires_at_ms": expires_at_ms,
+        }
+        if margin_fraction is not None:
+            body["margin_fraction"] = margin_fraction
+        return self._post("/v1/forge/bank/futures", body)
+
+    def bank_risk_assessment(self) -> dict:
+        """Get a RiskAssessment of the current portfolio (VaR, concentration, leverage)."""
+        return self._get("/v1/forge/bank/risk-assessment")
+
+    def bank_optimize(self, max_var_99_cu: int) -> dict:
+        """Run YieldOptimizer.tick() with a VaR budget. Returns applied, decisions, rationale."""
+        return self._post("/v1/forge/bank/optimize", {"max_var_99_cu": max_var_99_cu})
+
+    # ── Agora (Phase 8 L4) ──
+
+    def agora_register(
+        self,
+        agent_hex: str,
+        models_served: list,
+        cu_per_token: int,
+        tier: str,
+        last_seen_ms: int = None,
+    ) -> dict:
+        """Register an agent in the Agora marketplace. tier: 'small'|'medium'|'large'|'frontier'."""
+        body = {
+            "agent_hex": agent_hex,
+            "models_served": models_served,
+            "cu_per_token": cu_per_token,
+            "tier": tier,
+        }
+        if last_seen_ms is not None:
+            body["last_seen_ms"] = last_seen_ms
+        return self._post("/v1/forge/agora/register", body)
+
+    def agora_list_agents(self) -> dict:
+        """List all registered AgentProfiles in the Agora registry."""
+        return self._get("/v1/forge/agora/agents")
+
+    def agora_reputation(self, agent_hex: str) -> dict:
+        """Get the ReputationScore for a specific agent by hex NodeId."""
+        return self._get(f"/v1/forge/agora/reputation/{agent_hex}")
+
+    def agora_find(
+        self,
+        model_patterns: list,
+        max_cu_per_token: int = None,
+        tier: str = None,
+        min_reputation: float = None,
+    ) -> dict:
+        """Find agents matching model_patterns and optional filters. Returns Vec<CapabilityMatch>."""
+        body = {"model_patterns": model_patterns}
+        if max_cu_per_token is not None:
+            body["max_cu_per_token"] = max_cu_per_token
+        if tier is not None:
+            body["tier"] = tier
+        if min_reputation is not None:
+            body["min_reputation"] = min_reputation
+        return self._post("/v1/forge/agora/find", body)
+
+    def agora_stats(self) -> dict:
+        """Get Agora registry statistics: agent_count, trade_count, etc."""
+        return self._get("/v1/forge/agora/stats")
+
+    def agora_snapshot(self) -> dict:
+        """Export a RegistrySnapshot (profiles + trades) for backup or migration."""
+        return self._get("/v1/forge/agora/snapshot")
+
+    def agora_restore(self, snapshot: dict) -> dict:
+        """Restore the Agora registry from a RegistrySnapshot dict."""
+        return self._post("/v1/forge/agora/restore", snapshot)
+
+    # ── Mind (Phase 8 L3) ──
+
+    def mind_init(
+        self,
+        system_prompt: str,
+        optimizer: str = "echo",
+        api_url: str = None,
+        api_key: str = None,
+        model: str = None,
+    ) -> dict:
+        """Initialise the ForgeMindAgent. optimizer: 'echo'|'prompt_rewrite'|'cu_paid'."""
+        body = {"system_prompt": system_prompt, "optimizer": optimizer}
+        if api_url is not None:
+            body["api_url"] = api_url
+        if api_key is not None:
+            body["api_key"] = api_key
+        if model is not None:
+            body["model"] = model
+        return self._post("/v1/forge/mind/init", body)
+
+    def mind_state(self) -> dict:
+        """Get the current ForgeMindAgent state: harness_version, prompt preview, cycle history."""
+        return self._get("/v1/forge/mind/state")
+
+    def mind_improve(self, n_cycles: int = 1) -> dict:
+        """Run N self-improvement cycles. Returns cycles_executed and per-cycle outcomes."""
+        return self._post("/v1/forge/mind/improve", {"n_cycles": n_cycles})
+
+    def mind_budget(
+        self,
+        max_cu_per_cycle: int = None,
+        max_cu_per_day: int = None,
+        max_cycles_per_day: int = None,
+    ) -> dict:
+        """Update the ForgeMindAgent CU budget limits. Omit a field to leave it unchanged."""
+        body = {}
+        if max_cu_per_cycle is not None:
+            body["max_cu_per_cycle"] = max_cu_per_cycle
+        if max_cu_per_day is not None:
+            body["max_cu_per_day"] = max_cu_per_day
+        if max_cycles_per_day is not None:
+            body["max_cycles_per_day"] = max_cycles_per_day
+        return self._post("/v1/forge/mind/budget", body)
+
+    def mind_stats(self) -> dict:
+        """Get ForgeMindAgent lifetime stats: cycle_count, kept/reverted, score_delta, total_cu_invested."""
+        return self._get("/v1/forge/mind/stats")
+
     # ── Routing (Phase 6) ──
 
     def route(

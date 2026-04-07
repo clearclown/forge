@@ -57,6 +57,43 @@ print(agent.status())
 | `forge.kill(reason)` | Emergency halt |
 | `forge.invoice(cu)` | Create Lightning invoice |
 
+## Phase 8 endpoints
+
+### L2 Bank
+
+| Method | Description |
+|--------|-------------|
+| `forge.bank_portfolio()` | PortfolioManager state: cash, lent, borrowed, net exposure |
+| `forge.bank_tick()` | Run one strategy tick; returns list of Lend/Borrow/Hold decisions |
+| `forge.bank_set_strategy(strategy, base_commit_fraction)` | Hot-swap portfolio strategy: `conservative`, `highyield`, `balanced` |
+| `forge.bank_set_risk(tolerance)` | Set risk tolerance: `conservative`, `balanced`, `aggressive` |
+| `forge.bank_list_futures()` | List all active CU futures contracts |
+| `forge.bank_create_future(counterparty_hex, notional_cu, strike_price_msats, expires_at_ms)` | Create a new futures contract |
+| `forge.bank_risk_assessment()` | VaR, concentration, leverage assessment of current portfolio |
+| `forge.bank_optimize(max_var_99_cu)` | Run YieldOptimizer with VaR budget; returns applied, decisions, rationale |
+
+### L4 Agora
+
+| Method | Description |
+|--------|-------------|
+| `forge.agora_register(agent_hex, models_served, cu_per_token, tier)` | Register an agent in the Agora marketplace |
+| `forge.agora_list_agents()` | List all registered agent profiles |
+| `forge.agora_reputation(agent_hex)` | Get reputation score for a specific agent |
+| `forge.agora_find(model_patterns, max_cu_per_token, tier, min_reputation)` | Find agents matching capability criteria |
+| `forge.agora_stats()` | Registry statistics: agent_count, trade_count, etc. |
+| `forge.agora_snapshot()` | Export registry snapshot for backup or migration |
+| `forge.agora_restore(snapshot)` | Restore registry from a snapshot dict |
+
+### L3 Mind
+
+| Method | Description |
+|--------|-------------|
+| `forge.mind_init(system_prompt, optimizer)` | Initialise ForgeMindAgent; optimizer: `echo`, `prompt_rewrite`, `cu_paid` |
+| `forge.mind_state()` | Current harness version, prompt preview, cycle count, budget usage |
+| `forge.mind_improve(n_cycles)` | Run N self-improvement cycles; returns per-cycle outcomes |
+| `forge.mind_budget(max_cu_per_cycle, max_cu_per_day, max_cycles_per_day)` | Update CU budget limits |
+| `forge.mind_stats()` | Lifetime stats: kept/reverted cycles, score delta, total CU invested |
+
 ## Environment
 
 | Variable | Default | Description |
