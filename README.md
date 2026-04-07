@@ -143,25 +143,28 @@ Nodes can lend idle CU to other nodes at interest. A small node borrows CU, acce
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  L4: Discovery (forge-agora)                    │
+│  L4: Discovery (forge-agora) ✅ v0.1            │
 │  Agent marketplace, reputation aggregation,     │
 │  Nostr NIP-90, Google A2A payment extension     │
 ├─────────────────────────────────────────────────┤
-│  L3: Intelligence (forge-mind)                  │
-│  AutoAgent self-improvement loops,              │
+│  L3: Intelligence (forge-mind) ✅ v0.1          │
+│  AutoAgent self-improvement loops paid in CU,   │
 │  harness marketplace, meta-optimization         │
 ├─────────────────────────────────────────────────┤
-│  L2: Finance (forge-bank)                       │
-│  CU lending, yield optimization, credit scoring │
+│  L2: Finance (forge-bank) ✅ v0.1               │
+│  Strategies, portfolios, futures, insurance,    │
+│  risk model, yield optimizer                    │
 ├─────────────────────────────────────────────────┤
-│  L1: Economy (forge — this repo)                │
+│  L1: Economy (forge — this repo) ✅ Phase 1-6   │
 │  CU ledger, dual-signed trades, dynamic pricing,│
 │  lending primitives, safety controls            │
 ├─────────────────────────────────────────────────┤
-│  L0: Inference (forge-mesh / mesh-llm)          │
+│  L0: Inference (forge-mesh / mesh-llm) ✅       │
 │  Pipeline parallelism, MoE sharding,            │
 │  iroh mesh, Nostr discovery, MLX/llama.cpp      │
 └─────────────────────────────────────────────────┘
+
+All 5 layers exist. 326 tests passing across the ecosystem.
 ```
 
 ## Quick Start
@@ -289,21 +292,35 @@ A room full of Mac Minis running Forge is an apartment building — generating y
 ## Project Structure
 
 ```
-forge/
+forge/  (this repo — Layer 1)
 ├── crates/
-│   ├── forge-ledger/      # CU accounting, trades, pricing, safety, Merkle root
-│   ├── forge-node/        # Node daemon, HTTP API, pipeline coordinator
+│   ├── forge-ledger/      # CU accounting, lending, agora (NIP-90), safety
+│   ├── forge-node/        # Node daemon, HTTP API (lending + routing), pipeline
 │   ├── forge-cli/         # CLI: chat, seed, worker, settle, wallet
-│   ├── forge-lightning/   # CU ↔ Bitcoin Lightning bridge
-│   ├── forge-net/         # P2P: iroh QUIC + Noise + gossip
-│   ├── forge-proto/       # Wire protocol: 17 message types
+│   ├── forge-lightning/   # CU ↔ Bitcoin Lightning bridge (bidirectional)
+│   ├── forge-net/         # P2P: iroh QUIC + Noise + gossip (trades + loans)
+│   ├── forge-proto/       # Wire protocol: 27+ message types incl. Loan*
 │   ├── forge-infer/       # Inference: llama.cpp, GGUF, Metal/CPU
 │   ├── forge-core/        # Types: NodeId, CU, Config
 │   └── forge-shard/       # Topology: layer assignment
-└── docs/                  # Specs, threat model, roadmap
+├── sdk/python/forge_sdk.py        # Python client with full lending API
+├── mcp/forge-mcp-server.py        # MCP server (lending tools for Claude/etc.)
+├── scripts/verify-impl.sh         # TDD regression test (24 assertions)
+└── docs/                  # Specs, strategy, threat model, roadmap
 ```
 
-~10,000 lines of Rust. 76 tests. 2 security audits completed.
+~14,500 lines of Rust. **143 tests passing.** Phase 1-6 complete.
+
+## Sister repositories (full ecosystem)
+
+| Repo | Layer | Tests | Status |
+|------|-------|-------|--------|
+| [clearclown/forge](https://github.com/clearclown/forge) (this) | L1 Economy | 143 | Phase 1-6 ✅ |
+| [clearclown/forge-bank](https://github.com/clearclown/forge-bank) | L2 Finance | 45 | v0.1 ✅ |
+| [clearclown/forge-mind](https://github.com/clearclown/forge-mind) | L3 Intelligence | 40 | v0.1 ✅ |
+| [clearclown/forge-agora](https://github.com/clearclown/forge-agora) | L4 Discovery | 39 | v0.1 ✅ |
+| [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | Theory | 16/16 GREEN | ✅ |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 43 (forge-economy) | ✅ |
 
 ## Docs
 

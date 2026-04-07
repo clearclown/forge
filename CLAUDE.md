@@ -13,23 +13,27 @@ Forge is a distributed LLM inference protocol where **compute is currency**. The
 
 | Repo | Language | Status | Layer | Purpose |
 |------|----------|--------|-------|---------|
-| `clearclown/forge` (this) | Rust | Active | L1 | Protocol core: CU ledger, trades, lending, safety |
-| `nm-arealnormalman/mesh-llm` | Rust | Active | L0 | mesh-llm + Forge economy = production runtime |
+| `clearclown/forge` (this) | Rust | Active (143 tests) | L1 | Protocol core: CU ledger, trades, lending, safety |
+| `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Forge economy = production runtime |
+| `clearclown/forge-bank` | Python | Active v0.1 (45 tests) | L2 | Strategies, portfolios, futures, insurance, risk |
+| `clearclown/forge-mind` | Python | Active v0.1 (40 tests) | L3 | AutoAgent-style self-improvement paid in CU |
+| `clearclown/forge-agora` | Python | Active v0.1 (39 tests) | L4 | Agent marketplace, reputation, NIP-90, A2A |
+| `clearclown/forge-economics` | Markdown | Active (16/16 GREEN) | Theory | Economic theory, design rationale, parameters |
 | `forge-sdk` | Python | Published (PyPI) | Client | Python SDK for Forge API |
 | `forge-cu-mcp` | Python | Published (PyPI) | Client | MCP server for AI tools |
-| `forge-bank` | Rust + Python | Planned | L2 | Advanced financial instruments |
-| `forge-mind` | Python | Planned | L3 | AutoAgent self-improvement + CU economy |
-| `forge-agora` | Python/TS | Planned | L4 | Agent marketplace, Nostr NIP-90, A2A |
 
-### 5-Layer Architecture
+### 5-Layer Architecture (all layers exist as of 2026-04-07)
 
 ```
-L4: Discovery (forge-agora)     — Agent marketplace, reputation, NIP-90
-L3: Intelligence (forge-mind)   — AutoAgent self-improvement loops
-L2: Finance (forge-bank)        — Advanced CU financial instruments
-L1: Economy (forge — this repo) — CU ledger, trades, lending, safety
-L0: Inference (forge-mesh)      — Distributed LLM inference
+L4: Discovery     clearclown/forge-agora      — Agent marketplace, reputation, NIP-90
+L3: Intelligence  clearclown/forge-mind       — AutoAgent self-improvement paid in CU
+L2: Finance       clearclown/forge-bank       — Strategies, portfolios, futures, insurance
+L1: Economy       clearclown/forge (this)     — CU ledger, trades, lending, safety
+L0: Inference     nm-arealnormalman/mesh-llm  — Distributed LLM inference + forge-economy port
 ```
+
+**Total tests across the ecosystem:** 143 (forge) + 43 (forge-mesh) + 45 (forge-bank) +
+40 (forge-mind) + 39 (forge-agora) + 16 (forge-economics SPEC-AUDIT) = **326 passing**.
 
 The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's full distributed inference engine with Forge's economic crates (`forge-economy/`) and API routes (`/api/forge/*`).
 
@@ -166,17 +170,23 @@ All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 - **Python SDK**: `forge_sdk` with full lending coverage (lend, borrow, repay, credit, pool, loans, route)
 - **MCP server**: 7 lending tools exposed to Claude/ChatGPT/Cursor
 
-### Next: forge-agora marketplace (Phase 7)
-- Agent discovery via Nostr NIP-90 (Data Vending Machines)
-- Reputation aggregation from gossiped TradeRecords
-- A2A Agent Card publication
-- Capability matching engine
-- Post-marketing marketplace (quality > advertising)
+### Sister repositories (all Layer 2-4 scaffolds exist as v0.1)
 
-### Future (Phase 8+)
-- forge-mind: AutoAgent self-improvement loops with CU budgets
-- forge-bank: advanced financial instruments (futures, insurance, yield optimization)
-- Reputation gossip across the mesh
+- **forge-bank** (L2): registry, strategies, portfolio manager, futures, insurance, risk
+  model, yield optimizer with risk-budget gate. Pluggable strategies (Conservative,
+  HighYield, Balanced). 45 tests.
+- **forge-mind** (L3): Harness with monotonic versioning, CUBudget with hard limits,
+  Benchmark / MetaOptimizer / ImprovementCycleRunner / ForgeMindAgent autonomous loop.
+  Stub optimizers (Echo, PromptRewrite); CUPaidOptimizer planned for v0.2. 40 tests.
+- **forge-agora** (L4): AgentRegistry, ReputationCalculator (volume/recency/diversity/
+  consistency), CapabilityMatcher with composite scoring, Marketplace facade. 39 tests.
+
+### Phase 7+ work (cross-repo)
+- Live forge-sdk feed in forge-agora (real /v1/forge/trades polling)
+- CUPaidOptimizer in forge-mind (real frontier model proposals via forge-sdk)
+- forge-bank → forge-sdk integration (real lend/borrow execution)
+- Nostr NIP-90 relay submission from forge_ledger::agora event builders
+- Reputation gossip across the forge mesh
 - Merkle tree of trade history for efficient state comparison
 - Bitcoin OP_RETURN anchoring for immutable audit trail
 - Compute Standard academic paper
