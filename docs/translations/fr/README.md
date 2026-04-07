@@ -113,11 +113,11 @@ Forge:    électricité  →  inférence LLM utile →  CU
 
 Bitcoin a prouvé que `électricité → calcul → argent`. Mais le calcul de Bitcoin est sans but. Forge l'inverse : chaque CU représente une intelligence réelle qui a résolu le problème réel de quelqu'un.
 
-**Trois choses qu'aucun autre projet ne fait :**
+**Quatre choses qu'aucun autre projet ne fait :**
 
 ### 1. Calcul = Monnaie
 
-Chaque inférence est une transaction. Le fournisseur gagne des CU, le consommateur dépense des CU. Pas de blockchain, pas de jeton, pas d'ICO. Le CU est soutenu par la physique — l'électricité consommée pour un travail utile.
+Chaque inférence est une transaction. Le fournisseur gagne des CU, le consommateur dépense des CU. Pas de blockchain, pas de jeton, pas d'ICO. Le CU est soutenu par la physique — l'électricité consommée pour un travail utile. Contrairement à Bittensor (TAO), Akash (AKT) ou Golem (GLM), le CU ne peut pas faire l'objet de spéculation — il est gagné en effectuant du calcul utile.
 
 ### 2. Inviolable sans Blockchain
 
@@ -135,32 +135,34 @@ Agent (1.5B sur téléphone)
   → le cycle se répète → l'agent grandit
 ```
 
+### 4. Microfinance de Calcul
+
+Les nœuds peuvent prêter des CU inactifs à d'autres nœuds avec intérêt. Un petit nœud emprunte des CU, accède à un modèle plus grand, gagne plus de CU, rembourse avec intérêt. Aucun autre projet d'inférence distribuée ne propose de prêts de calcul — confirmé par une analyse concurrentielle de tous les projets majeurs dans ce domaine. C'est le moteur qui rend la boucle d'auto-amélioration économiquement viable pour tous, et pas seulement pour ceux qui possèdent déjà du matériel puissant.
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  Couche d'inférence (mesh-llm)                  │
-│  Parallélisme de pipeline, sharding MoE,        │
-│  réseau iroh, découverte Nostr, API OpenAI      │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Couche économique (Forge)                       │
+│  L4 : Découverte (forge-agora)                  │
+│  Place de marché d'agents, agrégation de        │
+│  réputation, Nostr NIP-90, paiement Google A2A  │
+├─────────────────────────────────────────────────┤
+│  L3 : Intelligence (forge-mind)                 │
+│  Boucles d'auto-amélioration AutoAgent,         │
+│  marché des harnais, méta-optimisation          │
+├─────────────────────────────────────────────────┤
+│  L2 : Finance (forge-bank)                      │
+│  Prêts CU, optimisation de rendement,           │
+│  scoring de crédit                              │
+├─────────────────────────────────────────────────┤
+│  L1 : Économie (forge — ce dépôt)               │
 │  Registre CU, transactions double-signées,      │
-│  gossip, prix dynamiques, racine Merkle,        │
+│  prix dynamiques, primitives de prêt,           │
 │  contrôles de sécurité                          │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Couche de sécurité                             │
-│  Kill switch, politiques budgétaires,           │
-│  disjoncteurs, détection de vélocité,           │
-│  seuils d'approbation humaine                   │
-└──────────────────┬──────────────────────────────┘
-                   │ optionnel
-┌──────────────────▼──────────────────────────────┐
-│  Ponts externes                                 │
-│  CU ↔ BTC (Lightning), CU ↔ stablecoin          │
+├─────────────────────────────────────────────────┤
+│  L0 : Inférence (forge-mesh / mesh-llm)         │
+│  Parallélisme de pipeline, sharding MoE,        │
+│  maillage iroh, découverte Nostr, MLX/llama.cpp │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -238,7 +240,19 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/network` | Flux CU total + racine de Merkle |
 | `GET /v1/forge/providers` | Fournisseurs classés par réputation et coût |
 | `POST /v1/forge/invoice` | Créer une facture Lightning à partir du solde CU |
+| `GET /v1/forge/route` | Sélection optimale de fournisseur (coût/qualité/équilibré) |
 | `GET /settlement` | Relevé de règlement exportable |
+
+### Prêts
+
+| Point de terminaison | Description |
+|----------|-------------|
+| `POST /v1/forge/lend` | Offrir des CU au pool de prêts |
+| `POST /v1/forge/borrow` | Demander un prêt en CU |
+| `POST /v1/forge/repay` | Rembourser un prêt en cours |
+| `GET /v1/forge/credit` | Score de crédit et historique |
+| `GET /v1/forge/pool` | État du pool de prêts |
+| `GET /v1/forge/loans` | Prêts actifs |
 
 ### Sécurité
 
@@ -295,13 +309,17 @@ forge/
 
 ## Documentation
 
-- [Concept & Vision](concept.md) — Pourquoi le calcul est de l'argent
-- [Modèle Économique](economy.md) — Économie CU, Preuve de Travail Utile
-- [Architecture](architecture.md) — Conception à deux couches
-- [Protocole Filaire](protocol-spec.md) — 17 types de messages
-- [Feuille de Route](roadmap.md) — Phases de développement
-- [Modèle de Menaces](threat-model.md) — Attaques sécuritaires + économiques
-- [Bootstrap](bootstrap.md) — Démarrage, dégradation, récupération
+- [Stratégie](../../strategy.md) — Positionnement concurrentiel, spécification des prêts, architecture à 5 couches
+- [Théorie Monétaire](../../monetary-theory.md) — Pourquoi le CU fonctionne : Soddy, Bitcoin, PoUW, monnaie exclusivement pour IA
+- [Concept & Vision](../../concept.md) — Pourquoi le calcul est de l'argent
+- [Modèle Économique](../../economy.md) — Économie CU, Preuve de Travail Utile
+- [Architecture](../../architecture.md) — Conception à deux couches
+- [Intégration d'Agents](../../agent-integration.md) — SDK, MCP, flux de prêt
+- [Protocole Filaire](../../protocol-spec.md) — 17 types de messages
+- [Feuille de Route](../../roadmap.md) — Phases de développement
+- [Modèle de Menaces](../../threat-model.md) — Attaques sécuritaires + économiques
+- [Bootstrap](../../bootstrap.md) — Démarrage, dégradation, récupération
+- [Paiement A2A](../../a2a-payment.md) — Extension de paiement CU pour protocoles d'agents
 
 ## Licence
 

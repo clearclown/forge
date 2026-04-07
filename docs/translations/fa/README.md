@@ -113,7 +113,7 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 بیت‌کوین ثابت کرد که `برق ← محاسبات ← پول`. اما محاسبات بیت‌کوین بی‌هدف است. Forge آن را معکوس می‌کند: هر CU نشان‌دهنده هوش واقعی است که مشکل واقعی کسی را حل کرده است.
 
-**سه موردی که هیچ پروژه دیگری انجام نمی‌دهد:**
+**چهار موردی که هیچ پروژه دیگری انجام نمی‌دهد:**
 
 ### ۱. محاسبات = ارز
 
@@ -135,32 +135,38 @@ Forge:    electricity  →  useful LLM inference →  CU
   ← چرخه تکرار می‌شود ← عامل رشد می‌کند
 ```
 
+### ۴. تامین مالی خرد محاسبات
+
+نودها می‌توانند CU بیکار خود را با بهره به نودهای دیگر قرض دهند. یک نود کوچک CU قرض می‌گیرد، به مدل بزرگتری دسترسی پیدا می‌کند، CU بیشتری کسب می‌کند و با بهره بازپرداخت می‌کند. هیچ پروژه استنتاج توزیع‌شده دیگری وام محاسباتی ارائه نمی‌دهد — این موضوع از طریق تحلیل رقابتی هر پروژه بزرگ در این حوزه تایید شده است. این همان موتوری است که حلقه خودبهبودی را برای همه از نظر اقتصادی قابل اجرا می‌کند، نه فقط برای کسانی که از قبل سخت‌افزار قدرتمندی دارند.
+
 ## معماری
+
+<div dir="ltr">
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  Inference Layer (mesh-llm)                     │
-│  Pipeline parallelism, MoE expert sharding,     │
-│  iroh mesh, Nostr discovery, OpenAI API         │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Economic Layer (Forge)                         │
-│  CU ledger, dual-signed trades, gossip,         │
-│  dynamic pricing, Merkle root, safety controls  │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Safety Layer                                   │
-│  Kill switch, budget policies, circuit breakers,│
-│  velocity detection, human approval thresholds  │
-└──────────────────┬──────────────────────────────┘
-                   │ اختیاری
-┌──────────────────▼──────────────────────────────┐
-│  External Bridges                               │
-│  CU ↔ BTC (Lightning), CU ↔ stablecoin        │
+│  L4: Discovery (forge-agora)                    │
+│  Agent marketplace, reputation aggregation,     │
+│  Nostr NIP-90, Google A2A payment extension     │
+├─────────────────────────────────────────────────┤
+│  L3: Intelligence (forge-mind)                  │
+│  AutoAgent self-improvement loops,              │
+│  harness marketplace, meta-optimization         │
+├─────────────────────────────────────────────────┤
+│  L2: Finance (forge-bank)                       │
+│  CU lending, yield optimization, credit scoring │
+├─────────────────────────────────────────────────┤
+│  L1: Economy (forge — this repo)                │
+│  CU ledger, dual-signed trades, dynamic pricing,│
+│  lending primitives, safety controls            │
+├─────────────────────────────────────────────────┤
+│  L0: Inference (forge-mesh / mesh-llm)          │
+│  Pipeline parallelism, MoE sharding,            │
+│  iroh mesh, Nostr discovery, MLX/llama.cpp      │
 └─────────────────────────────────────────────────┘
 ```
+
+</div>
 
 ## شروع سریع (Quick Start)
 
@@ -236,7 +242,19 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/network` | جریان کل CU + ریشه مرکل |
 | `GET /v1/forge/providers` | رتبه‌بندی ارائه‌دهندگان بر اساس اعتبار و هزینه |
 | `POST /v1/forge/invoice` | ایجاد فاکتور لایتنینگ از موجودی CU |
+| `GET /v1/forge/route` | انتخاب بهینه ارائه‌دهنده (هزینه/کیفیت/متوازن) |
 | `GET /settlement` | صورت‌حساب تسویه قابل خروجی |
+
+### وام‌دهی (Lending)
+
+| نقطه انتهایی | توضیحات |
+|----------|-------------|
+| `POST /v1/forge/lend` | ارائه CU به استخر وام‌دهی |
+| `POST /v1/forge/borrow` | درخواست وام CU |
+| `POST /v1/forge/repay` | بازپرداخت وام معوق |
+| `GET /v1/forge/credit` | امتیاز اعتباری و تاریخچه |
+| `GET /v1/forge/pool` | وضعیت استخر وام‌دهی |
+| `GET /v1/forge/loans` | وام‌های فعال |
 
 ### ایمنی (Safety)
 
@@ -293,13 +311,17 @@ forge/
 
 ## مستندات (Docs)
 
+- [استراتژی](strategy.md) — موقعیت‌یابی رقابتی، مشخصات وام‌دهی، معماری ۵ لایه
+- [نظریه پولی](monetary-theory.md) — چرا CU کار می‌کند: Soddy، بیت‌کوین، PoUW، ارز مختص AI
 - [مفهوم و چشم‌انداز](concept.md) — چرا محاسبات همان پول است
 - [مدل اقتصادی](economy.md) — اقتصاد CU، اثبات کار مفید
 - [معماری](architecture.md) — طراحی دو لایه
+- [یکپارچه‌سازی عامل](agent-integration.md) — SDK، MCP، جریان کار وام‌گیری
 - [پروتکل ارتباطی](protocol-spec.md) — ۱۷ نوع پیام
 - [نقشه راه](roadmap.md) — مراحل توسعه
 - [مدل تهدید](threat-model.md) — حملات امنیتی و اقتصادی
 - [راه‌اندازی (Bootstrap)](bootstrap.md) — راه‌اندازی اولیه، کاهش عملکرد، بازیابی
+- [پرداخت A2A](a2a-payment.md) — افزونه پرداخت CU برای پروتکل‌های عامل
 
 ## مجوز (License)
 

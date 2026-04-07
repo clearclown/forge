@@ -113,7 +113,7 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 ביטקוין הוכיח ש`חשמל ← חישוב ← כסף`. אבל החישוב של ביטקוין הוא חסר תכלית. Forge הופך את זה: כל CU מייצג בינה אמיתית שפתרה בעיה אמיתית של מישהו.
 
-**שלושה דברים שאף פרויקט אחר לא עושה:**
+**ארבעה דברים שאף פרויקט אחר לא עושה:**
 
 ### 1. חישוב = מטבע
 
@@ -135,32 +135,38 @@ Forge:    electricity  →  useful LLM inference →  CU
   ← המחזור חוזר על עצמו ← הסוכן גדל
 ```
 
+### 4. מיקרו-מימון חישוב
+
+צמתים יכולים להלוות CU לא פעיל לצמתים אחרים בריבית. צומת קטן לווה CU, מקבל גישה למודל גדול יותר, מרוויח יותר CU, ומחזיר עם ריבית. אף פרויקט אינפרנס מבוזר אחר לא מציע הלוואת חישוב — אושר באמצעות ניתוח תחרותי של כל פרויקט גדול בתחום זה. זהו המנוע שהופך את לולאת השיפור העצמי לכלכלית עבור כולם, לא רק עבור אלה שכבר מחזיקים בחומרה חזקה.
+
 ## ארכיטקטורה (Architecture)
+
+<div dir="ltr">
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  Inference Layer (mesh-llm)                     │
-│  Pipeline parallelism, MoE expert sharding,     │
-│  iroh mesh, Nostr discovery, OpenAI API         │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Economic Layer (Forge)                         │
-│  CU ledger, dual-signed trades, gossip,         │
-│  dynamic pricing, Merkle root, safety controls  │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Safety Layer                                   │
-│  Kill switch, budget policies, circuit breakers,│
-│  velocity detection, human approval thresholds  │
-└──────────────────┬──────────────────────────────┘
-                   │ אופציונלי
-┌──────────────────▼──────────────────────────────┐
-│  External Bridges                               │
-│  CU ↔ BTC (Lightning), CU ↔ stablecoin        │
+│  L4: Discovery (forge-agora)                    │
+│  Agent marketplace, reputation aggregation,     │
+│  Nostr NIP-90, Google A2A payment extension     │
+├─────────────────────────────────────────────────┤
+│  L3: Intelligence (forge-mind)                  │
+│  AutoAgent self-improvement loops,              │
+│  harness marketplace, meta-optimization         │
+├─────────────────────────────────────────────────┤
+│  L2: Finance (forge-bank)                       │
+│  CU lending, yield optimization, credit scoring │
+├─────────────────────────────────────────────────┤
+│  L1: Economy (forge — this repo)                │
+│  CU ledger, dual-signed trades, dynamic pricing,│
+│  lending primitives, safety controls            │
+├─────────────────────────────────────────────────┤
+│  L0: Inference (forge-mesh / mesh-llm)          │
+│  Pipeline parallelism, MoE sharding,            │
+│  iroh mesh, Nostr discovery, MLX/llama.cpp      │
 └─────────────────────────────────────────────────┘
 ```
+
+</div>
 
 ## התחלה מהירה (Quick Start)
 
@@ -236,7 +242,19 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/network` | זרימת CU כוללת + שורש מרקל |
 | `GET /v1/forge/providers` | ספקים מדורגים לפי מוניטין ועלות |
 | `POST /v1/forge/invoice` | יצירת חשבונית Lightning מיתרת CU |
+| `GET /v1/forge/route` | בחירת ספק אופטימלית (עלות/איכות/מאוזן) |
 | `GET /settlement` | דוח סליקה ניתן לייצוא |
+
+### הלוואות (Lending)
+
+| נקודת קצה | תיאור |
+|----------|-------------|
+| `POST /v1/forge/lend` | הצעת CU לבריכת ההלוואות |
+| `POST /v1/forge/borrow` | בקשת הלוואת CU |
+| `POST /v1/forge/repay` | החזר הלוואה פתוחה |
+| `GET /v1/forge/credit` | ציון אשראי והיסטוריה |
+| `GET /v1/forge/pool` | מצב בריכת ההלוואות |
+| `GET /v1/forge/loans` | הלוואות פעילות |
 
 ### בטיחות (Safety)
 
@@ -293,13 +311,17 @@ forge/
 
 ## תיעוד (Docs)
 
+- [אסטרטגיה](strategy.md) — מיצוב תחרותי, מפרט הלוואות, ארכיטקטורת 5 שכבות
+- [תאוריה מוניטרית](monetary-theory.md) — למה CU עובד: Soddy, ביטקוין, PoUW, מטבע AI בלבד
 - [קונספט וחזון](concept.md) — למה חישוב הוא כסף
 - [מודל כלכלי](economy.md) — כלכלת CU, הוכחת עבודה מועילה
 - [ארכיטקטורה](architecture.md) — עיצוב דו-שכבתי
+- [אינטגרציית סוכן](agent-integration.md) — SDK, MCP, זרימת עבודת הלוואה
 - [פרוטוקול תקשורת](protocol-spec.md) — 17 סוגי הודעות
 - [מפת דרכים](roadmap.md) — שלבי פיתוח
 - [מודל איומים](threat-model.md) — מתקפות אבטחה וכלכליות
 - [Bootstrap](bootstrap.md) — הפעלה, הידרדרות, התאוששות
+- [תשלום A2A](a2a-payment.md) — הרחבת תשלום CU לפרוטוקולי סוכנים
 
 ## רישיון (License)
 

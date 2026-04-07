@@ -113,11 +113,11 @@ Forge:    electricidad  →  inferencia útil de LLM →  CU
 
 Bitcoin demostró `electricidad → computación → dinero`. Pero la computación de Bitcoin no tiene propósito. Forge lo invierte: cada CU representa inteligencia real que resolvió el problema real de alguien.
 
-**Tres cosas que ningún otro proyecto hace:**
+**Cuatro cosas que ningún otro proyecto hace:**
 
 ### 1. Cómputo = Moneda
 
-Cada inferencia es una transacción. El proveedor gana CU, el consumidor gasta CU. Sin blockchain, sin tokens, sin ICO. El CU está respaldado por la física — la electricidad consumida para un trabajo útil.
+Cada inferencia es una transacción. El proveedor gana CU, el consumidor gasta CU. Sin blockchain, sin tokens, sin ICO. El CU está respaldado por la física — la electricidad consumida para un trabajo útil. A diferencia de Bittensor (TAO), Akash (AKT) o Golem (GLM), el CU no puede ser especulado — se gana realizando computación útil.
 
 ### 2. A prueba de manipulaciones sin una Blockchain
 
@@ -135,32 +135,34 @@ Agente (1.5B en el teléfono)
   → el ciclo se repite → el agente crece
 ```
 
+### 4. Microfinanzas de Cómputo
+
+Los nodos pueden prestar CU inactivos a otros nodos con interés. Un nodo pequeño pide CU prestados, accede a un modelo más grande, gana más CU y devuelve el préstamo con interés. Ningún otro proyecto de inferencia distribuida ofrece préstamos de cómputo — confirmado mediante análisis competitivo de todos los proyectos importantes en este ámbito. Este es el motor que hace que el ciclo de auto-mejora sea económicamente viable para todos, no solo para quienes ya poseen hardware potente.
+
 ## Arquitectura
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  Capa de Inferencia (mesh-llm)                  │
-│  Paralelismo de pipeline, sharding MoE,         │
-│  red iroh, descubrimiento Nostr, API de OpenAI  │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Capa Económica (Forge)                         │
-│  Libro contable de CU, transacciones firmadas,  │
-│  gossip, precios dinámicos, raíz de Merkle,     │
+│  L4: Descubrimiento (forge-agora)               │
+│  Mercado de agentes, agregación de reputación,  │
+│  Nostr NIP-90, extensión de pago Google A2A     │
+├─────────────────────────────────────────────────┤
+│  L3: Inteligencia (forge-mind)                  │
+│  Ciclos de auto-mejora de AutoAgent,            │
+│  mercado de arneses, meta-optimización          │
+├─────────────────────────────────────────────────┤
+│  L2: Finanzas (forge-bank)                      │
+│  Préstamos de CU, optimización de rendimiento,  │
+│  puntuación crediticia                          │
+├─────────────────────────────────────────────────┤
+│  L1: Economía (forge — este repo)               │
+│  Libro contable CU, operaciones doble-firmadas, │
+│  precios dinámicos, primitivas de préstamo,     │
 │  controles de seguridad                         │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Capa de Seguridad                              │
-│  Kill switch, políticas presupuestarias,        │
-│  disyuntores, detección de velocidad,           │
-│  umbrales de aprobación humana                  │
-└──────────────────┬──────────────────────────────┘
-                   │ opcional
-┌──────────────────▼──────────────────────────────┐
-│  Puentes Externos                               │
-│  CU ↔ BTC (Lightning), CU ↔ stablecoin          │
+├─────────────────────────────────────────────────┤
+│  L0: Inferencia (forge-mesh / mesh-llm)         │
+│  Paralelismo de pipeline, sharding MoE,         │
+│  malla iroh, descubrimiento Nostr, MLX/llama.cpp│
 └─────────────────────────────────────────────────┘
 ```
 
@@ -238,7 +240,19 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/network` | Flujo total de CU + raíz de Merkle |
 | `GET /v1/forge/providers` | Proveedores clasificados por reputación y costo |
 | `POST /v1/forge/invoice` | Crear factura de Lightning desde el saldo de CU |
+| `GET /v1/forge/route` | Selección óptima de proveedor (costo/calidad/equilibrado) |
 | `GET /settlement` | Estado de liquidación exportable |
+
+### Préstamos
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `POST /v1/forge/lend` | Ofrecer CU al pool de préstamos |
+| `POST /v1/forge/borrow` | Solicitar un préstamo en CU |
+| `POST /v1/forge/repay` | Reembolsar un préstamo pendiente |
+| `GET /v1/forge/credit` | Puntuación de crédito e historial |
+| `GET /v1/forge/pool` | Estado del pool de préstamos |
+| `GET /v1/forge/loans` | Préstamos activos |
 
 ### Seguridad
 
@@ -295,13 +309,17 @@ forge/
 
 ## Documentación
 
-- [Concepto y Visión](concept.md) — Por qué el cómputo es dinero
-- [Modelo Económico](economy.md) — Economía de CU, Prueba de Trabajo Útil
-- [Arquitectura](architecture.md) — Diseño de dos capas
-- [Protocolo de Cable](protocol-spec.md) — 17 tipos de mensajes
-- [Hoja de Ruta](roadmap.md) — Fases de desarrollo
-- [Modelo de Amenazas](threat-model.md) — Ataques de seguridad y económicos
-- [Arranque](bootstrap.md) — Inicio, degradación, recuperación
+- [Estrategia](../../strategy.md) — Posicionamiento competitivo, especificación de préstamos, arquitectura de 5 capas
+- [Teoría Monetaria](../../monetary-theory.md) — Por qué funciona el CU: Soddy, Bitcoin, PoUW, moneda exclusiva para IA
+- [Concepto y Visión](../../concept.md) — Por qué el cómputo es dinero
+- [Modelo Económico](../../economy.md) — Economía de CU, Prueba de Trabajo Útil
+- [Arquitectura](../../architecture.md) — Diseño de dos capas
+- [Integración con Agentes](../../agent-integration.md) — SDK, MCP, flujo de préstamos
+- [Protocolo de Cable](../../protocol-spec.md) — 17 tipos de mensajes
+- [Hoja de Ruta](../../roadmap.md) — Fases de desarrollo
+- [Modelo de Amenazas](../../threat-model.md) — Ataques de seguridad y económicos
+- [Arranque](../../bootstrap.md) — Inicio, degradación, recuperación
+- [Pago A2A](../../a2a-payment.md) — Extensión de pago CU para protocolos de agentes
 
 ## Licencia
 

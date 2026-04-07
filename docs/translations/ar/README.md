@@ -113,7 +113,7 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 أثبت بيتكوين أن `الكهرباء ← الحوسبة ← المال`. لكن حوسبة بيتكوين بلا هدف. Forge يقلب هذه الآية: كل وحدة CU تمثل ذكاءً حقيقياً حل مشكلة حقيقية لشخص ما.
 
-**ثلاثة أشياء لا يفعلها أي مشروع آخر:**
+**أربعة أشياء لا يفعلها أي مشروع آخر:**
 
 ### ١. الحوسبة = عملة
 
@@ -135,32 +135,38 @@ Forge:    electricity  →  useful LLM inference →  CU
   ← تتكرر الدورة ← ينمو الوكيل
 ```
 
+### ٤. التمويل الأصغر للحوسبة
+
+يمكن للعقد إقراض وحدات CU الخاملة إلى عقد أخرى بفائدة. تقترض عقدة صغيرة CU، وتصل إلى نموذج أكبر، وتكسب المزيد من CU، وتسدد مع الفائدة. لا يقدم أي مشروع استدلال موزع آخر إقراض الحوسبة — وقد تم تأكيد ذلك من خلال التحليل التنافسي لكل مشروع رئيسي في هذا المجال. هذا هو المحرك الذي يجعل حلقة التحسين الذاتي قابلة للتطبيق اقتصادياً للجميع، وليس فقط لأولئك الذين يمتلكون بالفعل أجهزة قوية.
+
 ## الهندسة المعمارية (Architecture)
+
+<div dir="ltr">
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  Inference Layer (mesh-llm)                     │
-│  Pipeline parallelism, MoE expert sharding,     │
-│  iroh mesh, Nostr discovery, OpenAI API         │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Economic Layer (Forge)                         │
-│  CU ledger, dual-signed trades, gossip,         │
-│  dynamic pricing, Merkle root, safety controls  │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Safety Layer                                   │
-│  Kill switch, budget policies, circuit breakers,│
-│  velocity detection, human approval thresholds  │
-└──────────────────┬──────────────────────────────┘
-                   │ اختياري
-┌──────────────────▼──────────────────────────────┐
-│  External Bridges                               │
-│  CU ↔ BTC (Lightning), CU ↔ stablecoin        │
+│  L4: Discovery (forge-agora)                    │
+│  Agent marketplace, reputation aggregation,     │
+│  Nostr NIP-90, Google A2A payment extension     │
+├─────────────────────────────────────────────────┤
+│  L3: Intelligence (forge-mind)                  │
+│  AutoAgent self-improvement loops,              │
+│  harness marketplace, meta-optimization         │
+├─────────────────────────────────────────────────┤
+│  L2: Finance (forge-bank)                       │
+│  CU lending, yield optimization, credit scoring │
+├─────────────────────────────────────────────────┤
+│  L1: Economy (forge — this repo)                │
+│  CU ledger, dual-signed trades, dynamic pricing,│
+│  lending primitives, safety controls            │
+├─────────────────────────────────────────────────┤
+│  L0: Inference (forge-mesh / mesh-llm)          │
+│  Pipeline parallelism, MoE sharding,            │
+│  iroh mesh, Nostr discovery, MLX/llama.cpp      │
 └─────────────────────────────────────────────────┘
 ```
+
+</div>
 
 ## البداية السريعة (Quick Start)
 
@@ -236,7 +242,19 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/network` | إجمالي تدفق CU + جذر ميركل |
 | `GET /v1/forge/providers` | المزودون المصنفون حسب السمعة والتكلفة |
 | `POST /v1/forge/invoice` | إنشاء فاتورة Lightning من رصيد CU |
+| `GET /v1/forge/route` | اختيار المزود الأمثل (التكلفة/الجودة/متوازن) |
 | `GET /settlement` | بيان تسوية قابل للتصدير |
+
+### الإقراض (Lending)
+
+| المسار | الوصف |
+|----------|-------------|
+| `POST /v1/forge/lend` | تقديم CU إلى مجمع الإقراض |
+| `POST /v1/forge/borrow` | طلب قرض CU |
+| `POST /v1/forge/repay` | سداد قرض قائم |
+| `GET /v1/forge/credit` | درجة الائتمان والتاريخ |
+| `GET /v1/forge/pool` | حالة مجمع الإقراض |
+| `GET /v1/forge/loans` | القروض النشطة |
 
 ### السلامة (Safety)
 
@@ -293,13 +311,17 @@ forge/
 
 ## المستندات (Docs)
 
+- [الاستراتيجية](strategy.md) — الموقع التنافسي، مواصفات الإقراض، معمارية ٥ طبقات
+- [النظرية النقدية](monetary-theory.md) — لماذا تعمل CU: Soddy، بيتكوين، PoUW، عملة AI فقط
 - [المفهوم والرؤية](concept.md) — لماذا الحوسبة هي المال
 - [النموذج الاقتصادي](economy.md) — اقتصاد CU، إثبات العمل المفيد
 - [الهندسة المعمارية](architecture.md) — تصميم من طبقتين
+- [تكامل الوكلاء](agent-integration.md) — SDK، MCP، سير عمل الاقتراض
 - [بروتوكول الأسلاك](protocol-spec.md) — ١٧ نوعاً من الرسائل
 - [خارطة الطريق](roadmap.md) — مراحل التطوير
 - [نموذج التهديد](threat-model.md) — الهجمات الأمنية والاقتصادية
 - [التمهيد (Bootstrap)](bootstrap.md) — بدء التشغيل، التدهور، التعافي
+- [دفع A2A](a2a-payment.md) — امتداد دفع CU لبروتوكولات الوكلاء
 
 ## الترخيص (License)
 
