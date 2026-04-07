@@ -1548,6 +1548,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
+ "ed25519-dalek 2.2.0",
  "forge-core",
  "forge-infer",
  "forge-ledger",

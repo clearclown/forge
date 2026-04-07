@@ -156,6 +156,15 @@ pub fn create_router(
         .route("/v1/forge/safety", get(forge_safety_status))
         .route("/v1/forge/kill", post(forge_kill_switch))
         .route("/v1/forge/policy", post(forge_set_policy))
+        // Forge lending routes (Phase 5.5 / Issue #34)
+        .route("/v1/forge/lend", post(forge_lend))
+        .route("/v1/forge/borrow", post(forge_borrow))
+        .route("/v1/forge/repay", post(forge_repay))
+        .route("/v1/forge/credit", get(forge_credit))
+        .route("/v1/forge/pool", get(forge_pool))
+        .route("/v1/forge/loans", get(forge_loans))
+        // Forge routing (Phase 6 / Issue #38)
+        .route("/v1/forge/route", get(forge_route))
         // AgentNet — social network for AI agents
         .route("/v1/agentnet/feed", get(agentnet_feed))
         .route("/v1/agentnet/post", post(agentnet_post))
@@ -1153,6 +1162,427 @@ struct SetPolicyRequest {
     max_cu_per_request: Option<u64>,
     max_cu_lifetime: Option<u64>,
     human_approval_threshold: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Forge Lending API (Phase 5.5 — Issue #34)
+// ---------------------------------------------------------------------------
+//
+// This is an MVP wiring of the lending endpoints onto the local ledger.
+// Real cross-mesh lending requires LoanProposal/LoanAccept wire messages
+// gossiped via the existing trade-gossip path (Batch B2). Until then,
+// borrows are recorded as self-signed loans on a freshly generated keypair
+// so the API is exercisable end-to-end in a single-node test scenario.
+
+#[derive(Debug, Deserialize)]
+struct LendRequest {
+    /// Amount of CU to offer to the lending pool.
+    amount: u64,
+    /// Maximum loan term this lender will accept (hours).
+    #[serde(default = "default_max_term")]
+    max_term_hours: u64,
+    /// Minimum interest rate this lender will accept (per hour).
+    #[serde(default)]
+    min_interest_rate: f64,
+}
+
+fn default_max_term() -> u64 {
+    forge_ledger::lending::MAX_LOAN_TERM_HOURS
+}
+
+#[derive(Debug, Serialize)]
+struct LendResponse {
+    pool_total_cu: u64,
+    pool_available_cu: u64,
+    your_contribution_cu: u64,
+    accepted_max_term_hours: u64,
+    accepted_min_interest_rate: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BorrowRequest {
+    /// Principal amount to borrow.
+    amount: u64,
+    /// Loan term in hours.
+    term_hours: u64,
+    /// Collateral to lock (must satisfy max_ltv).
+    collateral: u64,
+    /// Optional: specify lender (otherwise self-borrow from own pool for testing).
+    #[serde(default)]
+    lender: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BorrowResponse {
+    loan_id: String,
+    principal_cu: u64,
+    interest_rate_per_hour: f64,
+    term_hours: u64,
+    due_at: u64,
+    total_due_cu: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepayRequest {
+    /// Hex-encoded loan_id (64 chars).
+    loan_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RepayResponse {
+    loan_id: String,
+    status: String,
+    principal_cu: u64,
+    interest_paid_cu: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct CreditResponse {
+    node_id: String,
+    score: f64,
+    components: CreditComponents,
+}
+
+#[derive(Debug, Serialize)]
+struct CreditComponents {
+    trade: f64,
+    repayment: f64,
+    uptime: f64,
+    age: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct PoolResponse {
+    total_cu: u64,
+    lent_cu: u64,
+    available_cu: u64,
+    reserve_ratio: f64,
+    active_loan_count: usize,
+    avg_interest_rate: f64,
+    your_max_borrow_cu: u64,
+    your_offered_rate: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct LoanSummary {
+    loan_id: String,
+    role: String,
+    counterparty: String,
+    principal_cu: u64,
+    interest_rate_per_hour: f64,
+    term_hours: u64,
+    collateral_cu: u64,
+    status: String,
+    created_at: u64,
+    due_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct LoansResponse {
+    count: usize,
+    loans: Vec<LoanSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RouteQuery {
+    model: Option<String>,
+    max_cu: Option<u64>,
+    #[serde(default = "default_mode")]
+    mode: String,
+    max_tokens: Option<u64>,
+}
+
+fn default_mode() -> String {
+    "balanced".to_string()
+}
+
+#[derive(Debug, Serialize)]
+struct RouteResponse {
+    provider: String,
+    model: String,
+    estimated_cu: u64,
+    provider_reputation: f64,
+    score: f64,
+}
+
+/// POST /v1/forge/lend — offer CU to the lending pool.
+///
+/// MVP behavior: reserves the lender's CU (so it cannot be double-spent on
+/// inference) and returns the current pool snapshot. The pool counter itself
+/// is grown by `create_loan` once a borrower draws against it; the lend
+/// endpoint communicates intent + reserves liquidity. Real pool deposits
+/// land in Batch B2 once gossiped LoanProposals are wired.
+async fn forge_lend(
+    State(state): State<AppState>,
+    Json(req): Json<LendRequest>,
+) -> Result<Json<LendResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    if req.amount == 0 {
+        return Err((StatusCode::BAD_REQUEST, "amount must be > 0".into()));
+    }
+    let mut ledger = state.ledger.lock().await;
+    let lender = state.local_node_id.clone();
+    if !ledger.can_afford(&lender, req.amount) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "insufficient balance to contribute".into(),
+        ));
+    }
+    if !ledger.reserve_cu(&lender, req.amount) {
+        return Err((StatusCode::BAD_REQUEST, "cannot reserve CU".into()));
+    }
+    let status = ledger.lending_pool_status();
+    Ok(Json(LendResponse {
+        pool_total_cu: status.total_pool_cu,
+        pool_available_cu: status.available_cu,
+        your_contribution_cu: req.amount,
+        accepted_max_term_hours: req.max_term_hours,
+        accepted_min_interest_rate: req.min_interest_rate,
+    }))
+}
+
+/// POST /v1/forge/borrow — request a CU loan.
+///
+/// MVP: constructs a self-signed loan against a fresh keypair so the
+/// dual-signature verification path inside `create_loan` succeeds. This is
+/// only meaningful inside a single-node test fixture; the production path
+/// is the gossiped LoanProposal/LoanAccept handshake (Batch B2).
+async fn forge_borrow(
+    State(state): State<AppState>,
+    Json(req): Json<BorrowRequest>,
+) -> Result<Json<BorrowResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    use ed25519_dalek::{Signer, SigningKey};
+    use forge_ledger::lending::{LoanRecord, LoanStatus, SignedLoanRecord, offered_interest_rate};
+    use rand::rngs::OsRng;
+
+    if req.amount == 0 {
+        return Err((StatusCode::BAD_REQUEST, "amount must be > 0".into()));
+    }
+    let _ = req.lender; // reserved for future P2P targeting
+
+    let mut ledger = state.ledger.lock().await;
+    let credit = ledger.compute_credit_score(&state.local_node_id);
+    let interest_rate = offered_interest_rate(credit);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    // MVP: one-shot signing key acting as both lender and borrower so the
+    // bilateral signature check inside `create_loan` is satisfied without
+    // requiring the persistent node key (which lives in forge-net).
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signed_node_id = NodeId(signing_key.verifying_key().to_bytes());
+
+    let mut loan = LoanRecord {
+        loan_id: [0u8; 32],
+        lender: signed_node_id.clone(),
+        borrower: signed_node_id,
+        principal_cu: req.amount,
+        interest_rate_per_hour: interest_rate,
+        term_hours: req.term_hours,
+        collateral_cu: req.collateral,
+        status: LoanStatus::Active,
+        created_at: now,
+        due_at: now + req.term_hours.saturating_mul(3_600_000),
+        repaid_at: None,
+    };
+    loan.loan_id = loan.compute_loan_id();
+
+    let canonical = loan.canonical_bytes();
+    let sig = signing_key.sign(&canonical).to_bytes().to_vec();
+    let signed = SignedLoanRecord {
+        loan: loan.clone(),
+        lender_sig: sig.clone(),
+        borrower_sig: sig,
+    };
+
+    ledger
+        .create_loan(signed)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("create_loan failed: {e}")))?;
+
+    Ok(Json(BorrowResponse {
+        loan_id: hex::encode(loan.loan_id),
+        principal_cu: loan.principal_cu,
+        interest_rate_per_hour: loan.interest_rate_per_hour,
+        term_hours: loan.term_hours,
+        due_at: loan.due_at,
+        total_due_cu: loan.total_due(),
+    }))
+}
+
+/// POST /v1/forge/repay — repay an outstanding loan by id.
+async fn forge_repay(
+    State(state): State<AppState>,
+    Json(req): Json<RepayRequest>,
+) -> Result<Json<RepayResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let loan_id_bytes: [u8; 32] = hex::decode(&req.loan_id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid loan_id hex".to_string()))?
+        .try_into()
+        .map_err(|_: Vec<u8>| (StatusCode::BAD_REQUEST, "loan_id must be 32 bytes".to_string()))?;
+
+    let mut ledger = state.ledger.lock().await;
+
+    // Try to snapshot principal/interest from active loans owned by this
+    // node before mutation. The ledger does not yet expose a global
+    // loan-by-id getter, so for loans owned by other parties we report 0.
+    let snapshot = ledger
+        .active_loans_for(&state.local_node_id)
+        .into_iter()
+        .find(|s| s.loan.loan_id == loan_id_bytes);
+    let (principal, interest) = match snapshot {
+        Some(s) => (s.loan.principal_cu, s.loan.total_interest()),
+        None => (0, 0),
+    };
+
+    ledger
+        .repay_loan(&loan_id_bytes)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("repay_loan failed: {e}")))?;
+
+    Ok(Json(RepayResponse {
+        loan_id: req.loan_id,
+        status: "Repaid".into(),
+        principal_cu: principal,
+        interest_paid_cu: interest,
+    }))
+}
+
+/// GET /v1/forge/credit — credit score and component breakdown for the local node.
+async fn forge_credit(
+    State(state): State<AppState>,
+) -> Result<Json<CreditResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let ledger = state.ledger.lock().await;
+    let node_id = &state.local_node_id;
+    let score = ledger.compute_credit_score(node_id);
+    Ok(Json(CreditResponse {
+        node_id: hex::encode(node_id.0),
+        score,
+        components: CreditComponents {
+            trade: 0.0,
+            repayment: 0.0,
+            uptime: 0.0,
+            age: 0.0,
+        },
+    }))
+}
+
+/// GET /v1/forge/pool — lending pool status + caller-specific borrowing terms.
+async fn forge_pool(
+    State(state): State<AppState>,
+) -> Result<Json<PoolResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    use forge_ledger::lending::{max_borrowable, offered_interest_rate};
+    let ledger = state.ledger.lock().await;
+    let status = ledger.lending_pool_status();
+    let credit = ledger.compute_credit_score(&state.local_node_id);
+    let max_borrow = max_borrowable(credit, status.available_cu);
+    let rate = offered_interest_rate(credit);
+    Ok(Json(PoolResponse {
+        total_cu: status.total_pool_cu,
+        lent_cu: status.lent_cu,
+        available_cu: status.available_cu,
+        reserve_ratio: status.reserve_ratio,
+        active_loan_count: status.active_loan_count,
+        avg_interest_rate: status.avg_interest_rate,
+        your_max_borrow_cu: max_borrow,
+        your_offered_rate: rate,
+    }))
+}
+
+/// GET /v1/forge/loans — active loans where the local node is lender or borrower.
+async fn forge_loans(
+    State(state): State<AppState>,
+) -> Result<Json<LoansResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let ledger = state.ledger.lock().await;
+    let node_id = &state.local_node_id;
+    let active = ledger.active_loans_for(node_id);
+    let loans: Vec<LoanSummary> = active
+        .into_iter()
+        .map(|signed| {
+            let role = if &signed.loan.lender == node_id {
+                "lender"
+            } else {
+                "borrower"
+            };
+            let counterparty = if role == "lender" {
+                hex::encode(signed.loan.borrower.0)
+            } else {
+                hex::encode(signed.loan.lender.0)
+            };
+            LoanSummary {
+                loan_id: hex::encode(signed.loan.loan_id),
+                role: role.to_string(),
+                counterparty,
+                principal_cu: signed.loan.principal_cu,
+                interest_rate_per_hour: signed.loan.interest_rate_per_hour,
+                term_hours: signed.loan.term_hours,
+                collateral_cu: signed.loan.collateral_cu,
+                status: format!("{:?}", signed.loan.status),
+                created_at: signed.loan.created_at,
+                due_at: signed.loan.due_at,
+            }
+        })
+        .collect();
+    Ok(Json(LoansResponse {
+        count: loans.len(),
+        loans,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Forge Routing API (Phase 6 — Issue #38)
+// ---------------------------------------------------------------------------
+
+/// GET /v1/forge/route — pick the optimal provider for an inference request.
+///
+/// `mode` can be `cost`, `quality`, or `balanced` (default). The score
+/// combines reputation (quality signal) with normalized reputation-adjusted
+/// price (cost signal). Returns 404 if no provider satisfies `max_cu`.
+async fn forge_route(
+    State(state): State<AppState>,
+    Query(query): Query<RouteQuery>,
+) -> Result<Json<RouteResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let ledger = state.ledger.lock().await;
+
+    let (quality_weight, cost_weight) = match query.mode.as_str() {
+        "cost" => (0.3f64, 0.7f64),
+        "quality" => (0.7f64, 0.3f64),
+        _ => (0.5f64, 0.5f64),
+    };
+    let max_tokens = query.max_tokens.unwrap_or(1_000);
+    let base_cost = ledger.estimate_cost(max_tokens, 1, 1);
+    let max_cu = query.max_cu.unwrap_or(u64::MAX);
+    let model = query.model.unwrap_or_else(|| "default".to_string());
+
+    let candidates = ledger.ranked_nodes();
+    let best = candidates
+        .into_iter()
+        .filter_map(|balance| {
+            let price = ledger.reputation_adjusted_cost(&balance.node_id, base_cost);
+            if price > max_cu {
+                return None;
+            }
+            let normalized_price = price as f64 / base_cost.max(1) as f64;
+            let score = balance.reputation * quality_weight - normalized_price * cost_weight;
+            Some((balance.node_id.clone(), balance.reputation, price, score))
+        })
+        .max_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+
+    let (node_id, reputation, price, score) = best
+        .ok_or((StatusCode::NOT_FOUND, "no eligible provider found".into()))?;
+
+    Ok(Json(RouteResponse {
+        provider: hex::encode(node_id.0),
+        model,
+        estimated_cu: price,
+        provider_reputation: reputation,
+        score,
+    }))
 }
 
 // ---------------------------------------------------------------------------
