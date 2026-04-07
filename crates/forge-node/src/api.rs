@@ -6,6 +6,7 @@ use axum::{
     response::{Response, Sse, sse::Event},
     routing::{get, post},
 };
+use forge_agora::Marketplace;
 use forge_core::{Config, ModelManifest, NodeId, PeerCapability, PipelineTopology};
 use forge_infer::{CandleEngine, InferenceEngine};
 use forge_ledger::{AgentNet, ComputeLedger, SafetyController, SettlementStatement, TradeRecord};
@@ -21,10 +22,10 @@ type ModelState = Arc<Mutex<Option<ModelManifest>>>;
 type TopologyState = Arc<Mutex<Option<PipelineTopology>>>;
 
 #[derive(Clone)]
-struct AppState {
-    config: Config,
-    engine: EngineState,
-    ledger: LedgerState,
+pub(crate) struct AppState {
+    pub config: Config,
+    pub engine: EngineState,
+    pub ledger: LedgerState,
     model_manifest: ModelState,
     advertised_topology: TopologyState,
     cluster: Option<Arc<ClusterManager>>,
@@ -34,13 +35,19 @@ struct AppState {
     /// Track recent auth failures for rate limiting.
     auth_failures: Arc<Mutex<AuthFailureTracker>>,
     /// Rate limiter for economic endpoints (Issue #5).
-    forge_rate_limiter: Arc<Mutex<RateLimiter>>,
+    pub(crate) forge_rate_limiter: Arc<Mutex<RateLimiter>>,
     /// Safety controller — kill switch, budget policies, circuit breakers.
     safety: Arc<Mutex<SafetyController>>,
     /// AgentNet — social network for AI agents.
     agentnet: Arc<Mutex<AgentNet>>,
     /// Node identity for this seed (used as provider in trades).
-    local_node_id: NodeId,
+    pub local_node_id: NodeId,
+    /// forge-bank L2 services: PortfolioManager + futures book.
+    pub bank: Arc<Mutex<crate::bank_adapter::BankServices>>,
+    /// forge-agora L4 marketplace.
+    pub marketplace: Arc<Mutex<Marketplace>>,
+    /// Index into the ledger trade_log up to which we have already fed to the marketplace.
+    pub agora_last_seen: Arc<Mutex<usize>>,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -121,6 +128,34 @@ pub fn create_router(
     cluster: Option<Arc<ClusterManager>>,
     gossip: Arc<Mutex<GossipState>>,
 ) -> Router {
+    create_router_with_services(
+        config,
+        engine,
+        ledger,
+        model_manifest,
+        advertised_topology,
+        cluster,
+        gossip,
+        Arc::new(Mutex::new(crate::bank_adapter::BankServices::new_default())),
+        Arc::new(Mutex::new(Marketplace::new())),
+        Arc::new(Mutex::new(0usize)),
+    )
+}
+
+/// Extended constructor used by `ForgeNode::serve_api` when the caller supplies
+/// pre-built L2/L4 services, and by `test_router_default` in tests.
+pub fn create_router_with_services(
+    config: Config,
+    engine: EngineState,
+    ledger: LedgerState,
+    model_manifest: ModelState,
+    advertised_topology: TopologyState,
+    cluster: Option<Arc<ClusterManager>>,
+    gossip: Arc<Mutex<GossipState>>,
+    bank: Arc<Mutex<crate::bank_adapter::BankServices>>,
+    marketplace: Arc<Mutex<Marketplace>>,
+    agora_last_seen: Arc<Mutex<usize>>,
+) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
         .as_ref()
@@ -140,6 +175,9 @@ pub fn create_router(
         safety: Arc::new(Mutex::new(SafetyController::new())),
         agentnet: Arc::new(Mutex::new(AgentNet::new())),
         local_node_id,
+        bank,
+        marketplace,
+        agora_last_seen,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -178,6 +216,23 @@ pub fn create_router(
         .route("/v1/agentnet/profile", post(agentnet_upsert_profile))
         .route("/v1/agentnet/discover", get(agentnet_discover))
         .route("/v1/agentnet/leaderboard", get(agentnet_leaderboard))
+        // forge-bank L2 routes (Phase 8 / Batch B1)
+        .route("/v1/forge/bank/portfolio", get(crate::handlers::bank::bank_portfolio))
+        .route("/v1/forge/bank/tick", post(crate::handlers::bank::bank_tick))
+        .route("/v1/forge/bank/strategy", post(crate::handlers::bank::bank_set_strategy))
+        .route("/v1/forge/bank/risk", post(crate::handlers::bank::bank_set_risk))
+        .route("/v1/forge/bank/futures", get(crate::handlers::bank::bank_list_futures))
+        .route("/v1/forge/bank/futures", post(crate::handlers::bank::bank_create_futures))
+        .route("/v1/forge/bank/risk-assessment", get(crate::handlers::bank::bank_risk_assessment))
+        .route("/v1/forge/bank/optimize", post(crate::handlers::bank::bank_optimize))
+        // forge-agora L4 routes (Phase 8 / Batch B2)
+        .route("/v1/forge/agora/register", post(crate::handlers::agora::agora_register))
+        .route("/v1/forge/agora/agents", get(crate::handlers::agora::agora_list_agents))
+        .route("/v1/forge/agora/reputation/{hex}", get(crate::handlers::agora::agora_reputation))
+        .route("/v1/forge/agora/find", post(crate::handlers::agora::agora_find))
+        .route("/v1/forge/agora/stats", get(crate::handlers::agora::agora_stats))
+        .route("/v1/forge/agora/snapshot", get(crate::handlers::agora::agora_snapshot))
+        .route("/v1/forge/agora/restore", post(crate::handlers::agora::agora_restore))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -928,7 +983,7 @@ async fn openai_models(State(state): State<AppState>) -> Json<serde_json::Value>
 // ---------------------------------------------------------------------------
 
 /// Check rate limit for forge economic endpoints.
-async fn check_forge_rate_limit(state: &AppState) -> Result<(), (StatusCode, String)> {
+pub(crate) async fn check_forge_rate_limit(state: &AppState) -> Result<(), (StatusCode, String)> {
     if !state.forge_rate_limiter.lock().await.check() {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
@@ -2011,11 +2066,34 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// Public alias for now_millis — used by handler modules.
+pub(crate) fn now_millis_pub() -> u64 {
+    now_millis()
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Build a test router with default BankServices and Marketplace.
+/// Used by handler unit tests in `handlers/bank.rs` and `handlers/agora.rs`.
+pub(crate) fn test_router_default(config: Config) -> Router {
+    use crate::bank_adapter::BankServices;
+    create_router_with_services(
+        config,
+        Arc::new(Mutex::new(CandleEngine::new())),
+        Arc::new(Mutex::new(ComputeLedger::new())),
+        Arc::new(Mutex::new(None)),
+        Arc::new(Mutex::new(None)),
+        None,
+        Arc::new(Mutex::new(GossipState::new())),
+        Arc::new(Mutex::new(BankServices::new_default())),
+        Arc::new(Mutex::new(Marketplace::new())),
+        Arc::new(Mutex::new(0usize)),
+    )
 }
 
 #[cfg(test)]
@@ -2025,15 +2103,7 @@ mod tests {
     use tower::util::ServiceExt;
 
     fn test_router(config: Config) -> Router {
-        create_router(
-            config,
-            Arc::new(Mutex::new(CandleEngine::new())),
-            Arc::new(Mutex::new(ComputeLedger::new())),
-            Arc::new(Mutex::new(None)),
-            Arc::new(Mutex::new(None)),
-            None,
-            Arc::new(Mutex::new(GossipState::new())),
-        )
+        test_router_default(config)
     }
 
     #[tokio::test]
