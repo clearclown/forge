@@ -13,27 +13,33 @@ Forge is a distributed LLM inference protocol where **compute is currency**. The
 
 | Repo | Language | Status | Layer | Purpose |
 |------|----------|--------|-------|---------|
-| `clearclown/forge` (this) | Rust | Active (143 tests) | L1 | Protocol core: CU ledger, trades, lending, safety |
+| `clearclown/forge` (this) | Rust | Active (291 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace (Rust workspace, 12 crates) |
 | `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Forge economy = production runtime |
-| `clearclown/forge-bank` | Python | Active v0.1 (45 tests) | L2 | Strategies, portfolios, futures, insurance, risk |
-| `clearclown/forge-mind` | Python | Active v0.1 (40 tests) | L3 | AutoAgent-style self-improvement paid in CU |
-| `clearclown/forge-agora` | Python | Active v0.1 (39 tests) | L4 | Agent marketplace, reputation, NIP-90, A2A |
-| `clearclown/forge-economics` | Markdown | Active (16/16 GREEN) | Theory | Economic theory, design rationale, parameters |
+| `clearclown/forge-bank` | Python (archived) | Scaffold v0.1 (45 tests) | — | Superseded by `crates/forge-bank/` in this repo |
+| `clearclown/forge-mind` | Python (archived) | Scaffold v0.1 (40 tests) | — | Superseded by `crates/forge-mind/` in this repo |
+| `clearclown/forge-agora` | Python (archived) | Scaffold v0.1 (39 tests) | — | Superseded by `crates/forge-agora/` in this repo |
+| `clearclown/forge-economics` | Markdown | Active (16/16 GREEN) | Theory | Economic theory, design rationale, parameters (§1-§12 = single source of truth for all layers) |
 | `forge-sdk` | Python | Published (PyPI) | Client | Python SDK for Forge API |
 | `forge-cu-mcp` | Python | Published (PyPI) | Client | MCP server for AI tools |
 
-### 5-Layer Architecture (all layers exist as of 2026-04-07)
+### 5-Layer Architecture (all layers are Rust as of 2026-04-07, Phase 7)
 
 ```
-L4: Discovery     clearclown/forge-agora      — Agent marketplace, reputation, NIP-90
-L3: Intelligence  clearclown/forge-mind       — AutoAgent self-improvement paid in CU
-L2: Finance       clearclown/forge-bank       — Strategies, portfolios, futures, insurance
-L1: Economy       clearclown/forge (this)     — CU ledger, trades, lending, safety
+L4: Discovery     crates/forge-agora          — Agent marketplace, reputation, NIP-90 (42 tests)
+L3: Intelligence  crates/forge-mind           — AutoAgent self-improvement paid in CU (53 tests)
+L2: Finance       crates/forge-bank           — Strategies, portfolios, futures, insurance (53 tests)
+L1: Economy       crates/forge-ledger et al.  — CU ledger, trades, lending, safety (143 tests)
 L0: Inference     nm-arealnormalman/mesh-llm  — Distributed LLM inference + forge-economy port
 ```
 
-**Total tests across the ecosystem:** 143 (forge) + 43 (forge-mesh) + 45 (forge-bank) +
-40 (forge-mind) + 39 (forge-agora) + 16 (forge-economics SPEC-AUDIT) = **326 passing**.
+**Total tests across the ecosystem:** 291 (forge workspace) + 43 (forge-mesh)
++ 16 (forge-economics SPEC-AUDIT) = **350 passing**.
+
+L2/L3/L4 were rewritten from Python scaffolds into Rust workspace crates in
+Phase 7 (2026-04-07). The Python sources remain as `_legacy_python/` in the
+archived clearclown/forge-{bank,mind,agora} repos for design provenance.
+All L2/L3/L4 numeric constants now reference `forge-economics/spec/parameters.md`
+§10/§11/§12 as the single source of truth — no re-definition in Rust code.
 
 The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's full distributed inference engine with Forge's economic crates (`forge-economy/`) and API routes (`/api/forge/*`).
 
@@ -41,7 +47,7 @@ The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's f
 
 ```bash
 cargo build --release          # Full build
-cargo test --workspace         # All tests (~47 tests)
+cargo test --workspace         # All tests (291 across 12 crates)
 cargo check --workspace        # Fast type check
 cargo clippy --workspace       # Lint
 ```
