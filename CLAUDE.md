@@ -122,58 +122,61 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 - `GET /settlement` — Exportable settlement statement with Merkle root
 - `GET /topology` — Model manifest, peer capabilities
 
-### Forge Lending (planned — Phase 5.5)
+### Forge Lending (Phase 5.5 — implemented)
 - `POST /v1/forge/lend` — Offer CU to lending pool
 - `POST /v1/forge/borrow` — Request a CU loan
+- `POST /v1/forge/lend-to` — Lender-initiated loan proposal to a specific borrower
 - `POST /v1/forge/repay` — Repay outstanding loan
 - `GET /v1/forge/credit` — Credit score and history
-- `GET /v1/forge/pool` — Lending pool status (available, utilization, avg rate)
+- `GET /v1/forge/pool` — Lending pool status (available, utilization, avg rate, your max borrow)
 - `GET /v1/forge/loans` — Active loans (as lender or borrower)
 
-### Forge Routing (planned — Phase 6)
-- `GET /v1/forge/route` — Optimal provider selection (cost/quality/balanced)
+### Forge Routing (Phase 6 — implemented)
+- `GET /v1/forge/route?model=X&max_cu=Y&mode=cost|quality|balanced` — Optimal provider selection
 
 All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 
 ## What's Implemented vs Planned
 
-### Working Now
+### Working Now (Phase 1-6 complete, 143 tests passing)
 - CU ledger with HMAC-SHA256 persistence and tamper detection
 - **Dual-signed trades** (Ed25519): TradeProposal → TradeAccept → SignedTradeRecord
-- **Gossip protocol**: signed trades broadcast to all connected peers with dedup
-- **CU reservation**: reserve before inference, release on failure, prevents double-spend
+- **Dual-signed loans** (Ed25519): LoanProposal → LoanAccept → SignedLoanRecord
+- **Gossip protocol**: signed trades AND loans broadcast to all peers with dedup (broadcast_loan / handle_loan_gossip)
+- **CU reservation**: reserve before inference or as collateral, release on failure
 - Dynamic market pricing (supply/demand)
+- **Multi-model pricing tiers** (Phase 6): Small/Medium/Large/Frontier with MoE discount
 - Free tier (1,000 CU) with Sybil protection (>100 unknown nodes → reject)
 - Reputation system with yield (0.1%/hr × reputation)
+- **CU lending** (Phase 5.5): LoanRecord, credit score (0.3*trade + 0.4*repayment + 0.2*uptime + 0.1*age),
+  lending pool with 30% reserve / 3:1 max LTV / 20% max single loan, default circuit breaker
+- **Lending safety** (Phase 5.5): LendingCircuitState with velocity limit (10/min), default rate threshold (10%/hr)
+- **Welcome loan**: 1,000 CU at 0% interest, 72hr term (replaces flat free tier grant)
 - OpenAI-compatible API with CU metering (`x_forge` extension)
-- Agent budget endpoints (`/v1/forge/balance`, `/pricing`, `/trades`)
-- Lightning invoice endpoint (`POST /v1/forge/invoice`)
+- **Lending API** (7 endpoints): `/v1/forge/lend`, `/borrow`, `/lend-to`, `/repay`, `/credit`, `/pool`, `/loans`
+- **Routing API** (Phase 6): `/v1/forge/route` with cost/quality/balanced modes
+- Agent budget endpoints (`/v1/forge/balance`, `/pricing`, `/trades`, `/providers`)
+- **Bidirectional Lightning bridge**: `POST /v1/forge/invoice` (CU→BTC) + `create_deposit()` (BTC→CU)
 - Lightning wallet (CLI: `forge wallet`, `forge settle --pay`)
 - Settlement statement export
 - P2P encrypted transport (iroh QUIC + Noise)
+- **NIP-90 (Data Vending Machines) scaffold**: `forge_ledger::agora::Nip90Publisher` builds well-formed
+  kind 5050/6050/31990 events for future Nostr relay integration
+- **forge-mesh fork synced**: Phase 5.5+ ported to forge-mesh/forge-economy/ (production runtime)
+- **Python SDK**: `forge_sdk` with full lending coverage (lend, borrow, repay, credit, pool, loans, route)
+- **MCP server**: 7 lending tools exposed to Claude/ChatGPT/Cursor
 
-### Next: mesh-llm Fork (Phase 5)
-- Replace inference layer with mesh-llm's distributed engine
-- Keep all economic code as-is
-- Inherit pipeline parallelism, MoE sharding, Nostr discovery
+### Next: forge-agora marketplace (Phase 7)
+- Agent discovery via Nostr NIP-90 (Data Vending Machines)
+- Reputation aggregation from gossiped TradeRecords
+- A2A Agent Card publication
+- Capability matching engine
+- Post-marketing marketplace (quality > advertising)
 
-### Next: CU Lending (Phase 5.5)
-- LoanRecord type (dual-signed, gossip-synced)
-- Credit score algorithm (trade 30% + repayment 40% + uptime 20% + age 10%)
-- Lending API (/v1/forge/lend, /borrow, /repay, /credit, /pool, /loans)
-- Collateral system (CU reservation, auto-release)
-- Default handling (auto-liquidation, reputation penalty)
-- Free tier evolution (1,000 CU grant → 0% welcome loan)
-- Lending safety (30% pool reserve, velocity limits, circuit breaker)
-
-### Future
-- Multi-model pricing (model tiers: small/medium/large/frontier, MoE discount)
-- Routing API (/v1/forge/route — cost/quality-optimal provider selection)
-- Nostr NIP-90 provider advertisement (Data Vending Machines)
-- Reputation gossip across the mesh
-- forge-agora: agent marketplace, discovery, A2A payment
+### Future (Phase 8+)
 - forge-mind: AutoAgent self-improvement loops with CU budgets
-- forge-bank: advanced financial instruments (futures, insurance)
+- forge-bank: advanced financial instruments (futures, insurance, yield optimization)
+- Reputation gossip across the mesh
 - Merkle tree of trade history for efficient state comparison
 - Bitcoin OP_RETURN anchoring for immutable audit trail
 - Compute Standard academic paper

@@ -138,6 +138,78 @@ async def list_tools():
             },
         ),
         Tool(
+            name="forge_borrow",
+            description="Request a CU loan from the Forge lending pool. Use this when the agent's CU balance is insufficient for an upcoming task. The loan will accrue interest based on the borrower's credit score (0.1%-0.6% per hour). Default 3:1 collateral required.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "integer", "description": "Principal CU to borrow"},
+                    "term_hours": {"type": "integer", "description": "Loan duration in hours (max 168 = 7 days)"},
+                    "collateral": {"type": "integer", "description": "CU to lock as collateral (must be >= amount/3)"},
+                },
+                "required": ["amount", "term_hours", "collateral"],
+            },
+        ),
+        Tool(
+            name="forge_repay",
+            description="Repay an outstanding CU loan. Provide the loan_id returned from forge_borrow. The collateral is released and the lender receives principal + interest.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "loan_id": {"type": "string", "description": "Hex-encoded loan_id (64 chars)"},
+                },
+                "required": ["loan_id"],
+            },
+        ),
+        Tool(
+            name="forge_lend",
+            description="Contribute idle CU to the lending pool to earn interest from borrowers. The CU is reserved (cannot be spent) until withdrawn or borrowed.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "integer", "description": "CU to contribute to the pool"},
+                    "max_term_hours": {"type": "integer", "description": "Maximum loan term you'll accept (default 168)"},
+                    "min_interest_rate": {"type": "number", "description": "Minimum interest rate per hour (default 0.0)"},
+                },
+                "required": ["amount"],
+            },
+        ),
+        Tool(
+            name="forge_credit",
+            description="Get this node's credit score (0.0-1.0). New nodes start at 0.3. Score is computed from trade history (30%), repayment history (40%), uptime (20%), and account age (10%).",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="forge_pool",
+            description="View the lending pool status: total CU, lent CU, available CU, reserve ratio, your maximum borrow capacity, and your offered interest rate based on your credit score.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="forge_loans",
+            description="List all active loans where this node is either lender or borrower, with their status, principal, interest rate, and due date.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="forge_route",
+            description="Find the optimal inference provider for an upcoming request. Use mode='cost' for cheapest, 'quality' for highest reputation, or 'balanced' (default) for both.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "model": {"type": "string", "description": "Optional model identifier"},
+                    "max_cu": {"type": "integer", "description": "Maximum CU budget"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["cost", "quality", "balanced"],
+                        "description": "Optimization mode (default: balanced)",
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Expected output length (default 1000)",
+                    },
+                },
+            },
+        ),
+        Tool(
             name="forge_kill_switch",
             description="EMERGENCY: Activate or deactivate the kill switch. When active, ALL CU transactions are frozen. Use only in emergencies.",
             inputSchema={
@@ -183,6 +255,27 @@ async def call_tool(name: str, arguments: dict):
                 "/v1/forge/invoice",
                 {"cu_amount": arguments["cu_amount"]},
             )
+        elif name == "forge_borrow":
+            data = await forge_post("/v1/forge/borrow", arguments)
+        elif name == "forge_repay":
+            data = await forge_post("/v1/forge/repay", arguments)
+        elif name == "forge_lend":
+            data = await forge_post("/v1/forge/lend", arguments)
+        elif name == "forge_credit":
+            data = await forge_get("/v1/forge/credit")
+        elif name == "forge_pool":
+            data = await forge_get("/v1/forge/pool")
+        elif name == "forge_loans":
+            data = await forge_get("/v1/forge/loans")
+        elif name == "forge_route":
+            params = []
+            for key in ("model", "max_cu", "mode", "max_tokens"):
+                if key in arguments and arguments[key] is not None:
+                    params.append(f"{key}={arguments[key]}")
+            path = "/v1/forge/route"
+            if params:
+                path += "?" + "&".join(params)
+            data = await forge_get(path)
         elif name == "forge_kill_switch":
             data = await forge_post(
                 "/v1/forge/kill",

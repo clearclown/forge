@@ -165,6 +165,148 @@ class ForgeClient:
         """Export settlement statement for a time window."""
         return self._get(f"/settlement?hours={hours}")
 
+    # ── Lending (Phase 5.5) ──
+
+    def lend(
+        self,
+        amount: int,
+        max_term_hours: int = 168,
+        min_interest_rate: float = 0.0,
+    ) -> dict:
+        """Contribute CU to the lending pool.
+
+        Returns the pool status with your contribution recorded.
+        """
+        return self._post(
+            "/v1/forge/lend",
+            {
+                "amount": amount,
+                "max_term_hours": max_term_hours,
+                "min_interest_rate": min_interest_rate,
+            },
+        )
+
+    def borrow(
+        self,
+        amount: int,
+        term_hours: int,
+        collateral: int,
+        lender: Optional[str] = None,
+    ) -> dict:
+        """Request a CU loan.
+
+        Args:
+            amount: Principal CU to borrow.
+            term_hours: Loan duration. Max 168 (7 days).
+            collateral: CU to lock as collateral. Must be at least amount/3 (3:1 LTV cap).
+            lender: Optional hex NodeId of a specific lender. If None, self-loan MVP.
+
+        Returns:
+            Dict with loan_id, principal_cu, interest_rate_per_hour, term_hours,
+            due_at, total_due_cu.
+
+        Raises:
+            httpx.HTTPStatusError on insufficient credit, excessive LTV, or
+            other safety check failures.
+        """
+        body = {"amount": amount, "term_hours": term_hours, "collateral": collateral}
+        if lender:
+            body["lender"] = lender
+        return self._post("/v1/forge/borrow", body)
+
+    def repay(self, loan_id: str) -> dict:
+        """Repay an outstanding loan.
+
+        Args:
+            loan_id: Hex-encoded loan_id (64 chars) returned by borrow().
+
+        Returns dict with loan_id, status, principal_cu, interest_paid_cu.
+        """
+        return self._post("/v1/forge/repay", {"loan_id": loan_id})
+
+    def credit(self) -> dict:
+        """View this node's credit score and component breakdown.
+
+        Returns dict: {node_id, score, components: {trade, repayment, uptime, age}}.
+        Score range: 0.0-1.0. New nodes start at 0.3.
+        """
+        return self._get("/v1/forge/credit")
+
+    def pool(self) -> dict:
+        """Lending pool status and your borrowing capacity.
+
+        Returns dict: {total_cu, lent_cu, available_cu, reserve_ratio,
+                       active_loan_count, avg_interest_rate,
+                       your_max_borrow_cu, your_offered_rate}.
+        """
+        return self._get("/v1/forge/pool")
+
+    def loans(self) -> dict:
+        """List active loans where this node is lender or borrower.
+
+        Returns dict: {count, loans: [...]} where each loan has loan_id,
+        role (lender/borrower), counterparty, principal_cu, interest_rate_per_hour,
+        term_hours, collateral_cu, status, created_at, due_at.
+        """
+        return self._get("/v1/forge/loans")
+
+    def lend_to(
+        self,
+        borrower: str,
+        amount: int,
+        term_hours: int,
+        collateral: int,
+        interest_rate_per_hour: Optional[float] = None,
+    ) -> dict:
+        """Lender-initiated loan proposal to a specific borrower.
+
+        Args:
+            borrower: Hex-encoded NodeId of the target borrower (64 chars).
+            amount: Principal CU to lend.
+            term_hours: Loan duration. Max 168.
+            collateral: Required collateral CU.
+            interest_rate_per_hour: Optional fixed rate. If None, computed from
+                borrower's credit score.
+
+        Returns dict: {loan_id, principal_cu, interest_rate_per_hour, term_hours, status}.
+        """
+        body = {
+            "borrower": borrower,
+            "amount": amount,
+            "term_hours": term_hours,
+            "collateral": collateral,
+        }
+        if interest_rate_per_hour is not None:
+            body["interest_rate_per_hour"] = interest_rate_per_hour
+        return self._post("/v1/forge/lend-to", body)
+
+    # ── Routing (Phase 6) ──
+
+    def route(
+        self,
+        model: Optional[str] = None,
+        max_cu: Optional[int] = None,
+        mode: str = "balanced",
+        max_tokens: int = 1000,
+    ) -> dict:
+        """Find the optimal inference provider for a request.
+
+        Args:
+            model: Optional model identifier.
+            max_cu: Maximum CU budget for the request.
+            mode: 'cost' | 'quality' | 'balanced' (default).
+            max_tokens: Expected output length (default 1000).
+
+        Returns dict: {provider, model, estimated_cu, provider_reputation, score}.
+        """
+        params = {"mode": mode, "max_tokens": str(max_tokens)}
+        if model:
+            params["model"] = model
+        if max_cu:
+            params["max_cu"] = str(max_cu)
+        query = "&".join(f"{k}={v}" for k, v in params.items())
+        return self._get(f"/v1/forge/route?{query}")
+
 
 class ForgeAgent:
     """Autonomous agent that manages its own compute budget.
@@ -210,6 +352,38 @@ class ForgeAgent:
             return None  # task budget exhausted
 
         return result
+
+    def borrow_for_task(
+        self,
+        needed_cu: int,
+        term_hours: int = 4,
+    ) -> Optional[dict]:
+        """Borrow CU if the agent's balance is insufficient for an upcoming task.
+
+        Returns:
+            Loan dict if borrowing occurred, None if existing balance is sufficient.
+
+        Raises:
+            ValueError if credit score is too low to borrow.
+        """
+        balance = self.client.balance()
+        if balance.get("effective_balance", 0) >= needed_cu:
+            return None  # Sufficient balance
+
+        credit = self.client.credit()
+        if credit.get("score", 0.0) < 0.2:
+            raise ValueError(
+                f"Credit score {credit.get('score')} too low to borrow "
+                "(minimum 0.2)"
+            )
+
+        shortfall = needed_cu - balance.get("effective_balance", 0)
+        collateral = max(shortfall // 3 + 1, 1)  # Satisfy 3:1 LTV
+        return self.client.borrow(
+            amount=shortfall,
+            term_hours=term_hours,
+            collateral=collateral,
+        )
 
     def status(self) -> dict:
         """Get agent's economic status."""
