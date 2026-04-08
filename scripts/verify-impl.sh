@@ -221,6 +221,28 @@ assert "#A5-endpoint"       "/v1/forge/collusion endpoint registered" \
 assert "#A5-constants"      "MAX_REMOTE_OBSERVATIONS_PER_NODE + MIN_OBSERVATION_WEIGHT constants" \
   "grep -q 'MAX_REMOTE_OBSERVATIONS_PER_NODE' crates/forge-ledger/src/lending.rs && grep -q 'MIN_OBSERVATION_WEIGHT' crates/forge-ledger/src/lending.rs"
 
+# === Phase 10 P6: Bitcoin OP_RETURN anchoring ===
+assert "#P10-anchor-payload"  "build_anchor_payload function exists" \
+  "grep -q 'pub fn build_anchor_payload' crates/forge-ledger/src/anchor.rs"
+assert "#P10-anchor-script"   "build_anchor_script emits OP_RETURN" \
+  "grep -q 'pub fn build_anchor_script' crates/forge-ledger/src/anchor.rs && grep -q 'OP_RETURN' crates/forge-ledger/src/anchor.rs"
+assert "#P10-anchor-endpoint" "/v1/forge/anchor route registered" \
+  "grep -q '/v1/forge/anchor' crates/forge-node/src/api.rs"
+
+# === Phase 10 P5: Prometheus metrics ===
+assert "#P10-metrics-module" "metrics.rs implements ForgeMetrics" \
+  "grep -q 'pub struct ForgeMetrics' crates/forge-ledger/src/metrics.rs"
+assert "#P10-metrics-observe" "ForgeMetrics::observe exists" \
+  "grep -q 'pub fn observe' crates/forge-ledger/src/metrics.rs"
+assert "#P10-metrics-endpoint" "/metrics route registered" \
+  "grep -q '/metrics' crates/forge-node/src/api.rs && grep -q 'metrics_handler' crates/forge-node/src/api.rs"
+
+# === Phase 10 P2: Ed25519 reputation signing ===
+assert "#P10-signed"        "ReputationObservation::new_signed exists" \
+  "grep -q 'pub fn new_signed' crates/forge-proto/src/messages.rs"
+assert "#P10-strict-verify" "verify() rejects empty/invalid signatures" \
+  "grep -q 'signature.len() != 64' crates/forge-proto/src/messages.rs"
+
 # === Build & test ===
 assert "BUILD" "cargo check --workspace passes" \
   "cargo check --workspace --quiet 2>&1 | grep -qv 'error'"

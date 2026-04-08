@@ -1593,6 +1593,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bitcoin",
  "ed25519-dalek 2.2.0",
  "forge-agora",
  "forge-bank",
@@ -1624,6 +1625,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "forge-core",
  "hex",
+ "rand 0.8.5",
  "serde",
  "sha2 0.10.9",
  "thiserror 2.0.18",

@@ -244,6 +244,8 @@ pub fn create_router_with_services(
         .route("/v1/forge/mind/improve", post(crate::handlers::mind::mind_improve))
         .route("/v1/forge/mind/budget", post(crate::handlers::mind::mind_budget))
         .route("/v1/forge/mind/stats", get(crate::handlers::mind::mind_stats))
+        // Phase 10 P6 — Bitcoin OP_RETURN anchoring
+        .route("/v1/forge/anchor", get(crate::handlers::anchor::anchor_handler))
         // Admin: manual state persistence trigger (Phase 9)
         .route("/v1/forge/admin/save-state", post(admin_save_state))
         // Phase 9 A3 — Reputation gossip debug endpoints
@@ -257,6 +259,8 @@ pub fn create_router_with_services(
 
     Router::new()
         .route("/health", get(health))
+        // Phase 10 P5 — Prometheus /metrics endpoint (no auth — Prometheus scrapes without tokens)
+        .route("/metrics", get(crate::handlers::metrics::metrics_handler))
         .merge(protected)
         .layer(DefaultBodyLimit::max(api_max_request_body_bytes))
         .with_state(state)
