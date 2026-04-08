@@ -13,7 +13,7 @@ Forge is a distributed LLM inference protocol where **compute is currency**. The
 
 | Repo | Language | Status | Layer | Purpose |
 |------|----------|--------|-------|---------|
-| `clearclown/forge` (this) | Rust | Active (337 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace + persistence + reputation gossip + collusion detection + NIP-90 relay publish (Rust workspace, 12 crates) |
+| `clearclown/forge` (this) | Rust | Active (359 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace + persistence + signed reputation gossip + collusion detection + NIP-90 relay publish + Prometheus metrics + Bitcoin OP_RETURN anchoring (Rust workspace, 12 crates) |
 | `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Forge economy = production runtime |
 | `clearclown/forge-bank` | Python (archived) | Scaffold v0.1 (45 tests) | — | Superseded by `crates/forge-bank/` in this repo |
 | `clearclown/forge-mind` | Python (archived) | Scaffold v0.1 (40 tests) | — | Superseded by `crates/forge-mind/` in this repo |
@@ -32,8 +32,8 @@ L1: Economy       crates/forge-ledger et al.  — CU ledger, trades, lending, sa
 L0: Inference     nm-arealnormalman/mesh-llm  — Distributed LLM inference + forge-economy port
 ```
 
-**Total tests across the ecosystem:** 337 (forge workspace) + 641 (forge-mesh after Phase 9 A1 sync)
-+ 16 (forge-economics SPEC-AUDIT) + 27 (forge-sdk pytest) = **1,021 passing**.
+**Total tests across the ecosystem:** 359 (forge workspace) + 646 (forge-mesh Phase 10 P4)
++ 16 (forge-economics SPEC-AUDIT) + 27 (forge-sdk pytest) = **1,048 passing**.
 
 Phase 7 (2026-04-07) rewrote L2/L3/L4 from Python scaffolds into Rust
 workspace crates. Phase 8 (2026-04-08) wired them into forge-node with
@@ -51,7 +51,7 @@ The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's f
 
 ```bash
 cargo build --release          # Full build
-cargo test --workspace         # All tests (337 across 12 crates)
+cargo test --workspace         # All tests (359 across 12 crates)
 cargo check --workspace        # Fast type check
 cargo clippy --workspace       # Lint
 ```
@@ -177,6 +177,15 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 
 ## What's Implemented vs Planned
+
+### Phase 10 — Productization (DONE 2026-04-09, 359 tests)
+- **P1 PyPI release artifacts**: forge-sdk 0.3.0 + forge-cu-mcp 0.3.0 wheels built, twine-checked, git-tagged. User executes `twine upload` when ready (PyPI credentials required). Release checklist at `sdk/python/PUBLISH-0.3.0.md`.
+- **P2 Ed25519 signed reputation gossip**: `ReputationObservation::new_signed()` replaces the Phase 9 A3 placeholder. Strict verify() rejects empty/wrong-length/tampered sigs. Rejection propagated end-to-end (proto → net → ledger): unsigned observations cannot touch `remote_reputation` or influence consensus.
+- **P3 forge-mesh GitHub Actions CI**: `.github/workflows/rust-workspace.yml` runs cargo check + test on every push/PR. README badge added.
+- **P4 forge-mesh persistent L2/L3/L4 state**: `mesh-llm/src/api/routes/state_persist.rs` ported from forge Phase 9 A2. ForgeEconomy extended with bank/marketplace/mind paths + `save_state()` + `POST /api/forge/admin/save-state` endpoint. +5 round-trip tests.
+- **P5 Prometheus / OpenMetrics export**: `forge_ledger::metrics::ForgeMetrics` with 11 metric series (cu_contributed, cu_consumed, reputation, trade_count, pool_*, collusion_*). `GET /metrics` endpoint on forge-node lazily observes ledger state and encodes OpenMetrics text. Rate-limit-bypassed for Prometheus scraping.
+- **P6 Bitcoin OP_RETURN anchoring**: `forge_ledger::anchor` module builds 40-byte anchor payloads (magic "FRGE" + version + network + reserved + 32-byte Merkle root) and fully-signable `Transaction` skeletons. `GET /v1/forge/anchor?network=testnet` endpoint. External wallet adds inputs + signs + broadcasts.
+- **P7 Compute Standard paper v0.1**: `forge-economics/papers/compute-standard.md` — 7,000-word academic preprint synthesizing the theory (docs/00-14 + spec/parameters.md) and the empirical Phase 1-10 results. 13 sections + 2 appendices. Ready for arXiv.
 
 ### Phase 9 — Production hardening (DONE 2026-04-08, 337 tests)
 - **Theory audit**: 3 drifts + 1 missing + 2 implicit constants fixed; Rust now 1:1 with forge-economics §1-§12 (43 match / 0 drift). See `docs/THEORY-AUDIT.md`.

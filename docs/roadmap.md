@@ -120,22 +120,38 @@ over HTTP, real CU is consumed by the self-improvement loop.
 | Workspace tests | ✅ | 315 → **337** (+22) |
 | verify-impl.sh | ✅ | 57 → **72/72 GREEN** |
 
-## Phase 10: v0.3 productization (planned)
+## Phase 10: v0.3 productization ✅ (2026-04-09)
 
-**Goal:** Publish forge-sdk/MCP, sign reputation gossip, run forge-mesh CI, write the Compute Standard paper.
+**Goal achieved:** forge-sdk/MCP 0.3.0 ready for publish, reputation gossip signed,
+forge-mesh running CI, Compute Standard paper drafted, Prometheus + Bitcoin anchoring shipped.
+
+| Deliverable | Status | Notes |
+|---|---|---|
+| P1 forge-sdk + forge-cu-mcp 0.3.0 wheels | ✅ | 4 artifacts twine-checked, git tags created, `twine upload` gated on user PyPI credentials (see `sdk/python/PUBLISH-0.3.0.md`) |
+| P2 Ed25519-signed ReputationObservation | ✅ | `new_signed()` + strict `verify()`, unsigned obs rejected end-to-end |
+| P3 forge-mesh GitHub Actions CI | ✅ | `.github/workflows/rust-workspace.yml` + README badge |
+| P4 forge-mesh persistent L2/L3/L4 state | ✅ | `state_persist.rs` ported; +5 round-trip tests |
+| P5 Prometheus metrics export | ✅ | `forge_ledger::metrics::ForgeMetrics` + `/metrics` endpoint; 11 metric series including collusion scores |
+| P6 Bitcoin OP_RETURN anchoring | ✅ | `forge_ledger::anchor` + `/v1/forge/anchor` endpoint; 40-byte FRGE payload, 80-byte standard limit |
+| P7 Compute Standard paper v0.1 | ✅ | 7,000-word preprint in `forge-economics/papers/compute-standard.md`, arXiv-ready |
+| Workspace tests | ✅ | 337 → **359** (+22) |
+| forge-mesh tests | ✅ | 641 → **646** (+5) |
+| verify-impl.sh | ✅ | 72 → **80 GREEN** |
+
+## Phase 11: v0.4+ research frontier (planned)
+
+**Goal:** zkML verification, federated training, BitVM-style optimistic verification,
+and the A2A / MCP market layer.
 
 | Deliverable | Description |
 |---|---|
-| forge-sdk 0.3.0 PyPI publish | `twine upload` + GitHub release tag |
-| forge-cu-mcp 0.3.0 PyPI publish | Same as SDK |
-| Ed25519-signed ReputationObservation | Replace empty-sig placeholder with real signing in forge-mind/node |
-| forge-mesh CI workflow | Run cargo test on every push via GitHub Actions |
-| Persistent forge-mesh L2/L3/L4 state | Port A2 state_persist to forge-mesh |
-| Collusion detection metric export | Prometheus / OpenMetrics endpoint for trust penalty stats |
+| zkML verification proofs | Proof-of-useful-work via zk SNARKs over inference traces |
+| Federated fine-tuning | Distributed training loop paid in CU |
+| BitVM optimistic verification | Off-chain dispute resolution for CU claims |
 | A2A payment extension | CU payment headers for Google A2A protocol |
-| Merkle tree of trade history | Efficient state comparison for reputation audit |
-| Bitcoin OP_RETURN anchoring | Optional merkle root anchor to BTC chain |
-| Compute Standard academic paper | forge-economics theory v0.3 + empirical results |
+| Reputation signing propagation | Wire the new_signed() helper into the gossip scheduler |
+| LDK wallet integration for anchor broadcast | Connect forge-lightning to the anchor tx skeleton |
+| forge-sdk / forge-cu-mcp PyPI upload | User-gated final step of Phase 10 P1 |
 
 ## Long-term
 
