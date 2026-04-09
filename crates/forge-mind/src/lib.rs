@@ -15,6 +15,7 @@ pub mod meta_optimizer;
 pub mod cu_paid_optimizer;
 pub mod cycle;
 pub mod agent;
+pub mod federated;
 
 pub use errors::MindError;
 pub use types::{BenchmarkResult, CycleDecision, ImprovementCycle, ImprovementProposal, MindAgentSnapshot};

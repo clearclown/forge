@@ -2,11 +2,13 @@ pub mod agentnet;
 pub mod agora;
 pub mod agora_relay;
 pub mod anchor;
+pub mod bitvm;
 pub mod collusion;
 pub mod ledger;
 pub mod lending;
 pub mod metrics;
 pub mod safety;
+pub mod zk;
 
 pub use collusion::{CollusionDetector, CollusionReport};
 pub use ledger::{
