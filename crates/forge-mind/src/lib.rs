@@ -26,3 +26,7 @@ pub use meta_optimizer::{EchoMetaOptimizer, MetaOptimizer, PromptRewriteOptimize
 pub use cu_paid_optimizer::CuPaidOptimizer;
 pub use cycle::ImprovementCycleRunner;
 pub use agent::{ForgeMindAgent, Stats as MindStats};
+pub use federated::{
+    Aggregator, AggregationResult, FederatedError, FederatedRound,
+    GradientContribution, WeightedAverageAggregator,
+};

@@ -7,6 +7,7 @@ description = "Layer 3 of the Forge ecosystem: AutoAgent-style self-improvement 
 
 [dependencies]
 forge-core = { workspace = true }
+sha2 = { workspace = true }
 forge-ledger = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
