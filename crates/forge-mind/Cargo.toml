@@ -3,6 +3,11 @@ name = "forge-mind"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+authors.workspace = true
 description = "Layer 3 of the Forge ecosystem: AutoAgent-style self-improvement loops paid for in CU."
 
 [dependencies]

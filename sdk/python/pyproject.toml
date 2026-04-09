@@ -10,13 +10,24 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 dependencies = ["httpx>=0.24"]
-keywords = ["ai", "agent", "compute", "economy", "llm", "inference", "bitcoin", "p2p"]
+keywords = ["ai", "agent", "compute", "economy", "llm", "inference", "bitcoin", "p2p", "openai", "llama-cpp"]
+authors = [{name = "clearclown and Forge contributors"}]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: System :: Distributed Computing",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 
 [project.optional-dependencies]
@@ -24,8 +35,11 @@ dev = ["pytest>=7.0"]
 
 [project.urls]
 Homepage = "https://github.com/clearclown/forge"
-Documentation = "https://github.com/clearclown/forge/blob/main/docs/agent-integration.md"
+Documentation = "https://github.com/clearclown/forge/tree/main/docs"
 Repository = "https://github.com/clearclown/forge"
+Issues = "https://github.com/clearclown/forge/issues"
+Changelog = "https://github.com/clearclown/forge/blob/main/CHANGELOG.md"
+"Compatibility Guide" = "https://github.com/clearclown/forge/blob/main/docs/compatibility.md"
 
 [tool.setuptools]
 py-modules = ["forge_sdk"]

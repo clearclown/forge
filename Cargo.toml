@@ -16,24 +16,29 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/nicola-pache/forge"
+repository = "https://github.com/clearclown/forge"
+homepage = "https://github.com/clearclown/forge"
+documentation = "https://github.com/clearclown/forge/tree/main/docs"
+authors = ["clearclown and Forge contributors"]
+readme = "README.md"
 
 [workspace.dependencies]
-# Internal crates
-forge-core = { path = "crates/forge-core" }
-forge-net = { path = "crates/forge-net" }
-forge-shard = { path = "crates/forge-shard" }
-forge-infer = { path = "crates/forge-infer" }
-forge-proto = { path = "crates/forge-proto" }
-forge-ledger = { path = "crates/forge-ledger" }
-forge-node = { path = "crates/forge-node" }
-forge-lightning = { path = "crates/forge-lightning" }
-forge-bank = { path = "crates/forge-bank" }
-forge-mind = { path = "crates/forge-mind" }
-forge-agora = { path = "crates/forge-agora" }
+# Internal crates — path + explicit version so `cargo publish` dry-run succeeds.
+# When bumping, update `[workspace.package].version` and here simultaneously.
+forge-core = { path = "crates/forge-core", version = "0.3.0" }
+forge-net = { path = "crates/forge-net", version = "0.3.0" }
+forge-shard = { path = "crates/forge-shard", version = "0.3.0" }
+forge-infer = { path = "crates/forge-infer", version = "0.3.0" }
+forge-proto = { path = "crates/forge-proto", version = "0.3.0" }
+forge-ledger = { path = "crates/forge-ledger", version = "0.3.0" }
+forge-node = { path = "crates/forge-node", version = "0.3.0" }
+forge-lightning = { path = "crates/forge-lightning", version = "0.3.0" }
+forge-bank = { path = "crates/forge-bank", version = "0.3.0" }
+forge-mind = { path = "crates/forge-mind", version = "0.3.0" }
+forge-agora = { path = "crates/forge-agora", version = "0.3.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

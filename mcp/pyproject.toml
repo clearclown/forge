@@ -10,13 +10,32 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = ["mcp>=1.0", "httpx>=0.24"]
-keywords = ["mcp", "forge", "ai", "agent", "compute", "economy"]
+keywords = ["mcp", "forge", "ai", "agent", "compute", "economy", "claude", "cursor", "llm", "tools"]
+authors = [{name = "clearclown and Forge contributors"}]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 
 [project.scripts]
 forge-mcp = "forge_mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/clearclown/forge"
+Documentation = "https://github.com/clearclown/forge/tree/main/docs"
+Repository = "https://github.com/clearclown/forge"
+Issues = "https://github.com/clearclown/forge/issues"
+Changelog = "https://github.com/clearclown/forge/blob/main/CHANGELOG.md"
+"SDK Companion" = "https://pypi.org/project/forge-sdk/"
 
 [tool.setuptools]
 py-modules = ["forge_mcp_server"]

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability report
+    url: https://github.com/clearclown/forge/security/advisories/new
+    about: Report a vulnerability privately via GitHub Security Advisories. Do NOT open a public issue.
+  - name: General discussion
+    url: https://github.com/clearclown/forge/discussions
+    about: For open-ended questions or ideas, please use Discussions rather than Issues.
