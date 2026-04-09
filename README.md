@@ -169,58 +169,82 @@ All 5 layers exist. 326 tests passing across the ecosystem.
 
 ## Quick Start
 
-### Option 1: Python (Fastest)
+### Option 1: One-command end-to-end demo (Rust, ~30 seconds cold)
 
 ```bash
-# Install via pip
-pip install forge-sdk
-
-# Use in Python
-from forge_sdk import ForgeNode
-
-node = ForgeNode(model="qwen2.5:0.5b")
-response = node.chat("What is gravity?")
-print(f"Cost: {response.cu_cost} CU")
+git clone https://github.com/clearclown/forge && cd forge
+bash scripts/demo-e2e.sh
 ```
 
-[PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) | [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+This downloads SmolLM2-135M (~100 MB) from HuggingFace, starts a real Forge
+node with Metal/CUDA acceleration, runs three real chat completions, walks
+through every Phase 1-12 endpoint, and prints a colored summary. Verified
+2026-04-09 on Apple Silicon Metal GPU.
 
-### Option 2: Rust (Full Control)
+After it finishes, the same node also responds to:
+
+```bash
+# Drop-in OpenAI client
+export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+export OPENAI_API_KEY=$(cat ~/.forge/api_token 2>/dev/null || echo "$TOKEN")
+
+# Real token-by-token streaming (Phase 11)
+curl -N $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
+
+# Phase 8 economy / 9 reputation / 10 metrics / anchoring
+curl $OPENAI_BASE_URL/forge/balance -H "Authorization: Bearer $OPENAI_API_KEY"
+curl $OPENAI_BASE_URL/forge/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
+curl http://127.0.0.1:3001/metrics  # Prometheus, no auth
+```
+
+See [`docs/compatibility.md`](docs/compatibility.md) for the full feature matrix
+vs llama.cpp / mesh-llm / Ollama / Bittensor / Akash.
+
+### Option 2: Python (drives everything via SDK + MCP)
+
+```bash
+pip install forge-sdk forge-cu-mcp
+
+python -c "
+from forge_sdk import ForgeClient
+c = ForgeClient(base_url='http://localhost:3001')
+print('balance:', c.balance())
+print('decision:', c.bank_tick())
+"
+```
+
+[PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) (20 L2/L3/L4 methods) ·
+[PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/) (20 MCP tools for Claude Code / Cursor)
+
+### Option 3: Manual Rust commands
 
 **Prerequisites**: [Install Rust](https://rustup.rs/) (2 minutes)
 
 ```bash
-# Build from source
 cargo build --release
 
-# Run a node with auto-downloaded model
-./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# Run a node — auto-downloads the model from HuggingFace
+./target/release/forge node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
-# Chat locally
-./target/release/forge chat -m "qwen2.5:0.5b" "What is gravity?"
-
-# Start a seed (P2P, earns CU)
-./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
-
-# Connect as worker (P2P, spends CU)
-./target/release/forge worker --seed <public_key>
-
-# List models
-./target/release/forge models
+# Or any of:
+./target/release/forge chat -m "smollm2:135m" "What is gravity?"
+./target/release/forge seed -m "qwen2.5:1.5b"               # earn CU as a P2P provider
+./target/release/forge worker --seed <public_key>           # spend CU as a P2P consumer
+./target/release/forge models                                # list catalog (or use HF URLs / shorthand)
 ```
 
-**[Crates.io: forge](https://crates.io/crates/forge)** | **[Rust Installation Guide](https://rustup.rs/)**
+**[Crates.io: forge](https://crates.io/crates/forge)** ·
+**[Compatibility doc](docs/compatibility.md)** ·
+**[Demo script](scripts/demo-e2e.sh)**
 
-### Option 3: Pre-built Binaries
+### Option 4: Pre-built binaries / Docker
 
-Pre-built binaries coming soon. Watch [releases](../../releases).
-
-### Option 4: Docker
-
-```bash
-# Coming soon
-docker run -p 3000:3000 clearclown/forge:latest
-```
+Pre-built binaries and `clearclown/forge:latest` Docker image are tracked under
+[releases](../../releases). Until then, Option 1 builds from source in under
+two minutes.
 
 ## API Reference
 
