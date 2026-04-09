@@ -522,9 +522,26 @@ async fn main() -> anyhow::Result<()> {
             };
             let node = forge_node::ForgeNode::new(config);
 
-            if let (Some(model), Some(tokenizer)) = (model, tokenizer) {
-                let model_path = PathBuf::from(&model);
-                let tokenizer_path = PathBuf::from(&tokenizer);
+            // Resolve model spec: either a registry name (auto-download via hf-hub)
+            // OR a local file path. Mirrors `forge chat` behavior so users can run
+            // `forge node -m smollm2:135m` without manually specifying tokenizer.
+            if let Some(model) = model {
+                let (model_path, tokenizer_path) = if PathBuf::from(&model).exists() {
+                    let tp = tokenizer
+                        .map(PathBuf::from)
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "when using a model file path, --tokenizer is required"
+                        ))?;
+                    (PathBuf::from(&model), tp)
+                } else {
+                    let spec = forge_infer::model_registry::find_model(&model)
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "unknown model '{}'. Run 'forge models' to see available models.",
+                            model
+                        ))?;
+                    let resolved = forge_infer::model_registry::resolve_model(&spec)?;
+                    (resolved.model_path, resolved.tokenizer_path)
+                };
                 node.load_model(&model_path, &tokenizer_path).await?;
             }
 
