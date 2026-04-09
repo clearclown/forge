@@ -251,6 +251,40 @@ assert "#P11-top-k" "top_k field in OpenAIChatRequest + engine trait" \
 assert "#P11-real-streaming" "generate_streaming method on InferenceEngine trait" \
   "grep -q 'fn generate_streaming' crates/forge-infer/src/engine.rs && grep -q 'GenerateStreaming' crates/forge-infer/src/llama_engine.rs && grep -q 'generate_streaming' crates/forge-node/src/api.rs"
 
+# === Phase 12 A2: zkML scaffold ===
+assert "#P12-zk-trait" "ProofVerifier trait + ProofOfInference struct exist" \
+  "grep -q 'pub trait ProofVerifier' crates/forge-ledger/src/zk.rs && grep -q 'pub struct ProofOfInference' crates/forge-ledger/src/zk.rs"
+assert "#P12-zk-mock" "MockVerifier impl exists" \
+  "grep -q 'pub struct MockVerifier' crates/forge-ledger/src/zk.rs && grep -q 'impl ProofVerifier for MockVerifier' crates/forge-ledger/src/zk.rs"
+
+# === Phase 12 C: mesh-llm resolver ported ===
+assert "#P12-resolve-hf-url" "parse_hf_url function exists" \
+  "grep -q 'pub fn parse_hf_url' crates/forge-infer/src/model_registry.rs"
+assert "#P12-resolve-shorthand" "parse_hf_shorthand function exists" \
+  "grep -q 'pub fn parse_hf_shorthand' crates/forge-infer/src/model_registry.rs"
+assert "#P12-resolve-dispatch" "unified resolve() dispatcher exists" \
+  "grep -q 'pub fn resolve' crates/forge-infer/src/model_registry.rs && grep -q 'ResolveSource' crates/forge-infer/src/model_registry.rs"
+
+# === Phase 12 A3: federated training scaffold ===
+assert "#P12-fed-types" "GradientContribution + FederatedRound exist" \
+  "grep -q 'pub struct GradientContribution' crates/forge-mind/src/federated.rs && grep -q 'pub struct FederatedRound' crates/forge-mind/src/federated.rs"
+assert "#P12-fed-aggregator" "WeightedAverageAggregator implements Aggregator trait" \
+  "grep -q 'impl Aggregator for WeightedAverageAggregator' crates/forge-mind/src/federated.rs"
+
+# === Phase 12 A4: BitVM scaffold ===
+assert "#P12-bitvm-types" "StakedClaim + FraudProof exist" \
+  "grep -q 'pub struct StakedClaim' crates/forge-ledger/src/bitvm.rs && grep -q 'pub struct FraudProof' crates/forge-ledger/src/bitvm.rs"
+assert "#P12-bitvm-verifier" "FraudProofVerifier trait + MockFraudProofVerifier" \
+  "grep -q 'pub trait FraudProofVerifier' crates/forge-ledger/src/bitvm.rs && grep -q 'impl FraudProofVerifier for MockFraudProofVerifier' crates/forge-ledger/src/bitvm.rs"
+assert "#P12-bitvm-doc" "BitVM design doc exists" \
+  "test -f docs/bitvm-design.md && grep -q 'BitVM' docs/bitvm-design.md"
+
+# === Phase 12 A1: function calling ===
+assert "#P12-tools-request" "OpenAIChatRequest has tools field" \
+  "grep -q 'pub tools: Option<Vec<OpenAITool>>' crates/forge-node/src/api.rs"
+assert "#P12-tools-extract" "extract_tool_call helper exists" \
+  "grep -q 'fn extract_tool_call' crates/forge-node/src/api.rs"
+
 # === Build & test ===
 assert "BUILD" "cargo check --workspace passes" \
   "cargo check --workspace --quiet 2>&1 | grep -qv 'error'"

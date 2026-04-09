@@ -347,12 +347,75 @@ pub struct OpenAIChatRequest {
     pub top_k: Option<i32>,
     #[serde(default)]
     pub stream: Option<bool>,
+    /// OpenAI tools / function calling — Phase 12 A1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<OpenAITool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+}
+
+/// A tool definition passed in the request.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OpenAITool {
+    #[serde(rename = "type")]
+    pub tool_type: String, // always "function" for now
+    pub function: OpenAIFunction,
+}
+
+/// Function schema inside an OpenAITool.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OpenAIFunction {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema object describing the function parameters.
+    pub parameters: serde_json::Value,
+}
+
+/// How the model should decide whether to call a tool.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum ToolChoice {
+    /// "auto" | "none" | "required"
+    Mode(String),
+    /// {"type": "function", "function": {"name": "..."}}
+    Named {
+        #[serde(rename = "type")]
+        kind: String,
+        function: NamedFunctionChoice,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct NamedFunctionChoice {
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct OpenAIChatMessage {
     pub role: String,
-    pub content: String,
+    /// Content is optional — null when the message contains tool_calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Tool calls made by the assistant in this message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<OpenAIToolCall>>,
+}
+
+/// A tool call emitted by the model in a response message.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OpenAIToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String, // "function"
+    pub function: OpenAIFunctionCall,
+}
+
+/// The name + JSON-string arguments of a specific tool call.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OpenAIFunctionCall {
+    pub name: String,
+    /// JSON-encoded arguments as a string (matches OpenAI spec).
+    pub arguments: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -411,6 +474,9 @@ struct OpenAIStreamDelta {
     role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
+    /// Tool calls emitted in this streaming chunk (sent as a single final chunk).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAIToolCall>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -510,29 +576,101 @@ fn validate_chat_request(state: &AppState, req: &ChatRequest) -> Result<(), (Sta
 fn messages_to_prompt(messages: &[OpenAIChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
+        let content = msg.content.as_deref().unwrap_or("");
         match msg.role.as_str() {
             "system" => {
-                prompt.push_str(&msg.content);
+                prompt.push_str(content);
                 prompt.push('\n');
             }
             "user" => {
                 prompt.push_str("User: ");
-                prompt.push_str(&msg.content);
+                prompt.push_str(content);
                 prompt.push('\n');
             }
             "assistant" => {
                 prompt.push_str("Assistant: ");
-                prompt.push_str(&msg.content);
+                prompt.push_str(content);
                 prompt.push('\n');
             }
             _ => {
-                prompt.push_str(&msg.content);
+                prompt.push_str(content);
                 prompt.push('\n');
             }
         }
     }
     prompt.push_str("Assistant: ");
     prompt
+}
+
+/// Render tools list as a system-prompt preamble that any model can understand.
+/// Uses a simple XML-like `<tool_call>` marker format. Future work: dispatch on
+/// model_id for model-specific native tool-calling templates (Qwen, Llama-3, etc.).
+fn render_tools_prompt(tools: &[OpenAITool], choice: Option<&ToolChoice>) -> String {
+    let mut s = String::new();
+    s.push_str("You have access to the following tools. If you need to use a tool, respond with EXACTLY this format:\n\n");
+    s.push_str("<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {...}}\n</tool_call>\n\n");
+    s.push_str("Otherwise, respond normally.\n\n");
+    s.push_str("Available tools:\n\n");
+    for tool in tools {
+        let params = serde_json::to_string_pretty(&tool.function.parameters).unwrap_or_default();
+        s.push_str(&format!(
+            "- name: {}\n  description: {}\n  parameters: {}\n\n",
+            tool.function.name, tool.function.description, params
+        ));
+    }
+    if let Some(ToolChoice::Mode(mode)) = choice {
+        match mode.as_str() {
+            "required" => s.push_str("You MUST use one of the tools above.\n"),
+            "none" => s.push_str("Do NOT use any tools; answer directly.\n"),
+            _ => {}
+        }
+    }
+    s
+}
+
+/// Internal representation of a parsed tool call from model output.
+struct ParsedToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Generate a short random hex suffix for tool call IDs.
+fn short_random() -> String {
+    use rand::Rng;
+    let n: u32 = rand::thread_rng().r#gen();
+    format!("{:08x}", n)
+}
+
+/// Extract a tool call from model output text if present.
+///
+/// Looks for `<tool_call>...</tool_call>` markers and parses the enclosed JSON.
+/// Returns `(content_before_tool_call, Some(ParsedToolCall))` if found, or
+/// `(original_text, None)` if the model responded without a tool call.
+fn extract_tool_call(text: &str) -> (String, Option<ParsedToolCall>) {
+    if let Some(start) = text.find("<tool_call>") {
+        if let Some(end) = text.find("</tool_call>") {
+            let json_str = text[start + 11..end].trim();
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                if let Some(name) = parsed.get("name").and_then(|v| v.as_str()) {
+                    let arguments = parsed
+                        .get("arguments")
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "{}".to_string());
+                    let content_before = text[..start].trim().to_string();
+                    return (
+                        content_before,
+                        Some(ParsedToolCall {
+                            id: format!("call_{}", short_random()),
+                            name: name.to_string(),
+                            arguments,
+                        }),
+                    );
+                }
+            }
+        }
+    }
+    (text.to_string(), None)
 }
 
 /// Generate a unique request ID.
@@ -755,11 +893,41 @@ async fn openai_chat_completions(
         ));
     }
 
-    let prompt = messages_to_prompt(&req.messages);
+    // If tools are provided (and tool_choice != "none"), inject a tool description
+    // as a system-prompt preamble before building the final prompt string.
+    let effective_messages: Vec<OpenAIChatMessage>;
+    let messages_ref = if let Some(tools) = req.tools.as_deref() {
+        let skip = matches!(&req.tool_choice, Some(ToolChoice::Mode(m)) if m == "none");
+        if !skip && !tools.is_empty() {
+            let tools_preamble = render_tools_prompt(tools, req.tool_choice.as_ref());
+            // Prepend as a synthetic system message so existing prompt builder handles it.
+            let mut msgs = Vec::with_capacity(req.messages.len() + 1);
+            msgs.push(OpenAIChatMessage {
+                role: "system".to_string(),
+                content: Some(tools_preamble),
+                tool_calls: None,
+            });
+            msgs.extend(req.messages.iter().cloned());
+            effective_messages = msgs;
+            effective_messages.as_slice()
+        } else {
+            &req.messages
+        }
+    } else {
+        &req.messages
+    };
+
+    let prompt = messages_to_prompt(messages_ref);
     let max_tokens = req.max_tokens.unwrap_or(default_max_tokens());
     let temperature = req.temperature.unwrap_or(default_temperature());
     let top_p = req.top_p.map(|v| v as f32);
     let top_k = req.top_k;
+    let has_tools = req
+        .tools
+        .as_ref()
+        .map(|t| !t.is_empty())
+        .unwrap_or(false)
+        && !matches!(&req.tool_choice, Some(ToolChoice::Mode(m)) if m == "none");
 
     // Validate request parameters
     state
@@ -779,9 +947,9 @@ async fn openai_chat_completions(
     let stream = req.stream.unwrap_or(false);
 
     if stream {
-        openai_stream_response(state, prompt, max_tokens, temperature, top_p, top_k, model).await
+        openai_stream_response(state, prompt, max_tokens, temperature, top_p, top_k, model, has_tools).await
     } else {
-        openai_sync_response(state, prompt, max_tokens, temperature, top_p, top_k, model)
+        openai_sync_response(state, prompt, max_tokens, temperature, top_p, top_k, model, has_tools)
             .await
             .map(|json| json.into_response())
     }
@@ -796,6 +964,7 @@ async fn openai_sync_response(
     top_p: Option<f32>,
     top_k: Option<i32>,
     model: String,
+    has_tools: bool,
 ) -> Result<Json<OpenAIChatResponse>, (StatusCode, String)> {
     let mut engine = state.engine.lock().await;
     if !engine.is_loaded() {
@@ -842,6 +1011,47 @@ async fn openai_sync_response(
         record_api_trade(&state.ledger, &state.local_node_id, completion_tokens, &model).await;
     let effective_balance = state.ledger.lock().await.effective_balance(&state.local_node_id);
 
+    // If tools were injected, try to extract a tool call from the model output.
+    let (message, finish_reason) = if has_tools {
+        let (content_before, maybe_tc) = extract_tool_call(&text);
+        if let Some(tc) = maybe_tc {
+            let tool_call = OpenAIToolCall {
+                id: tc.id,
+                call_type: "function".to_string(),
+                function: OpenAIFunctionCall {
+                    name: tc.name,
+                    arguments: tc.arguments,
+                },
+            };
+            (
+                OpenAIChatMessage {
+                    role: "assistant".to_string(),
+                    content: if content_before.is_empty() { None } else { Some(content_before) },
+                    tool_calls: Some(vec![tool_call]),
+                },
+                "tool_calls".to_string(),
+            )
+        } else {
+            (
+                OpenAIChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(text),
+                    tool_calls: None,
+                },
+                "stop".to_string(),
+            )
+        }
+    } else {
+        (
+            OpenAIChatMessage {
+                role: "assistant".to_string(),
+                content: Some(text),
+                tool_calls: None,
+            },
+            "stop".to_string(),
+        )
+    };
+
     Ok(Json(OpenAIChatResponse {
         id: gen_request_id(),
         object: "chat.completion".to_string(),
@@ -849,11 +1059,8 @@ async fn openai_sync_response(
         model,
         choices: vec![OpenAIChoice {
             index: 0,
-            message: OpenAIChatMessage {
-                role: "assistant".to_string(),
-                content: text,
-            },
-            finish_reason: "stop".to_string(),
+            message,
+            finish_reason,
         }],
         usage: OpenAIUsage {
             prompt_tokens,
@@ -884,6 +1091,7 @@ async fn openai_stream_response(
     top_p: Option<f32>,
     top_k: Option<i32>,
     model: String,
+    has_tools: bool,
 ) -> Result<Response, (StatusCode, String)> {
     use axum::response::IntoResponse;
     use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -919,6 +1127,7 @@ async fn openai_stream_response(
             delta: OpenAIStreamDelta {
                 role: Some("assistant".to_string()),
                 content: None,
+                tool_calls: None,
             },
             finish_reason: None,
         }],
@@ -934,6 +1143,11 @@ async fn openai_stream_response(
     let req_id_clone = request_id.clone();
     let model_stream_clone = model_for_stream.clone();
 
+    // For tool-call detection, we accumulate all streamed tokens.
+    // Limitation: tool_calls arrive as a single final chunk rather than incrementally.
+    let accumulated_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let acc_for_closure = accumulated_text.clone();
+
     // Spawn a blocking task so the inference loop doesn't block the async executor.
     tokio::task::spawn_blocking(move || {
         // Acquire the engine lock on the blocking thread.
@@ -944,7 +1158,14 @@ async fn openai_stream_response(
             let tx = tx_content.clone();
             let req_id = req_id_clone.clone();
             let model_name = model_stream_clone.clone();
+            let acc = acc_for_closure.clone();
             Box::new(move |chunk: &str| -> bool {
+                // Accumulate for post-generation tool-call extraction.
+                if has_tools {
+                    if let Ok(mut guard) = acc.lock() {
+                        guard.push_str(chunk);
+                    }
+                }
                 let event_data = serde_json::to_string(&OpenAIStreamChunk {
                     id: req_id.clone(),
                     object: "chat.completion.chunk".to_string(),
@@ -955,6 +1176,7 @@ async fn openai_stream_response(
                         delta: OpenAIStreamDelta {
                             role: None,
                             content: Some(chunk.to_string()),
+                            tool_calls: None,
                         },
                         finish_reason: None,
                     }],
@@ -977,7 +1199,29 @@ async fn openai_stream_response(
 
         drop(engine); // release lock before async work
 
-        // Stop chunk
+        // If tools were enabled, check accumulated text for a tool call.
+        // The tool_calls chunk replaces the stop chunk when a call is found.
+        let (finish_reason, tool_calls_for_chunk) = if has_tools {
+            let full_text = accumulated_text.lock().map(|g| g.clone()).unwrap_or_default();
+            let (_, maybe_tc) = extract_tool_call(&full_text);
+            if let Some(tc) = maybe_tc {
+                let tool_call = OpenAIToolCall {
+                    id: tc.id,
+                    call_type: "function".to_string(),
+                    function: OpenAIFunctionCall {
+                        name: tc.name,
+                        arguments: tc.arguments,
+                    },
+                };
+                ("tool_calls".to_string(), Some(vec![tool_call]))
+            } else {
+                ("stop".to_string(), None)
+            }
+        } else {
+            ("stop".to_string(), None)
+        };
+
+        // Stop / tool_calls chunk
         let stop_data = serde_json::to_string(&OpenAIStreamChunk {
             id: req_id_clone.clone(),
             object: "chat.completion.chunk".to_string(),
@@ -988,8 +1232,9 @@ async fn openai_stream_response(
                 delta: OpenAIStreamDelta {
                     role: None,
                     content: None,
+                    tool_calls: tool_calls_for_chunk,
                 },
-                finish_reason: Some("stop".to_string()),
+                finish_reason: Some(finish_reason),
             }],
         })
         .unwrap_or_default();
@@ -2512,11 +2757,13 @@ mod tests {
         let messages = vec![
             OpenAIChatMessage {
                 role: "system".to_string(),
-                content: "You are helpful.".to_string(),
+                content: Some("You are helpful.".to_string()),
+                tool_calls: None,
             },
             OpenAIChatMessage {
                 role: "user".to_string(),
-                content: "Hello".to_string(),
+                content: Some("Hello".to_string()),
+                tool_calls: None,
             },
         ];
         let prompt = messages_to_prompt(&messages);
@@ -2690,5 +2937,137 @@ mod tests {
         let collected: Vec<String> = collect_rx.try_iter().collect();
         assert_eq!(count, 3, "should report 3 tokens generated");
         assert_eq!(collected, vec!["Hello", " ", "world"]);
+    }
+
+    // -------------------------------------------------------------------------
+    // P12 A1 tests: OpenAI tools / function calling
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_render_tools_prompt_includes_name_and_description() {
+        let tools = vec![OpenAITool {
+            tool_type: "function".to_string(),
+            function: OpenAIFunction {
+                name: "get_weather".to_string(),
+                description: "Get current weather for a city".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"]
+                }),
+            },
+        }];
+        let prompt = render_tools_prompt(&tools, None);
+        assert!(prompt.contains("get_weather"), "prompt must mention tool name");
+        assert!(prompt.contains("Get current weather"), "prompt must include description");
+        assert!(prompt.contains("<tool_call>"), "prompt must include tool_call marker");
+    }
+
+    #[test]
+    fn test_render_tools_prompt_required_mode_adds_must() {
+        let tools = vec![OpenAITool {
+            tool_type: "function".to_string(),
+            function: OpenAIFunction {
+                name: "lookup".to_string(),
+                description: "Look something up".to_string(),
+                parameters: serde_json::json!({}),
+            },
+        }];
+        let prompt = render_tools_prompt(&tools, Some(&ToolChoice::Mode("required".to_string())));
+        assert!(prompt.contains("MUST"), "required mode should include MUST instruction");
+    }
+
+    #[test]
+    fn test_extract_tool_call_from_model_output() {
+        let output = r#"Let me check that. <tool_call>{"name": "get_weather", "arguments": {"city": "Tokyo"}}</tool_call>"#;
+        let (content, tc) = extract_tool_call(output);
+        assert!(tc.is_some(), "should find a tool call");
+        let tc = tc.unwrap();
+        assert_eq!(tc.name, "get_weather");
+        assert!(tc.arguments.contains("Tokyo"), "arguments should include Tokyo");
+        assert!(content.contains("Let me check"), "content before tool call should be returned");
+        assert!(tc.id.starts_with("call_"), "id should start with call_");
+    }
+
+    #[test]
+    fn test_extract_tool_call_none_when_no_marker() {
+        let (text, tc) = extract_tool_call("Just a normal response without any tool calls.");
+        assert!(tc.is_none(), "should return None when no tool call marker present");
+        assert_eq!(text, "Just a normal response without any tool calls.");
+    }
+
+    #[test]
+    fn test_extract_tool_call_handles_malformed_json() {
+        let output = "<tool_call>{garbage json here</tool_call>";
+        let (_, tc) = extract_tool_call(output);
+        assert!(tc.is_none(), "malformed JSON should yield None, not panic");
+    }
+
+    #[test]
+    fn test_openai_chat_request_accepts_tools_field() {
+        let json = r#"{
+            "messages": [{"role": "user", "content": "What is the weather in Tokyo?"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather for a city",
+                        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                    }
+                }
+            ],
+            "tool_choice": "auto"
+        }"#;
+        let req: OpenAIChatRequest = serde_json::from_str(json).expect("deserialize");
+        assert!(req.tools.is_some(), "tools field should be present");
+        assert_eq!(req.tools.unwrap().len(), 1);
+        assert!(matches!(req.tool_choice, Some(ToolChoice::Mode(ref m)) if m == "auto"));
+    }
+
+    #[test]
+    fn test_openai_chat_request_tools_optional() {
+        let json = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
+        let req: OpenAIChatRequest = serde_json::from_str(json).expect("deserialize");
+        assert!(req.tools.is_none(), "tools should be None when not provided");
+        assert!(req.tool_choice.is_none(), "tool_choice should be None when not provided");
+    }
+
+    #[tokio::test]
+    async fn test_chat_completions_with_tools_returns_503_when_no_model() {
+        // When no model is loaded, a request with tools should still return 503.
+        let config = Config::default();
+        let app = test_router(config);
+
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "What is the weather in Tokyo?"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {}
+                    }
+                }
+            ],
+            "tool_choice": "auto",
+            "max_tokens": 50
+        })
+        .to_string();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }
