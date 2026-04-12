@@ -174,7 +174,7 @@ impl AgentNet {
     /// Get top agents by reputation.
     pub fn leaderboard(&self, limit: usize) -> Vec<&AgentProfile> {
         let mut agents: Vec<_> = self.profiles.values().collect();
-        agents.sort_by(|a, b| b.reputation.partial_cmp(&a.reputation).unwrap());
+        agents.sort_by(|a, b| b.reputation.partial_cmp(&a.reputation).unwrap_or(std::cmp::Ordering::Equal));
         agents.into_iter().take(limit).collect()
     }
 

@@ -297,8 +297,8 @@ fn compute_round_robin_score(trades: &[&TradeRecord], subject: &NodeId) -> f64 {
     // Build adjacency list (directed: provider → consumer).
     let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
     for t in trades {
-        let p = *node_to_idx.get(&t.provider).unwrap();
-        let c = *node_to_idx.get(&t.consumer).unwrap();
+        let Some(&p) = node_to_idx.get(&t.provider) else { continue; };
+        let Some(&c) = node_to_idx.get(&t.consumer) else { continue; };
         if p != c {
             adj[p].push(c);
         }
