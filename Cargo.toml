@@ -12,6 +12,8 @@ members = [
     "crates/forge-bank",
     "crates/forge-mind",
     "crates/forge-agora",
+    "crates/forge-sdk",
+    "crates/forge-mcp",
 ]
 resolver = "2"
 
@@ -39,6 +41,11 @@ forge-lightning = { path = "crates/forge-lightning", version = "0.3.0" }
 forge-bank = { path = "crates/forge-bank", version = "0.3.0" }
 forge-mind = { path = "crates/forge-mind", version = "0.3.0" }
 forge-agora = { path = "crates/forge-agora", version = "0.3.0" }
+forge-sdk = { path = "crates/forge-sdk", version = "0.3.0" }
+forge-mcp = { path = "crates/forge-mcp", version = "0.3.0" }
+
+# MCP SDK
+rmcp = { version = "1.2.0", features = ["server", "transport-io"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

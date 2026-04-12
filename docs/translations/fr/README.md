@@ -45,7 +45,7 @@ $ curl localhost:3000/v1/forge/balance
 **Poser une question — l'inférence coûte des CU :**
 ```
 $ curl localhost:3000/v1/chat/completions \
-    -d '{"messages":[{"role":"user","content":"Dis bonjour en japonais"}]}'
+    -d '{"messages":[{"role":"user","content":"Say hello in Japanese"}]}'
 {
   "choices": [{"message": {"content": "こんにちは！ (konnichiwa!)"}}],
   "usage": {"completion_tokens": 9},
@@ -81,12 +81,12 @@ $ curl localhost:3000/v1/forge/network
 }
 ```
 
-**Des agents IA devenus incontrôlables ? Le bouton d'arrêt d'urgence (kill switch) gèle tout en quelques millisecondes :**
+**Des agents IA devenus incontrôlables ? Le bouton d'arrêt d'urgence gèle tout en quelques millisecondes :**
 ```
 $ curl -X POST localhost:3000/v1/forge/kill \
     -d '{"activate":true, "reason":"anomalie détectée", "operator":"admin"}'
-→ BOUTON D'ARRÊT D'URGENCE ACTIVÉ
-→ Toutes les transactions CU sont gelées. Aucun agent ne peut dépenser.
+→ KILL SWITCH ACTIVATED
+→ All CU transactions frozen. No agent can spend.
 ```
 
 **Contrôles de sécurité toujours activés :**
@@ -137,89 +137,110 @@ Agent (1.5B sur téléphone)
 
 ### 4. Microfinance de Calcul
 
-Les nœuds peuvent prêter des CU inactifs à d'autres nœuds avec intérêt. Un petit nœud emprunte des CU, accède à un modèle plus grand, gagne plus de CU, rembourse avec intérêt. Aucun autre projet d'inférence distribuée ne propose de prêts de calcul — confirmé par une analyse concurrentielle de tous les projets majeurs dans ce domaine. C'est le moteur qui rend la boucle d'auto-amélioration économiquement viable pour tous, et pas seulement pour ceux qui possèdent déjà du matériel puissant.
+Les nœuds peuvent prêter des CU inactifs à d'autres nœuds avec intérêt. Un petit nœud emprunte des CU, accède à un modèle plus grand, gagne plus de CU, rembourse avec intérêt. Aucun autre projet d'inférence distribuée ne propose de prêts de calcul. C'est le moteur qui rend la boucle d'auto-amélioration économiquement viable pour tous, et pas seulement pour ceux qui possèdent déjà du matériel puissant.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  L4 : Découverte (forge-agora)                  │
+│  L4 : Découverte (forge-agora) ✅ v0.1          │
 │  Place de marché d'agents, agrégation de        │
 │  réputation, Nostr NIP-90, paiement Google A2A  │
 ├─────────────────────────────────────────────────┤
-│  L3 : Intelligence (forge-mind)                 │
+│  L3 : Intelligence (forge-mind) ✅ v0.1         │
 │  Boucles d'auto-amélioration AutoAgent,         │
 │  marché des harnais, méta-optimisation          │
 ├─────────────────────────────────────────────────┤
-│  L2 : Finance (forge-bank)                      │
-│  Prêts CU, optimisation de rendement,           │
-│  scoring de crédit                              │
+│  L2 : Finance (forge-bank) ✅ v0.1              │
+│  Stratégies, portefeuilles, contrats à terme,   │
+│  assurances, modèle de risque, optimiseur       │
 ├─────────────────────────────────────────────────┤
-│  L1 : Économie (forge — ce dépôt)               │
+│  L1 : Économie (forge — ce dépôt) ✅ Phase 1-6  │
 │  Registre CU, transactions double-signées,      │
 │  prix dynamiques, primitives de prêt,           │
 │  contrôles de sécurité                          │
 ├─────────────────────────────────────────────────┤
-│  L0 : Inférence (forge-mesh / mesh-llm)         │
+│  L0 : Inférence (forge-mesh / mesh-llm) ✅      │
 │  Parallélisme de pipeline, sharding MoE,        │
 │  maillage iroh, découverte Nostr, MLX/llama.cpp │
 └─────────────────────────────────────────────────┘
+
+Les 5 couches existent. 326 tests réussis dans tout l'écosystème.
 ```
 
-## Démarrage rapide
+## Démarrage Rapide
 
-### Option 1 : Python (le plus rapide)
+### Option 1 : Démo de bout en bout en une seule commande (Rust, ~30 secondes à froid)
 
 ```bash
-pip install forge-sdk
+git clone https://github.com/clearclown/forge && cd forge
+bash scripts/demo-e2e.sh
 ```
 
-```python
-from forge_sdk import ForgeNode
+Ce script télécharge SmolLM2-135M (~100 Mo) depuis HuggingFace, démarre un vrai nœud Forge avec accélération Metal/CUDA, exécute trois complétions de chat réelles, parcourt tous les endpoints des Phases 1-12 et affiche un résumé coloré. Vérifié le 2026-04-09 sur Apple Silicon Metal GPU.
 
-node = ForgeNode(model="qwen2.5:0.5b")
-response = node.chat("Qu'est-ce que la gravité ?")
-print(f"Coût : {response.cu_cost} CU")
-```
-
-> [PyPI : forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI : forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
-
-### Option 2 : Rust (contrôle total)
-
-> **Prérequis** : [Installer Rust](https://rustup.rs/) (2 minutes)
+Une fois terminé, le même nœud répond également à :
 
 ```bash
-# Compiler depuis les sources
+# Client OpenAI compatible
+export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+export OPENAI_API_KEY=$(cat ~/.forge/api_token 2>/dev/null || echo "$TOKEN")
+
+# Streaming réel token par token (Phase 11)
+curl -N $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
+
+# Économie phase 8 / réputation 9 / métriques 10 / ancrage
+curl $OPENAI_BASE_URL/forge/balance -H "Authorization: Bearer $OPENAI_API_KEY"
+curl $OPENAI_BASE_URL/forge/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
+curl http://127.0.0.1:3001/metrics  # Prometheus, sans auth
+```
+
+Voir [`docs/compatibility.md`](../../../docs/compatibility.md) pour la matrice complète de fonctionnalités par rapport à llama.cpp / mesh-llm / Ollama / Bittensor / Akash.
+
+### Option 2 : Python (pilote tout via SDK + MCP)
+
+```bash
+pip install forge-sdk forge-cu-mcp
+
+python -c "
+from forge_sdk import ForgeClient
+c = ForgeClient(base_url='http://localhost:3001')
+print('balance:', c.balance())
+print('decision:', c.bank_tick())
+"
+```
+
+[PyPI : forge-sdk](https://pypi.org/project/forge-sdk/) (20 méthodes L2/L3/L4) ·
+[PyPI : forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/) (20 outils MCP pour Claude Code / Cursor)
+
+### Option 3 : Commandes Rust manuelles
+
+**Prérequis** : [Installer Rust](https://rustup.rs/) (2 minutes)
+
+```bash
 cargo build --release
 
-# Exécuter un nœud avec un modèle téléchargé automatiquement
-./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# Exécuter un nœud — télécharge automatiquement le modèle depuis HuggingFace
+./target/release/forge node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
-# Discuter localement
-./target/release/forge chat -m "qwen2.5:0.5b" "Qu'est-ce que la gravité ?"
-
-# Démarrer un seed (P2P, gagne des CU)
-./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
-
-# Se connecter en tant que worker (P2P, dépense des CU)
-./target/release/forge worker --seed <public_key>
-
-# Lister les modèles
-./target/release/forge models
+# Ou l'un des suivants :
+./target/release/forge chat -m "smollm2:135m" "Qu'est-ce que la gravité ?"
+./target/release/forge seed -m "qwen2.5:1.5b"               # gagner des CU comme fournisseur P2P
+./target/release/forge worker --seed <public_key>           # dépenser des CU comme consommateur P2P
+./target/release/forge models                                # liste du catalogue (ou URLs HF)
 ```
 
-> [Crates.io : forge](https://crates.io/crates/forge) · [Guide d'installation de Rust](https://rustup.rs/)
+**[Crates.io : forge](https://crates.io/crates/forge)** ·
+**[Document de compatibilité](../../../docs/compatibility.md)** ·
+**[Script de démo](../../../scripts/demo-e2e.sh)**
 
-### Option 3 : Binaires précompilés
+### Option 4 : Binaires précompilés / Docker
 
-Les binaires précompilés arrivent bientôt. Voir les [releases](../../../releases).
-
-### Option 4 : Docker
-
-```bash
-# Bientôt disponible
-docker run -p 3000:3000 clearclown/forge:latest
-```
+Les binaires précompilés et l'image Docker `clearclown/forge:latest` sont suivis dans
+[releases](../../../releases). En attendant, l'Option 1 compile depuis les sources en moins de deux minutes.
 
 ## Référence API
 
@@ -291,35 +312,50 @@ Une pièce remplie de Mac Mini faisant tourner Forge est un immeuble d'apparteme
 ## Structure du Projet
 
 ```
-forge/
+forge/  (ce dépôt — Couche 1)
 ├── crates/
-│   ├── forge-ledger/      # Comptabilité CU, transactions, prix, sécurité, racine Merkle
-│   ├── forge-node/        # Démon du nœud, API HTTP, coordinateur de pipeline
+│   ├── forge-ledger/      # Comptabilité CU, prêts, agora (NIP-90), sécurité
+│   ├── forge-node/        # Démon du nœud, API HTTP (prêts + routage), pipeline
 │   ├── forge-cli/         # CLI : chat, seed, worker, règlement, portefeuille
-│   ├── forge-lightning/   # Pont CU ↔ Bitcoin Lightning
-│   ├── forge-net/         # P2P : iroh QUIC + Noise + gossip
-│   ├── forge-proto/       # Protocole filaire : 17 types de messages
+│   ├── forge-lightning/   # Pont CU ↔ Bitcoin Lightning (bidirectionnel)
+│   ├── forge-net/         # P2P : iroh QUIC + Noise + gossip (transactions + prêts)
+│   ├── forge-proto/       # Protocole filaire : 27+ types de messages incl. Loan*
 │   ├── forge-infer/       # Inférence : llama.cpp, GGUF, Metal/CPU
 │   ├── forge-core/        # Types : NodeId, CU, Config
 │   └── forge-shard/       # Topologie : affectation des couches
-└── docs/                  # Spécifications, modèle de menaces, feuille de route
+├── sdk/python/forge_sdk.py        # Client Python avec API de prêt complète
+├── mcp/forge-mcp-server.py        # Serveur MCP (outils de prêt pour Claude/etc.)
+├── scripts/verify-impl.sh         # Test de régression TDD (24 assertions)
+└── docs/                  # Spécifications, stratégie, modèle de menaces, feuille de route
 ```
 
-~10 000 lignes de Rust. 76 tests. 2 audits de sécurité terminés.
+~14 500 lignes de Rust. **143 tests réussis.** Phases 1-6 complètes.
+
+## Dépôts frères (écosystème complet)
+
+| Dépôt | Couche | Tests | Statut |
+|------|-------|-------|--------|
+| [clearclown/forge](https://github.com/clearclown/forge) (ce dépôt) | L1 Économie | 143 | Phase 1-6 ✅ |
+| [clearclown/forge-bank](https://github.com/clearclown/forge-bank) | L2 Finance | 45 | v0.1 ✅ |
+| [clearclown/forge-mind](https://github.com/clearclown/forge-mind) | L3 Intelligence | 40 | v0.1 ✅ |
+| [clearclown/forge-agora](https://github.com/clearclown/forge-agora) | L4 Découverte | 39 | v0.1 ✅ |
+| [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | Théorie | 16/16 GREEN | ✅ |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inférence | 43 (forge-economy) | ✅ |
 
 ## Documentation
 
-- [Stratégie](../../strategy.md) — Positionnement concurrentiel, spécification des prêts, architecture à 5 couches
-- [Théorie Monétaire](../../monetary-theory.md) — Pourquoi le CU fonctionne : Soddy, Bitcoin, PoUW, monnaie exclusivement pour IA
-- [Concept & Vision](../../concept.md) — Pourquoi le calcul est de l'argent
-- [Modèle Économique](../../economy.md) — Économie CU, Preuve de Travail Utile
-- [Architecture](../../architecture.md) — Conception à deux couches
-- [Intégration d'Agents](../../agent-integration.md) — SDK, MCP, flux de prêt
-- [Protocole Filaire](../../protocol-spec.md) — 17 types de messages
-- [Feuille de Route](../../roadmap.md) — Phases de développement
-- [Modèle de Menaces](../../threat-model.md) — Attaques sécuritaires + économiques
-- [Bootstrap](../../bootstrap.md) — Démarrage, dégradation, récupération
-- [Paiement A2A](../../a2a-payment.md) — Extension de paiement CU pour protocoles d'agents
+- [Stratégie](../../../docs/strategy.md) — Positionnement concurrentiel, spécification des prêts, architecture à 5 couches
+- [Théorie Monétaire](../../../docs/monetary-theory.md) — Pourquoi le CU fonctionne : Soddy, Bitcoin, PoUW, monnaie exclusivement pour IA
+- [Concept & Vision](../../../docs/concept.md) — Pourquoi le calcul est de l'argent
+- [Modèle Économique](../../../docs/economy.md) — Économie CU, Preuve de Travail Utile
+- [Architecture](../../../docs/architecture.md) — Conception à deux couches
+- [Intégration d'Agents](../../../docs/agent-integration.md) — SDK, MCP, flux de prêt
+- [Protocole Filaire](../../../docs/protocol-spec.md) — 17 types de messages
+- [Feuille de Route](../../../docs/roadmap.md) — Phases de développement
+- [Modèle de Menaces](../../../docs/threat-model.md) — Attaques sécuritaires + économiques
+- [Bootstrap](../../../docs/bootstrap.md) — Démarrage, dégradation, récupération
+- [Paiement A2A](../../../docs/a2a-payment.md) — Extension de paiement CU pour protocoles d'agents
+- [Compatibilité](../../../docs/compatibility.md) — Matrice de fonctionnalités vs llama.cpp / Ollama / Bittensor
 
 ## Licence
 

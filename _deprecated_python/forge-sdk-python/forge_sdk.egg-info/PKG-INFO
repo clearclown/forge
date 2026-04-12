@@ -1,0 +1,128 @@
+Metadata-Version: 2.4
+Name: forge-sdk
+Version: 0.3.0
+Summary: Python SDK for the Forge compute economy — where AI agents earn and spend Compute Units
+License: MIT
+Project-URL: Homepage, https://github.com/clearclown/forge
+Project-URL: Documentation, https://github.com/clearclown/forge/blob/main/docs/agent-integration.md
+Project-URL: Repository, https://github.com/clearclown/forge
+Keywords: ai,agent,compute,economy,llm,inference,bitcoin,p2p
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: httpx>=0.24
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+
+# forge-sdk
+
+> Python SDK for the Forge compute economy. AI agents earn and spend Compute Units.
+
+## Install
+
+```bash
+pip install forge-sdk
+```
+
+## Quick Start
+
+```python
+from forge_sdk import ForgeClient
+
+forge = ForgeClient()  # connects to localhost:3000
+
+# Check your CU balance
+balance = forge.balance()
+print(f"Balance: {balance['effective_balance']} CU")
+
+# Run inference (costs CU)
+result = forge.chat("What is gravity?")
+print(f"Answer: {result['content']}")
+print(f"Cost: {result['cu_cost']} CU")
+print(f"Remaining: {result['balance']} CU")
+```
+
+## Autonomous Agent
+
+```python
+from forge_sdk import ForgeAgent
+
+agent = ForgeAgent(max_cu_per_task=500)
+
+while agent.has_budget():
+    result = agent.think("What should I do next?")
+    if result is None:
+        break  # budget exhausted
+    print(result['content'])
+
+print(agent.status())
+```
+
+## API
+
+| Method | Description |
+|--------|-------------|
+| `forge.balance()` | CU balance, reputation |
+| `forge.pricing()` | Market price, cost estimates |
+| `forge.chat(prompt)` | Run inference, pay CU |
+| `forge.can_afford(tokens)` | Check before spending |
+| `forge.trades()` | Trade history |
+| `forge.network()` | Mesh economic state + Merkle root |
+| `forge.providers()` | Ranked providers by cost/reputation |
+| `forge.safety()` | Kill switch, circuit breaker status |
+| `forge.kill(reason)` | Emergency halt |
+| `forge.invoice(cu)` | Create Lightning invoice |
+
+## Phase 8 endpoints
+
+### L2 Bank
+
+| Method | Description |
+|--------|-------------|
+| `forge.bank_portfolio()` | PortfolioManager state: cash, lent, borrowed, net exposure |
+| `forge.bank_tick()` | Run one strategy tick; returns list of Lend/Borrow/Hold decisions |
+| `forge.bank_set_strategy(strategy, base_commit_fraction)` | Hot-swap portfolio strategy: `conservative`, `highyield`, `balanced` |
+| `forge.bank_set_risk(tolerance)` | Set risk tolerance: `conservative`, `balanced`, `aggressive` |
+| `forge.bank_list_futures()` | List all active CU futures contracts |
+| `forge.bank_create_future(counterparty_hex, notional_cu, strike_price_msats, expires_at_ms)` | Create a new futures contract |
+| `forge.bank_risk_assessment()` | VaR, concentration, leverage assessment of current portfolio |
+| `forge.bank_optimize(max_var_99_cu)` | Run YieldOptimizer with VaR budget; returns applied, decisions, rationale |
+
+### L4 Agora
+
+| Method | Description |
+|--------|-------------|
+| `forge.agora_register(agent_hex, models_served, cu_per_token, tier)` | Register an agent in the Agora marketplace |
+| `forge.agora_list_agents()` | List all registered agent profiles |
+| `forge.agora_reputation(agent_hex)` | Get reputation score for a specific agent |
+| `forge.agora_find(model_patterns, max_cu_per_token, tier, min_reputation)` | Find agents matching capability criteria |
+| `forge.agora_stats()` | Registry statistics: agent_count, trade_count, etc. |
+| `forge.agora_snapshot()` | Export registry snapshot for backup or migration |
+| `forge.agora_restore(snapshot)` | Restore registry from a snapshot dict |
+
+### L3 Mind
+
+| Method | Description |
+|--------|-------------|
+| `forge.mind_init(system_prompt, optimizer)` | Initialise ForgeMindAgent; optimizer: `echo`, `prompt_rewrite`, `cu_paid` |
+| `forge.mind_state()` | Current harness version, prompt preview, cycle count, budget usage |
+| `forge.mind_improve(n_cycles)` | Run N self-improvement cycles; returns per-cycle outcomes |
+| `forge.mind_budget(max_cu_per_cycle, max_cu_per_day, max_cycles_per_day)` | Update CU budget limits |
+| `forge.mind_stats()` | Lifetime stats: kept/reverted cycles, score delta, total CU invested |
+
+## Environment
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FORGE_URL` | `http://127.0.0.1:3000` | Forge node URL |
+| `FORGE_API_TOKEN` | (none) | Bearer token for protected nodes |
+
+## What is Forge?
+
+Forge is a distributed inference protocol where compute is currency. Unlike Bitcoin (useless SHA-256 hashes), Forge nodes earn CU by performing useful LLM inference. AI agents can autonomously earn, spend, and manage their compute budget.
+
+[Full documentation](https://github.com/clearclown/forge)

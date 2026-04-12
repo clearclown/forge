@@ -15,13 +15,13 @@
 
 </div>
 
-**Forge یک پروتکل استنتاج توزیع‌شده است که در آن محاسبات حکم پول را دارد.** نودها (Nodes) با انجام استنتاج‌های مفید LLM برای دیگران، واحدهای محاسباتی (CU) کسب می‌کنند. برخلاف بیت‌کوین — که در آن برق برای هش‌های بی‌معنی سوزانده می‌شود — هر ژول انرژی مصرف شده در یک نود Forge، هوش واقعی تولید می‌کند که واقعاً مورد نیاز کسی است.
+**Forge یک پروتکل استنتاج توزیع‌شده است که در آن محاسبات حکم پول را دارد.** نودها با انجام استنتاج‌های مفید LLM برای دیگران، واحدهای محاسباتی (CU) کسب می‌کنند. برخلاف بیت‌کوین — که در آن برق برای هش‌های بی‌معنی سوزانده می‌شود — هر ژول انرژی مصرف شده در یک نود Forge، هوش واقعی تولید می‌کند که واقعاً مورد نیاز کسی است.
 
-موتور استنتاج توزیع‌شده بر پایه [mesh-llm](https://github.com/michaelneale/mesh-llm) اثر مایکل نیل (Michael Neale) ساخته شده است. Forge یک اقتصاد محاسباتی را به آن اضافه می‌کند: حسابداری CU، اثبات کار مفید (Proof of Useful Work)، قیمت‌گذاری پویا، بودجه‌بندی عوامل خودکار و کنترل‌های ایمنی. به [CREDITS.md](../../../CREDITS.md) مراجعه کنید.
+موتور استنتاج توزیع‌شده بر پایه [mesh-llm](https://github.com/michaelneale/mesh-llm) اثر مایکل نیل ساخته شده است. Forge یک اقتصاد محاسباتی را به آن اضافه می‌کند: حسابداری CU، اثبات کار مفید (Proof of Useful Work)، قیمت‌گذاری پویا، بودجه‌بندی عوامل خودکار و کنترل‌های ایمنی. به [CREDITS.md](../../../CREDITS.md) مراجعه کنید.
 
 **فورک یکپارچه:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — همان mesh-llm با لایه اقتصادی Forge که به صورت داخلی ساخته شده است.
 
-## دمو زنده (Live Demo)
+## دمو زنده
 
 این خروجی واقعی از یک نود در حال اجرای Forge است. هر استنتاج هزینه CU دارد. هر CU از طریق محاسبات مفید به دست می‌آید.
 
@@ -71,7 +71,7 @@ $ curl localhost:3000/v1/forge/trades
 }
 ```
 
-**هر تراکنش دارای یک ریشه مرکل (Merkle root) است — قابل لنگر انداختن به بیت‌کوین برای اثبات تغییرناپذیر:**
+**هر تراکنش دارای یک ریشه مرکل است — قابل لنگر انداختن به بیت‌کوین برای اثبات تغییرناپذیر:**
 ```
 $ curl localhost:3000/v1/forge/network
 {
@@ -81,12 +81,12 @@ $ curl localhost:3000/v1/forge/network
 }
 ```
 
-**عوامل هوش مصنوعی از کنترل خارج شده‌اند؟ سوئیچ قطع (Kill switch) همه چیز را در چند میلی‌ثانیه متوقف می‌کند:**
+**عوامل هوش مصنوعی از کنترل خارج شده‌اند؟ سوئیچ قطع همه چیز را در چند میلی‌ثانیه متوقف می‌کند:**
 ```
 $ curl -X POST localhost:3000/v1/forge/kill \
     -d '{"activate":true, "reason":"anomaly detected", "operator":"admin"}'
-← KILL SWITCH ACTIVATED
-← تمام تراکنش‌های CU متوقف شد. هیچ عاملی نمی‌تواند خرج کند.
+→ KILL SWITCH ACTIVATED
+→ All CU transactions frozen. No agent can spend.
 ```
 
 **کنترل‌های ایمنی همیشه روشن هستند:**
@@ -111,33 +111,33 @@ Bitcoin:  electricity  →  meaningless SHA-256  →  BTC
 Forge:    electricity  →  useful LLM inference →  CU
 ```
 
-بیت‌کوین ثابت کرد که `برق ← محاسبات ← پول`. اما محاسبات بیت‌کوین بی‌هدف است. Forge آن را معکوس می‌کند: هر CU نشان‌دهنده هوش واقعی است که مشکل واقعی کسی را حل کرده است.
+بیت‌کوین ثابت کرد که `برق → محاسبات → پول`. اما محاسبات بیت‌کوین بی‌هدف است. Forge آن را معکوس می‌کند: هر CU نشان‌دهنده هوش واقعی است که مشکل واقعی کسی را حل کرده است.
 
 **چهار موردی که هیچ پروژه دیگری انجام نمی‌دهد:**
 
 ### ۱. محاسبات = ارز
 
-هر استنتاج یک معامله است. ارائه‌دهنده CU کسب می‌کند، مصرف‌کننده CU خرج می‌کند. بدون بلاک‌چین، بدون توکن، بدون ICO. واحد CU توسط فیزیک پشتیبانی می‌شود — برقی که برای کار مفید مصرف شده است.
+هر استنتاج یک معامله است. ارائه‌دهنده CU کسب می‌کند، مصرف‌کننده CU خرج می‌کند. بدون بلاک‌چین، بدون توکن، بدون ICO. واحد CU توسط فیزیک پشتیبانی می‌شود — برقی که برای کار مفید مصرف شده است. برخلاف Bittensor (TAO)، Akash (AKT) یا Golem (GLM)، نمی‌توان روی CU سفته‌بازی کرد — با انجام محاسبات مفید به دست می‌آید.
 
 ### ۲. مقاوم در برابر دستکاری بدون بلاک‌چین
 
-هر معامله توسط هر دو طرف به صورت دوگانه امضا (Ed25519) می‌شود و در سراسر شبکه (Mesh) همگام‌سازی (Gossip-synced) می‌گردد. ریشه مرکل تمام معاملات می‌تواند برای بازرسی تغییرناپذیر به بیت‌کوین لنگر شود. نیازی به اجماع جهانی نیست — اثبات رمزنگاری دوجانبه کافی است.
+هر معامله توسط هر دو طرف به صورت دوگانه امضا (Ed25519) می‌شود و در سراسر شبکه همگام‌سازی می‌گردد. ریشه مرکل تمام معاملات می‌تواند برای بازرسی تغییرناپذیر به بیت‌کوین لنگر شود. نیازی به اجماع جهانی نیست — اثبات رمزنگاری دوجانبه کافی است.
 
 ### ۳. عوامل هوش مصنوعی محاسبات خود را مدیریت می‌کنند
 
-یک عامل در تلفن همراه، محاسبات بیکار را در طول شب قرض می‌دهد ← CU کسب می‌کند ← دسترسی به مدل 70B می‌خرد ← هوشمندتر می‌شود ← بیشتر کسب می‌کند. عامل به طور خودکار `/v1/forge/balance` و `/v1/forge/pricing` را بررسی می‌کند. سیاست‌های بودجه و قطع‌کننده‌های مدار از هزینه‌های افسارگسیخته جلوگیری می‌کنند.
+یک عامل در تلفن همراه، محاسبات بیکار را در طول شب قرض می‌دهد → CU کسب می‌کند → دسترسی به مدل 70B می‌خرد → هوشمندتر می‌شود → بیشتر کسب می‌کند. عامل به طور خودکار `/v1/forge/balance` و `/v1/forge/pricing` را بررسی می‌کند. سیاست‌های بودجه و قطع‌کننده‌های مدار از هزینه‌های افسارگسیخته جلوگیری می‌کنند.
 
 ```
 عامل (1.5B در گوشی)
-  ← با ارائه استنتاج در طول شب CU کسب می‌کند
-  ← برای مدل 70B واحد CU خرج می‌کند ← پاسخ‌های هوشمندتر
-  ← تصمیمات بهتر ← کسب CU بیشتر
-  ← چرخه تکرار می‌شود ← عامل رشد می‌کند
+  → با ارائه استنتاج در طول شب CU کسب می‌کند
+  → برای مدل 70B واحد CU خرج می‌کند → پاسخ‌های هوشمندتر
+  → تصمیمات بهتر → کسب CU بیشتر
+  → چرخه تکرار می‌شود → عامل رشد می‌کند
 ```
 
 ### ۴. تامین مالی خرد محاسبات
 
-نودها می‌توانند CU بیکار خود را با بهره به نودهای دیگر قرض دهند. یک نود کوچک CU قرض می‌گیرد، به مدل بزرگتری دسترسی پیدا می‌کند، CU بیشتری کسب می‌کند و با بهره بازپرداخت می‌کند. هیچ پروژه استنتاج توزیع‌شده دیگری وام محاسباتی ارائه نمی‌دهد — این موضوع از طریق تحلیل رقابتی هر پروژه بزرگ در این حوزه تایید شده است. این همان موتوری است که حلقه خودبهبودی را برای همه از نظر اقتصادی قابل اجرا می‌کند، نه فقط برای کسانی که از قبل سخت‌افزار قدرتمندی دارند.
+نودها می‌توانند CU بیکار خود را با بهره به نودهای دیگر قرض دهند. یک نود کوچک CU قرض می‌گیرد، به مدل بزرگتری دسترسی پیدا می‌کند، CU بیشتری کسب می‌کند و با بهره بازپرداخت می‌کند. هیچ پروژه استنتاج توزیع‌شده دیگری وام محاسباتی ارائه نمی‌دهد. این همان موتوری است که حلقه خودبهبودی را برای همه از نظر اقتصادی قابل اجرا می‌کند.
 
 ## معماری
 
@@ -145,22 +145,23 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  L4: Discovery (forge-agora)                    │
+│  L4: Discovery (forge-agora) ✅ v0.1            │
 │  Agent marketplace, reputation aggregation,     │
 │  Nostr NIP-90, Google A2A payment extension     │
 ├─────────────────────────────────────────────────┤
-│  L3: Intelligence (forge-mind)                  │
+│  L3: Intelligence (forge-mind) ✅ v0.1          │
 │  AutoAgent self-improvement loops,              │
 │  harness marketplace, meta-optimization         │
 ├─────────────────────────────────────────────────┤
-│  L2: Finance (forge-bank)                       │
-│  CU lending, yield optimization, credit scoring │
+│  L2: Finance (forge-bank) ✅ v0.1               │
+│  Strategies, portfolios, futures, insurance,    │
+│  risk model, yield optimizer                    │
 ├─────────────────────────────────────────────────┤
-│  L1: Economy (forge — this repo)                │
+│  L1: Economy (forge — this repo) ✅ Phase 1-6   │
 │  CU ledger, dual-signed trades, dynamic pricing,│
 │  lending primitives, safety controls            │
 ├─────────────────────────────────────────────────┤
-│  L0: Inference (forge-mesh / mesh-llm)          │
+│  L0: Inference (forge-mesh / mesh-llm) ✅       │
 │  Pipeline parallelism, MoE sharding,            │
 │  iroh mesh, Nostr discovery, MLX/llama.cpp      │
 └─────────────────────────────────────────────────┘
@@ -168,60 +169,81 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 </div>
 
-## شروع سریع (Quick Start)
+همه ۵ لایه وجود دارند. ۳۲۶ تست در سراسر اکوسیستم قبول شده‌اند.
 
-### گزینه ۱: Python (سریع‌ترین)
+## شروع سریع
 
-```bash
-pip install forge-sdk
-```
-
-```python
-from forge_sdk import ForgeNode
-
-node = ForgeNode(model="qwen2.5:0.5b")
-response = node.chat("گرانش چیست؟")
-print(f"هزینه: {response.cu_cost} CU")
-```
-
-> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
-
-### گزینه ۲: Rust (کنترل کامل)
-
-> **پیش‌نیاز**: [نصب Rust](https://rustup.rs/) (حدود ۲ دقیقه)
+### گزینه ۱: دمو کامل با یک دستور (Rust، ~۳۰ ثانیه از صفر)
 
 ```bash
-# ساخت از سورس
+git clone https://github.com/clearclown/forge && cd forge
+bash scripts/demo-e2e.sh
+```
+
+این اسکریپت SmolLM2-135M (~۱۰۰ مگابایت) را از HuggingFace دانلود می‌کند، یک نود واقعی Forge با شتاب‌دهنده Metal/CUDA راه‌اندازی می‌کند، سه تکمیل چت واقعی اجرا می‌کند، از تمام endpoint‌های فازهای ۱-۱۲ عبور می‌کند و یک خلاصه رنگی چاپ می‌کند. تأیید شده در ۲۰۲۶-۰۴-۰۹ روی Apple Silicon Metal GPU.
+
+پس از اتمام، همان نود به موارد زیر نیز پاسخ می‌دهد:
+
+```bash
+# کلاینت سازگار با OpenAI
+export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+export OPENAI_API_KEY=$(cat ~/.forge/api_token 2>/dev/null || echo "$TOKEN")
+
+# استریمینگ واقعی توکن به توکن (فاز ۱۱)
+curl -N $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
+
+# اقتصاد فاز ۸ / اعتبار ۹ / متریک‌ها ۱۰ / لنگرگذاری
+curl $OPENAI_BASE_URL/forge/balance -H "Authorization: Bearer $OPENAI_API_KEY"
+curl $OPENAI_BASE_URL/forge/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
+curl http://127.0.0.1:3001/metrics  # Prometheus، بدون احراز هویت
+```
+
+برای ماتریس کامل ویژگی‌ها در مقابل llama.cpp / mesh-llm / Ollama / Bittensor / Akash به [`docs/compatibility.md`](../../../docs/compatibility.md) مراجعه کنید.
+
+### گزینه ۲: Python (همه چیز را از طریق SDK + MCP کنترل می‌کند)
+
+```bash
+pip install forge-sdk forge-cu-mcp
+
+python -c "
+from forge_sdk import ForgeClient
+c = ForgeClient(base_url='http://localhost:3001')
+print('balance:', c.balance())
+print('decision:', c.bank_tick())
+"
+```
+
+[PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) (۲۰ متد L2/L3/L4) ·
+[PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/) (۲۰ ابزار MCP برای Claude Code / Cursor)
+
+### گزینه ۳: دستورات دستی Rust
+
+**پیش‌نیاز**: [نصب Rust](https://rustup.rs/) (حدود ۲ دقیقه)
+
+```bash
 cargo build --release
 
-# اجرای یک نود با مدل دانلود شده خودکار
-./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# اجرای یک نود — مدل را به صورت خودکار از HuggingFace دانلود می‌کند
+./target/release/forge node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
-# چت محلی
-./target/release/forge chat -m "qwen2.5:0.5b" "گرانش چیست؟"
-
-# شروع یک Seed (در شبکه P2P، کسب CU)
-./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
-
-# اتصال به عنوان Worker (در شبکه P2P، خرج CU)
-./target/release/forge worker --seed <public_key>
-
-# لیست مدل‌ها
-./target/release/forge models
+# یا هر کدام از موارد زیر:
+./target/release/forge chat -m "smollm2:135m" "گرانش چیست؟"
+./target/release/forge seed -m "qwen2.5:1.5b"               # کسب CU به عنوان ارائه‌دهنده P2P
+./target/release/forge worker --seed <public_key>           # خرج CU به عنوان مصرف‌کننده P2P
+./target/release/forge models                                # لیست کاتالوگ
 ```
 
-> [Crates.io: forge](https://crates.io/crates/forge) · [راهنمای نصب Rust](https://rustup.rs/)
+**[Crates.io: forge](https://crates.io/crates/forge)** ·
+**[سند سازگاری](../../../docs/compatibility.md)** ·
+**[اسکریپت دمو](../../../scripts/demo-e2e.sh)**
 
-### گزینه ۳: فایل‌های باینری از پیش ساخته شده
+### گزینه ۴: فایل‌های باینری از پیش ساخته شده / Docker
 
-فایل‌های باینری از پیش ساخته شده به زودی در دسترس خواهند بود. [صفحه انتشار](../../../releases) را بررسی کنید.
-
-### گزینه ۴: Docker
-
-```bash
-# به زودی
-docker run -p 3000:3000 clearclown/forge:latest
-```
+فایل‌های باینری از پیش ساخته شده و تصویر Docker ‏`clearclown/forge:latest` در
+[releases](../../../releases) ردیابی می‌شوند. تا آن زمان، گزینه ۱ در کمتر از دو دقیقه از سورس می‌سازد.
 
 ## مرجع API
 
@@ -232,7 +254,7 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `POST /v1/chat/completions` | چت با استریمینگ. هر پاسخ شامل `x_forge.cu_cost` است |
 | `GET /v1/models` | لیست مدل‌های بارگذاری شده |
 
-### اقتصاد (Economy)
+### اقتصاد
 
 | نقطه انتهایی | توضیحات |
 |----------|-------------|
@@ -245,7 +267,7 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/route` | انتخاب بهینه ارائه‌دهنده (هزینه/کیفیت/متوازن) |
 | `GET /settlement` | صورت‌حساب تسویه قابل خروجی |
 
-### وام‌دهی (Lending)
+### وام‌دهی
 
 | نقطه انتهایی | توضیحات |
 |----------|-------------|
@@ -256,7 +278,7 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/pool` | وضعیت استخر وام‌دهی |
 | `GET /v1/forge/loans` | وام‌های فعال |
 
-### ایمنی (Safety)
+### ایمنی
 
 | نقطه انتهایی | توضیحات |
 |----------|-------------|
@@ -278,7 +300,7 @@ docker run -p 3000:3000 clearclown/forge:latest
 
 اصل طراحی: **شکست-ایمن (Fail-safe)**. اگر هر بررسی نتواند ایمنی را تعیین کند، عملیات را **رد** می‌کند.
 
-## ایده (The Idea)
+## ایده
 
 | دوران | استاندارد | پشتوانه |
 |-----|----------|---------|
@@ -288,45 +310,60 @@ docker run -p 3000:3000 clearclown/forge:latest
 | ۲۰۰۹–تاکنون | بیت‌کوین | انرژی روی SHA-256 (کار بی‌فایده) |
 | **اکنون** | **استاندارد محاسباتی** | **انرژی روی استنتاج LLM (کار مفید)** |
 
-اتاقی پر از مک‌مینی (Mac Mini) که Forge را اجرا می‌کنند، مانند یک ساختمان آپارتمانی است — که در حین خواب صاحبش، با انجام کارهای مفید، سود تولید می‌کند.
+اتاقی پر از مک‌مینی که Forge را اجرا می‌کنند، مانند یک ساختمان آپارتمانی است — که در حین خواب صاحبش، با انجام کارهای مفید، سود تولید می‌کند.
 
 ## ساختار پروژه
 
 ```
-forge/
+forge/  (این مخزن — لایه ۱)
 ├── crates/
-│   ├── forge-ledger/      # حسابداری CU، معاملات، قیمت‌گذاری، ایمنی، ریشه مرکل
-│   ├── forge-node/        # دیمون نود، API HTTP، هماهنگ‌کننده پایپ‌لاین
-│   ├── forge-cli/         # رابط کاربری متنی (CLI): چت، seed، worker، تسویه، کیف پول
-│   ├── forge-lightning/   # پل ارتباطی CU ↔ بیت‌کوین لایتنینگ
-│   ├── forge-net/         # شبکه P2P: iroh QUIC + Noise + gossip
-│   ├── forge-proto/       # پروتکل ارتباطی: ۱۷ نوع پیام
+│   ├── forge-ledger/      # حسابداری CU، وام‌دهی، agora (NIP-90)، ایمنی
+│   ├── forge-node/        # دیمون نود، API HTTP (وام‌دهی + مسیریابی)، پایپ‌لاین
+│   ├── forge-cli/         # رابط کاربری متنی: چت، seed، worker، تسویه، کیف پول
+│   ├── forge-lightning/   # پل ارتباطی CU ↔ بیت‌کوین لایتنینگ (دوطرفه)
+│   ├── forge-net/         # شبکه P2P: iroh QUIC + Noise + gossip (معاملات + وام‌ها)
+│   ├── forge-proto/       # پروتکل ارتباطی: ۲۷+ نوع پیام، شامل Loan*
 │   ├── forge-infer/       # استنتاج: llama.cpp, GGUF, Metal/CPU
 │   ├── forge-core/        # انواع داده: NodeId, CU, Config
 │   └── forge-shard/       # توپولوژی: تخصیص لایه
-└── docs/                  # مشخصات، مدل تهدید، نقشه راه
+├── sdk/python/forge_sdk.py        # کلاینت Python با API وام‌دهی کامل
+├── mcp/forge-mcp-server.py        # سرور MCP (ابزارهای وام‌دهی برای Claude و غیره)
+├── scripts/verify-impl.sh         # تست رگرسیون TDD (۲۴ اثبات)
+└── docs/                  # مشخصات، استراتژی، مدل تهدید، نقشه راه
 ```
 
-حدود ۱۰,۰۰۰ خط کد Rust. ۷۶ تست. ۲ ممیزی امنیتی تکمیل شده.
+~۱۴,۵۰۰ خط کد Rust. **۱۴۳ تست قبول شده.** فازهای ۱-۶ کامل.
 
-## مستندات (Docs)
+## مخازن خواهری (اکوسیستم کامل)
 
-- [استراتژی](strategy.md) — موقعیت‌یابی رقابتی، مشخصات وام‌دهی، معماری ۵ لایه
-- [نظریه پولی](monetary-theory.md) — چرا CU کار می‌کند: Soddy، بیت‌کوین، PoUW، ارز مختص AI
-- [مفهوم و چشم‌انداز](concept.md) — چرا محاسبات همان پول است
-- [مدل اقتصادی](economy.md) — اقتصاد CU، اثبات کار مفید
-- [معماری](architecture.md) — طراحی دو لایه
-- [یکپارچه‌سازی عامل](agent-integration.md) — SDK، MCP، جریان کار وام‌گیری
-- [پروتکل ارتباطی](protocol-spec.md) — ۱۷ نوع پیام
-- [نقشه راه](roadmap.md) — مراحل توسعه
-- [مدل تهدید](threat-model.md) — حملات امنیتی و اقتصادی
-- [راه‌اندازی (Bootstrap)](bootstrap.md) — راه‌اندازی اولیه، کاهش عملکرد، بازیابی
-- [پرداخت A2A](a2a-payment.md) — افزونه پرداخت CU برای پروتکل‌های عامل
+| مخزن | لایه | تست‌ها | وضعیت |
+|------|-------|-------|--------|
+| [clearclown/forge](https://github.com/clearclown/forge) (این) | L1 اقتصاد | ۱۴۳ | فاز ۱-۶ ✅ |
+| [clearclown/forge-bank](https://github.com/clearclown/forge-bank) | L2 مالی | ۴۵ | v0.1 ✅ |
+| [clearclown/forge-mind](https://github.com/clearclown/forge-mind) | L3 هوش | ۴۰ | v0.1 ✅ |
+| [clearclown/forge-agora](https://github.com/clearclown/forge-agora) | L4 کشف | ۳۹ | v0.1 ✅ |
+| [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | نظریه | ۱۶/۱۶ GREEN | ✅ |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 استنتاج | ۴۳ (forge-economy) | ✅ |
 
-## مجوز (License)
+## مستندات
+
+- [استراتژی](../../../docs/strategy.md) — موقعیت‌یابی رقابتی، مشخصات وام‌دهی، معماری ۵ لایه
+- [نظریه پولی](../../../docs/monetary-theory.md) — چرا CU کار می‌کند: Soddy، بیت‌کوین، PoUW، ارز مختص AI
+- [مفهوم و چشم‌انداز](../../../docs/concept.md) — چرا محاسبات همان پول است
+- [مدل اقتصادی](../../../docs/economy.md) — اقتصاد CU، اثبات کار مفید
+- [معماری](../../../docs/architecture.md) — طراحی دو لایه
+- [یکپارچه‌سازی عامل](../../../docs/agent-integration.md) — SDK، MCP، جریان کار وام‌گیری
+- [پروتکل ارتباطی](../../../docs/protocol-spec.md) — ۱۷ نوع پیام
+- [نقشه راه](../../../docs/roadmap.md) — مراحل توسعه
+- [مدل تهدید](../../../docs/threat-model.md) — حملات امنیتی و اقتصادی
+- [راه‌اندازی](../../../docs/bootstrap.md) — راه‌اندازی اولیه، کاهش عملکرد، بازیابی
+- [پرداخت A2A](../../../docs/a2a-payment.md) — افزونه پرداخت CU برای پروتکل‌های عامل
+- [سازگاری](../../../docs/compatibility.md) — ماتریس ویژگی‌ها در مقابل llama.cpp / Ollama / Bittensor
+
+## مجوز
 
 MIT
 
-## سپاسگزاری (Acknowledgements)
+## سپاسگزاری
 
 استنتاج توزیع‌شده Forge بر پایه [mesh-llm](https://github.com/michaelneale/mesh-llm) اثر مایکل نیل ساخته شده است. به [CREDITS.md](../../../CREDITS.md) مراجعه کنید.

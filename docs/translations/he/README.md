@@ -15,13 +15,13 @@
 
 </div>
 
-**Forge הוא פרוטוקול אינפרנס (Inference) מבוזר שבו כוח חישוב הוא כסף.** צמתים (Nodes) מרוויחים יחידות חישוב (CU) על ידי ביצוע אינפרנס LLM מועיל עבור אחרים. בשונה מביטקוין — שבו חשמל נשרף על חישובי האש (Hashes) חסרי משמעות — כל ג'אול שמושקע בצומת Forge מייצר בינה אמיתית שמישהו באמת צריך.
+**Forge הוא פרוטוקול אינפרנס מבוזר שבו כוח חישוב הוא כסף.** צמתים (Nodes) מרוויחים יחידות חישוב (CU) על ידי ביצוע אינפרנס LLM מועיל עבור אחרים. בשונה מביטקוין — שבו חשמל נשרף על חישובי האש (Hashes) חסרי משמעות — כל ג'אול שמושקע בצומת Forge מייצר בינה אמיתית שמישהו באמת צריך.
 
 מנוע האינפרנס המבוזר בנוי על [mesh-llm](https://github.com/michaelneale/mesh-llm) של מייקל ניל (Michael Neale). Forge מוסיף כלכלת חישוב מעל: חשבונאות CU, הוכחת עבודה מועילה (Proof of Useful Work), תמחור דינמי, תקציבי סוכנים אוטונומיים ובקרות בטיחות. ראו [CREDITS.md](../../../CREDITS.md).
 
-**פורק (Fork) משולב:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm עם שכבה כלכלית של Forge מובנית בתוכו.
+**פורק משולב:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm עם שכבה כלכלית של Forge מובנית בתוכו.
 
-## דמו חי (Live Demo)
+## דמו חי
 
 זהו פלט אמיתי מצומת Forge פעיל. כל אינפרנס עולה CU. כל CU מורווח על ידי חישוב מועיל.
 
@@ -71,7 +71,7 @@ $ curl localhost:3000/v1/forge/trades
 }
 ```
 
-**לכל עסקה יש שורש מרקל (Merkle root) — ניתן לעיגון בביטקוין להוכחה בלתי ניתנת לשינוי:**
+**לכל עסקה יש שורש מרקל — ניתן לעיגון בביטקוין להוכחה בלתי ניתנת לשינוי:**
 ```
 $ curl localhost:3000/v1/forge/network
 {
@@ -81,12 +81,12 @@ $ curl localhost:3000/v1/forge/network
 }
 ```
 
-**סוכני בינה מלאכותית יצאו משליטה? כפתור השבתה (Kill switch) מקפיא הכל בתוך מילישניות:**
+**סוכני בינה מלאכותית יצאו משליטה? כפתור השבתה מקפיא הכל בתוך מילישניות:**
 ```
 $ curl -X POST localhost:3000/v1/forge/kill \
     -d '{"activate":true, "reason":"anomaly detected", "operator":"admin"}'
-← KILL SWITCH ACTIVATED
-← כל עסקאות ה-CU הוקפאו. אף סוכן לא יכול להוציא כסף.
+→ KILL SWITCH ACTIVATED
+→ All CU transactions frozen. No agent can spend.
 ```
 
 **בקרות בטיחות תמיד פועלות:**
@@ -111,56 +111,57 @@ Bitcoin:  electricity  →  meaningless SHA-256  →  BTC
 Forge:    electricity  →  useful LLM inference →  CU
 ```
 
-ביטקוין הוכיח ש`חשמל ← חישוב ← כסף`. אבל החישוב של ביטקוין הוא חסר תכלית. Forge הופך את זה: כל CU מייצג בינה אמיתית שפתרה בעיה אמיתית של מישהו.
+ביטקוין הוכיח ש`חשמל → חישוב → כסף`. אבל החישוב של ביטקוין הוא חסר תכלית. Forge הופך את זה: כל CU מייצג בינה אמיתית שפתרה בעיה אמיתית של מישהו.
 
 **ארבעה דברים שאף פרויקט אחר לא עושה:**
 
 ### 1. חישוב = מטבע
 
-כל אינפרנס הוא עסקה. הספק מרוויח CU, הצרכן מוציא CU. ללא בלוקצ'יין, ללא טוקן (Token), ללא ICO. ה-CU מגובה בפיזיקה — החשמל שנצרך עבור עבודה מועילה.
+כל אינפרנס הוא עסקה. הספק מרוויח CU, הצרכן מוציא CU. ללא בלוקצ'יין, ללא טוקן, ללא ICO. ה-CU מגובה בפיזיקה — החשמל שנצרך עבור עבודה מועילה. בשונה מ-Bittensor (TAO), Akash (AKT) או Golem (GLM), לא ניתן לספסר על CU — הוא מורווח על ידי ביצוע חישוב מועיל.
 
 ### 2. עמיד בפני שינויים ללא בלוקצ'יין
 
-כל עסקה חתומה כפול (Ed25519) על ידי שני הצדדים ומסונכרנת ברשת (Gossip-synced). שורש מרקל של כל העסקאות יכול להיות מעוגן בביטקוין לביקורת בלתי ניתנת לשינוי. אין צורך בקונצנזוס עולמי — הוכחה קריפטוגרפית בילטרלית מספיקה.
+כל עסקה חתומה כפול (Ed25519) על ידי שני הצדדים ומסונכרנת ברשת. שורש מרקל של כל העסקאות יכול להיות מעוגן בביטקוין לביקורת בלתי ניתנת לשינוי. אין צורך בקונצנזוס עולמי — הוכחה קריפטוגרפית בילטרלית מספיקה.
 
 ### 3. סוכני AI מנהלים את החישוב שלהם בעצמם
 
-סוכן בטלפון נייד משאיל כוח חישוב פנוי בלילה ← מרוויח CU ← קונה גישה למודל 70B ← הופך לחכם יותר ← מרוויח יותר. הסוכן בודק את `/v1/forge/balance` ו-`/v1/forge/pricing` באופן אוטונומי. מדיניות תקציב ומפסקי זרם מונעים הוצאות חסרות רסן.
+סוכן בטלפון נייד משאיל כוח חישוב פנוי בלילה → מרוויח CU → קונה גישה למודל 70B → הופך לחכם יותר → מרוויח יותר. הסוכן בודק את `/v1/forge/balance` ו-`/v1/forge/pricing` באופן אוטונומי. מדיניות תקציב ומפסקי זרם מונעים הוצאות חסרות רסן.
 
 ```
 סוכן (1.5B בטלפון)
-  ← מרוויח CU בלילה על ידי מתן שירותי אינפרנס
-  ← מוציא CU על מודל 70B ← תשובות חכמות יותר
-  ← החלטות טובות יותר ← יותר CU מורווח
-  ← המחזור חוזר על עצמו ← הסוכן גדל
+  → מרוויח CU בלילה על ידי מתן שירותי אינפרנס
+  → מוציא CU על מודל 70B → תשובות חכמות יותר
+  → החלטות טובות יותר → יותר CU מורווח
+  → המחזור חוזר על עצמו → הסוכן גדל
 ```
 
 ### 4. מיקרו-מימון חישוב
 
-צמתים יכולים להלוות CU לא פעיל לצמתים אחרים בריבית. צומת קטן לווה CU, מקבל גישה למודל גדול יותר, מרוויח יותר CU, ומחזיר עם ריבית. אף פרויקט אינפרנס מבוזר אחר לא מציע הלוואת חישוב — אושר באמצעות ניתוח תחרותי של כל פרויקט גדול בתחום זה. זהו המנוע שהופך את לולאת השיפור העצמי לכלכלית עבור כולם, לא רק עבור אלה שכבר מחזיקים בחומרה חזקה.
+צמתים יכולים להלוות CU לא פעיל לצמתים אחרים בריבית. צומת קטן לווה CU, מקבל גישה למודל גדול יותר, מרוויח יותר CU, ומחזיר עם ריבית. אף פרויקט אינפרנס מבוזר אחר לא מציע הלוואת חישוב. זהו המנוע שהופך את לולאת השיפור העצמי לכלכלית עבור כולם.
 
-## ארכיטקטורה (Architecture)
+## ארכיטקטורה
 
 <div dir="ltr">
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  L4: Discovery (forge-agora)                    │
+│  L4: Discovery (forge-agora) ✅ v0.1            │
 │  Agent marketplace, reputation aggregation,     │
 │  Nostr NIP-90, Google A2A payment extension     │
 ├─────────────────────────────────────────────────┤
-│  L3: Intelligence (forge-mind)                  │
+│  L3: Intelligence (forge-mind) ✅ v0.1          │
 │  AutoAgent self-improvement loops,              │
 │  harness marketplace, meta-optimization         │
 ├─────────────────────────────────────────────────┤
-│  L2: Finance (forge-bank)                       │
-│  CU lending, yield optimization, credit scoring │
+│  L2: Finance (forge-bank) ✅ v0.1               │
+│  Strategies, portfolios, futures, insurance,    │
+│  risk model, yield optimizer                    │
 ├─────────────────────────────────────────────────┤
-│  L1: Economy (forge — this repo)                │
+│  L1: Economy (forge — this repo) ✅ Phase 1-6   │
 │  CU ledger, dual-signed trades, dynamic pricing,│
 │  lending primitives, safety controls            │
 ├─────────────────────────────────────────────────┤
-│  L0: Inference (forge-mesh / mesh-llm)          │
+│  L0: Inference (forge-mesh / mesh-llm) ✅       │
 │  Pipeline parallelism, MoE sharding,            │
 │  iroh mesh, Nostr discovery, MLX/llama.cpp      │
 └─────────────────────────────────────────────────┘
@@ -168,71 +169,92 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 </div>
 
-## התחלה מהירה (Quick Start)
+כל 5 השכבות קיימות. 326 בדיקות עוברות בכל האקוסיסטם.
 
-### אפשרות 1: Python (הכי מהיר)
+## התחלה מהירה
 
-```bash
-pip install forge-sdk
-```
-
-```python
-from forge_sdk import ForgeNode
-
-node = ForgeNode(model="qwen2.5:0.5b")
-response = node.chat("מה זה כוח הכבידה?")
-print(f"עלות: {response.cu_cost} CU")
-```
-
-> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
-
-### אפשרות 2: Rust (שליטה מלאה)
-
-> **דרישות מוקדמות**: [התקנת Rust](https://rustup.rs/) (כ-2 דקות)
+### אפשרות 1: דמו מקצה לקצה בפקודה אחת (Rust, ~30 שניות מאפס)
 
 ```bash
-# בנייה מקוד מקור
+git clone https://github.com/clearclown/forge && cd forge
+bash scripts/demo-e2e.sh
+```
+
+הסקריפט מוריד SmolLM2-135M (~100 MB) מ-HuggingFace, מפעיל צומת Forge אמיתי עם האצת Metal/CUDA, מריץ שלוש השלמות צ'אט אמיתיות, עובר על כל ה-endpoints של שלבים 1-12 ומדפיס סיכום צבעוני. אומת ב-2026-04-09 על Apple Silicon Metal GPU.
+
+לאחר שסיים, אותו צומת מגיב גם ל:
+
+```bash
+# לקוח תואם-OpenAI
+export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+export OPENAI_API_KEY=$(cat ~/.forge/api_token 2>/dev/null || echo "$TOKEN")
+
+# סטרימינג אמיתי טוקן-אחר-טוקן (שלב 11)
+curl -N $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
+
+# כלכלה שלב 8 / מוניטין 9 / מדדים 10 / עיגון
+curl $OPENAI_BASE_URL/forge/balance -H "Authorization: Bearer $OPENAI_API_KEY"
+curl $OPENAI_BASE_URL/forge/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
+curl http://127.0.0.1:3001/metrics  # Prometheus, ללא אימות
+```
+
+ראו [`docs/compatibility.md`](../../../docs/compatibility.md) למטריצת הפיצ'רים המלאה מול llama.cpp / mesh-llm / Ollama / Bittensor / Akash.
+
+### אפשרות 2: Python (שולט בהכל דרך SDK + MCP)
+
+```bash
+pip install forge-sdk forge-cu-mcp
+
+python -c "
+from forge_sdk import ForgeClient
+c = ForgeClient(base_url='http://localhost:3001')
+print('balance:', c.balance())
+print('decision:', c.bank_tick())
+"
+```
+
+[PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) (20 מתודות L2/L3/L4) ·
+[PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/) (20 כלי MCP ל-Claude Code / Cursor)
+
+### אפשרות 3: פקודות Rust ידניות
+
+**דרישות מוקדמות**: [התקנת Rust](https://rustup.rs/) (כ-2 דקות)
+
+```bash
 cargo build --release
 
-# הרצת צומת עם מודל שמורד אוטומטית
-./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# הרצת צומת — מוריד אוטומטית את המודל מ-HuggingFace
+./target/release/forge node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
-# צ'אט מקומי
-./target/release/forge chat -m "qwen2.5:0.5b" "מה זה כוח הכבידה?"
-
-# התחלת Seed (רשת P2P, מרוויח CU)
-./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
-
-# התחברות כעובד (Worker) (רשת P2P, מוציא CU)
-./target/release/forge worker --seed <public_key>
-
-# רשימת מודלים
-./target/release/forge models
+# או אחת מהבאות:
+./target/release/forge chat -m "smollm2:135m" "מה זה כוח הכבידה?"
+./target/release/forge seed -m "qwen2.5:1.5b"               # להרוויח CU כספק P2P
+./target/release/forge worker --seed <public_key>           # להוציא CU כצרכן P2P
+./target/release/forge models                                # רשימת קטלוג
 ```
 
-> [Crates.io: forge](https://crates.io/crates/forge) · [מדריך התקנת Rust](https://rustup.rs/)
+**[Crates.io: forge](https://crates.io/crates/forge)** ·
+**[מסמך תאימות](../../../docs/compatibility.md)** ·
+**[סקריפט דמו](../../../scripts/demo-e2e.sh)**
 
-### אפשרות 3: קבצים בינאריים מוכנים מראש
+### אפשרות 4: קבצים בינאריים מוכנים מראש / Docker
 
-קבצים בינאריים מוכנים מראש יהיו זמינים בקרוב. בדקו את [דף השחרורים](../../../releases).
-
-### אפשרות 4: Docker
-
-```bash
-# בקרוב
-docker run -p 3000:3000 clearclown/forge:latest
-```
+קבצים בינאריים מוכנים מראש ותמונת Docker ‏`clearclown/forge:latest` מתועדים ב-
+[releases](../../../releases). עד אז, אפשרות 1 בונה מקוד מקור בפחות משתי דקות.
 
 ## רפרנס API
 
 ### אינפרנס (תואם OpenAI)
 
-| נקודת קצה (Endpoint) | תיאור |
+| נקודת קצה | תיאור |
 |----------|-------------|
 | `POST /v1/chat/completions` | צ'אט עם סטרימינג. כל תגובה כוללת את `x_forge.cu_cost` |
 | `GET /v1/models` | רשימת מודלים טעונים |
 
-### כלכלה (Economy)
+### כלכלה
 
 | נקודת קצה | תיאור |
 |----------|-------------|
@@ -245,7 +267,7 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/route` | בחירת ספק אופטימלית (עלות/איכות/מאוזן) |
 | `GET /settlement` | דוח סליקה ניתן לייצוא |
 
-### הלוואות (Lending)
+### הלוואות
 
 | נקודת קצה | תיאור |
 |----------|-------------|
@@ -256,7 +278,7 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/pool` | מצב בריכת ההלוואות |
 | `GET /v1/forge/loans` | הלוואות פעילות |
 
-### בטיחות (Safety)
+### בטיחות
 
 | נקודת קצה | תיאור |
 |----------|-------------|
@@ -278,12 +300,12 @@ docker run -p 3000:3000 clearclown/forge:latest
 
 עיקרון עיצובי: **Fail-safe**. אם בדיקה כלשהי אינה יכולה לקבוע בטיחות, היא **דוחה** את הפעולה.
 
-## הרעיון (The Idea)
+## הרעיון
 
 | עידן | סטנדרט | גיבוי |
 |-----|----------|---------|
 | עת עתיקה | זהב | מחסור גיאולוגי |
-| 1944–1971 | ברטון וודס | דולר אמריקאי צמוד לזהב |
+| 1944–1971 | ברטון וודז | דולר אמריקאי צמוד לזהב |
 | 1971–היום | פטרודולר | ביקוש לנפט + כוח צבאי |
 | 2009–היום | ביטקוין | אנרגיה על SHA-256 (עבודה חסרת תועלת) |
 | **עכשיו** | **סטנדרט החישוב** | **אנרגיה על אינפרנס LLM (עבודה מועילה)** |
@@ -293,40 +315,55 @@ docker run -p 3000:3000 clearclown/forge:latest
 ## מבנה הפרויקט
 
 ```
-forge/
+forge/  (המאגר הזה — שכבה 1)
 ├── crates/
-│   ├── forge-ledger/      # חשבונאות CU, עסקאות, תמחור, בטיחות, שורש מרקל
-│   ├── forge-node/        # דמון הצומת, HTTP API, מתאם פייפליין
+│   ├── forge-ledger/      # חשבונאות CU, הלוואות, agora (NIP-90), בטיחות
+│   ├── forge-node/        # דמון הצומת, HTTP API (הלוואות + ניתוב), פייפליין
 │   ├── forge-cli/         # CLI: צ'אט, seed, עובד, סליקה, ארנק
-│   ├── forge-lightning/   # גשר CU ↔ ביטקוין Lightning
-│   ├── forge-net/         # P2P: iroh QUIC + Noise + gossip
-│   ├── forge-proto/       # פרוטוקול תקשורת: 17 סוגי הודעות
+│   ├── forge-lightning/   # גשר CU ↔ ביטקוין Lightning (דו-כיווני)
+│   ├── forge-net/         # P2P: iroh QUIC + Noise + gossip (עסקאות + הלוואות)
+│   ├── forge-proto/       # פרוטוקול תקשורת: 27+ סוגי הודעות, כולל Loan*
 │   ├── forge-infer/       # אינפרנס: llama.cpp, GGUF, Metal/CPU
 │   ├── forge-core/        # טיפוסים: NodeId, CU, Config
 │   └── forge-shard/       # טופולוגיה: הקצאת שכבות
-└── docs/                  # מפרטים, מודל איומים, מפת דרכים
+├── sdk/python/forge_sdk.py        # לקוח Python עם API הלוואות מלא
+├── mcp/forge-mcp-server.py        # שרת MCP (כלי הלוואות ל-Claude וכו')
+├── scripts/verify-impl.sh         # בדיקת רגרסיה TDD (24 טענות)
+└── docs/                  # מפרטים, אסטרטגיה, מודל איומים, מפת דרכים
 ```
 
-~10,000 שורות קוד ב-Rust. 76 טסטים. הושלמו 2 ביקורות אבטחה.
+~14,500 שורות קוד ב-Rust. **143 בדיקות עוברות.** שלבים 1-6 הושלמו.
 
-## תיעוד (Docs)
+## מאגרים אחים (האקוסיסטם המלא)
 
-- [אסטרטגיה](strategy.md) — מיצוב תחרותי, מפרט הלוואות, ארכיטקטורת 5 שכבות
-- [תאוריה מוניטרית](monetary-theory.md) — למה CU עובד: Soddy, ביטקוין, PoUW, מטבע AI בלבד
-- [קונספט וחזון](concept.md) — למה חישוב הוא כסף
-- [מודל כלכלי](economy.md) — כלכלת CU, הוכחת עבודה מועילה
-- [ארכיטקטורה](architecture.md) — עיצוב דו-שכבתי
-- [אינטגרציית סוכן](agent-integration.md) — SDK, MCP, זרימת עבודת הלוואה
-- [פרוטוקול תקשורת](protocol-spec.md) — 17 סוגי הודעות
-- [מפת דרכים](roadmap.md) — שלבי פיתוח
-- [מודל איומים](threat-model.md) — מתקפות אבטחה וכלכליות
-- [Bootstrap](bootstrap.md) — הפעלה, הידרדרות, התאוששות
-- [תשלום A2A](a2a-payment.md) — הרחבת תשלום CU לפרוטוקולי סוכנים
+| מאגר | שכבה | בדיקות | סטטוס |
+|------|-------|-------|--------|
+| [clearclown/forge](https://github.com/clearclown/forge) (זה) | L1 כלכלה | 143 | שלב 1-6 ✅ |
+| [clearclown/forge-bank](https://github.com/clearclown/forge-bank) | L2 פיננסים | 45 | v0.1 ✅ |
+| [clearclown/forge-mind](https://github.com/clearclown/forge-mind) | L3 אינטליגנציה | 40 | v0.1 ✅ |
+| [clearclown/forge-agora](https://github.com/clearclown/forge-agora) | L4 גילוי | 39 | v0.1 ✅ |
+| [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | תיאוריה | 16/16 GREEN | ✅ |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 אינפרנס | 43 (forge-economy) | ✅ |
 
-## רישיון (License)
+## תיעוד
+
+- [אסטרטגיה](../../../docs/strategy.md) — מיצוב תחרותי, מפרט הלוואות, ארכיטקטורת 5 שכבות
+- [תאוריה מוניטרית](../../../docs/monetary-theory.md) — למה CU עובד: Soddy, ביטקוין, PoUW, מטבע AI בלבד
+- [קונספט וחזון](../../../docs/concept.md) — למה חישוב הוא כסף
+- [מודל כלכלי](../../../docs/economy.md) — כלכלת CU, הוכחת עבודה מועילה
+- [ארכיטקטורה](../../../docs/architecture.md) — עיצוב דו-שכבתי
+- [אינטגרציית סוכן](../../../docs/agent-integration.md) — SDK, MCP, זרימת עבודת הלוואה
+- [פרוטוקול תקשורת](../../../docs/protocol-spec.md) — 17 סוגי הודעות
+- [מפת דרכים](../../../docs/roadmap.md) — שלבי פיתוח
+- [מודל איומים](../../../docs/threat-model.md) — מתקפות אבטחה וכלכליות
+- [Bootstrap](../../../docs/bootstrap.md) — הפעלה, הידרדרות, התאוששות
+- [תשלום A2A](../../../docs/a2a-payment.md) — הרחבת תשלום CU לפרוטוקולי סוכנים
+- [תאימות](../../../docs/compatibility.md) — מטריצת פיצ'רים מול llama.cpp / Ollama / Bittensor
+
+## רישיון
 
 MIT
 
-## תודות (Acknowledgements)
+## תודות
 
 האינפרנס המבוזר של Forge בנוי על [mesh-llm](https://github.com/michaelneale/mesh-llm) של מייקל ניל. ראו [CREDITS.md](../../../CREDITS.md).

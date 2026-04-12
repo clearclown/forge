@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+forge_mcp.egg-info/PKG-INFO
+forge_mcp.egg-info/SOURCES.txt
+forge_mcp.egg-info/dependency_links.txt
+forge_mcp.egg-info/entry_points.txt
+forge_mcp.egg-info/requires.txt
+forge_mcp.egg-info/top_level.txt

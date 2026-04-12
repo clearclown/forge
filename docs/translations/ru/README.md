@@ -45,7 +45,7 @@ $ curl localhost:3000/v1/forge/balance
 **Задать вопрос — инференс стоит CU:**
 ```
 $ curl localhost:3000/v1/chat/completions \
-    -d '{"messages":[{"role":"user","content":"Скажи привет по-японски"}]}'
+    -d '{"messages":[{"role":"user","content":"Say hello in Japanese"}]}'
 {
   "choices": [{"message": {"content": "こんにちは！ (konnichiwa!)"}}],
   "usage": {"completion_tokens": 9},
@@ -81,12 +81,12 @@ $ curl localhost:3000/v1/forge/network
 }
 ```
 
-**ШИ-агенты вышли из-под контроля? "Аварийный выключатель" замораживает всё за миллисекунды:**
+**ШИ-агенты вышли из-под контроля? Аварийный выключатель замораживает всё за миллисекунды:**
 ```
 $ curl -X POST localhost:3000/v1/forge/kill \
     -d '{"activate":true, "reason":"detected anomaly", "operator":"admin"}'
 → KILL SWITCH ACTIVATED
-→ Все транзакции CU заморожены. Ни один агент не может тратить средства.
+→ All CU transactions frozen. No agent can spend.
 ```
 
 **Контроль безопасности всегда активен:**
@@ -137,89 +137,110 @@ Bitcoin доказал: `электричество → вычисления →
 
 ### 4. Микрофинансирование вычислений
 
-Узлы могут кредитовать простаивающие CU другим узлам под проценты. Маленький узел занимает CU, получает доступ к большей модели, зарабатывает больше CU и возвращает заем с процентами. Ни один другой проект распределенного инференса не предлагает кредитование вычислений — это подтверждено конкурентным анализом всех крупных проектов в этой области. Это механизм, который делает цикл самосовершенствования экономически жизнеспособным для всех, а не только для тех, кто уже владеет мощным оборудованием.
+Узлы могут кредитовать простаивающие CU другим узлам под проценты. Маленький узел занимает CU, получает доступ к большей модели, зарабатывает больше CU и возвращает заем с процентами. Ни один другой проект распределенного инференса не предлагает кредитование вычислений. Это механизм, который делает цикл самосовершенствования экономически жизнеспособным для всех, а не только для тех, кто уже владеет мощным оборудованием.
 
 ## Архитектура
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  L4: Обнаружение (forge-agora)                  │
+│  L4: Обнаружение (forge-agora) ✅ v0.1          │
 │  Маркетплейс агентов, агрегация репутации,      │
 │  Nostr NIP-90, расширение оплаты Google A2A     │
 ├─────────────────────────────────────────────────┤
-│  L3: Интеллект (forge-mind)                     │
+│  L3: Интеллект (forge-mind) ✅ v0.1             │
 │  Циклы самосовершенствования AutoAgent,         │
 │  маркетплейс харнессов, мета-оптимизация        │
 ├─────────────────────────────────────────────────┤
-│  L2: Финансы (forge-bank)                       │
-│  Кредитование CU, оптимизация доходности,       │
-│  кредитный скоринг                              │
+│  L2: Финансы (forge-bank) ✅ v0.1               │
+│  Стратегии, портфели, фьючерсы, страхование,   │
+│  модель рисков, оптимизатор доходности          │
 ├─────────────────────────────────────────────────┤
-│  L1: Экономика (forge — этот репозиторий)       │
+│  L1: Экономика (forge — этот репозиторий) ✅ Фаза 1-6 │
 │  Леджер CU, двусторонне подписанные сделки,     │
 │  динамическое ценообразование, примитивы займа, │
 │  средства безопасности                          │
 ├─────────────────────────────────────────────────┤
-│  L0: Инференс (forge-mesh / mesh-llm)           │
+│  L0: Инференс (forge-mesh / mesh-llm) ✅        │
 │  Параллелизм пайплайна, MoE шардинг,            │
 │  iroh mesh, Nostr discovery, MLX/llama.cpp      │
 └─────────────────────────────────────────────────┘
+
+Все 5 слоев существуют. 326 тестов проходят по всей экосистеме.
 ```
 
 ## Быстрый старт
 
-### Вариант 1: Python (Самый быстрый)
+### Вариант 1: Демо от начала до конца одной командой (Rust, ~30 секунд с нуля)
 
 ```bash
-# Установка через pip
-pip install forge-sdk
-
-# Использование в Python
-from forge_sdk import ForgeNode
-
-node = ForgeNode(model="qwen2.5:0.5b")
-response = node.chat("Что такое гравитация?")
-print(f"Стоимость: {response.cu_cost} CU")
+git clone https://github.com/clearclown/forge && cd forge
+bash scripts/demo-e2e.sh
 ```
 
-> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) | [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+Скрипт скачивает SmolLM2-135M (~100 МБ) с HuggingFace, запускает настоящий узел Forge с Metal/CUDA-ускорением, выполняет три реальных завершения чата, проходит все эндпоинты Фаз 1-12 и выводит цветной отчет. Проверено 2026-04-09 на Apple Silicon Metal GPU.
 
-### Вариант 2: Rust (Полный контроль)
+После завершения тот же узел отвечает на:
+
+```bash
+# Совместимый с OpenAI клиент
+export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+export OPENAI_API_KEY=$(cat ~/.forge/api_token 2>/dev/null || echo "$TOKEN")
+
+# Реальный потоковый вывод токен за токеном (Фаза 11)
+curl -N $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
+
+# Экономика фаза 8 / репутация 9 / метрики 10 / якорение
+curl $OPENAI_BASE_URL/forge/balance -H "Authorization: Bearer $OPENAI_API_KEY"
+curl $OPENAI_BASE_URL/forge/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
+curl http://127.0.0.1:3001/metrics  # Prometheus, без авторизации
+```
+
+Полная матрица функций (против llama.cpp / mesh-llm / Ollama / Bittensor / Akash) — в [`docs/compatibility.md`](../../../docs/compatibility.md).
+
+### Вариант 2: Python (управляет всем через SDK + MCP)
+
+```bash
+pip install forge-sdk forge-cu-mcp
+
+python -c "
+from forge_sdk import ForgeClient
+c = ForgeClient(base_url='http://localhost:3001')
+print('balance:', c.balance())
+print('decision:', c.bank_tick())
+"
+```
+
+[PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) (20 методов L2/L3/L4) ·
+[PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/) (20 MCP-инструментов для Claude Code / Cursor)
+
+### Вариант 3: Ручные команды Rust
 
 **Предварительные требования**: [Установить Rust](https://rustup.rs/) (2 минуты)
 
 ```bash
-# Сборка из исходников
 cargo build --release
 
-# Запуск узла с автоматической загрузкой модели
-./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# Запуск узла — автоматически скачивает модель с HuggingFace
+./target/release/forge node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
-# Локальный чат
-./target/release/forge chat -m "qwen2.5:0.5b" "Что такое гравитация?"
-
-# Запуск сида (P2P, зарабатывает CU)
-./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
-
-# Подключение как воркер (P2P, тратит CU)
-./target/release/forge worker --seed <public_key>
-
-# Список моделей
-./target/release/forge models
+# Или любая из следующих команд:
+./target/release/forge chat -m "smollm2:135m" "Что такое гравитация?"
+./target/release/forge seed -m "qwen2.5:1.5b"               # зарабатывать CU как P2P провайдер
+./target/release/forge worker --seed <public_key>           # тратить CU как P2P потребитель
+./target/release/forge models                                # список каталога (или HF URL)
 ```
 
-> **[Crates.io: forge](https://crates.io/crates/forge)** | **[Руководство по установке Rust](https://rustup.rs/)**
+**[Crates.io: forge](https://crates.io/crates/forge)** ·
+**[Документ совместимости](../../../docs/compatibility.md)** ·
+**[Демо-скрипт](../../../scripts/demo-e2e.sh)**
 
-### Вариант 3: Готовые бинарные файлы
+### Вариант 4: Готовые бинарные файлы / Docker
 
-Готовые бинарные файлы скоро появятся. Следите за [релизами](../../../releases).
-
-### Вариант 4: Docker
-
-```bash
-# Скоро
-docker run -p 3000:3000 clearclown/forge:latest
-```
+Готовые бинарные файлы и Docker-образ `clearclown/forge:latest` отслеживаются в
+[releases](../../../releases). До этого Вариант 1 собирает из исходников менее чем за две минуты.
 
 ## API Справочник
 
@@ -284,42 +305,57 @@ docker run -p 3000:3000 clearclown/forge:latest
 | 1944–1971 | Бреттон-Вудс | USD, привязанный к золоту |
 | 1971–сегодня | Петродоллар | Спрос на нефть + военная мощь |
 | 2009–сегодня | Bitcoin | Энергия на SHA-256 (бесполезная работа) |
-| **Сейчас** | **Вычислительный стандарт** | **Энергия на инференс ШИ (полезная работа)** |
+| **Сейчас** | **Вычислительный стандарт** | **Энергия на инференс LLM (полезная работа)** |
 
 Комната, полная Mac Mini с Forge — это многоквартирный дом, который приносит доход, выполняя полезную работу, пока владелец спит.
 
 ## Структура проекта
 
 ```
-forge/
+forge/  (этот репозиторий — Слой 1)
 ├── crates/
-│   ├── forge-ledger/      # Учет CU, торги, цены, безопасность, корень Меркла
-│   ├── forge-node/        # Демон узла, HTTP API, координатор пайплайна
+│   ├── forge-ledger/      # Учет CU, кредитование, agora (NIP-90), безопасность
+│   ├── forge-node/        # Демон узла, HTTP API (кредитование + роутинг), пайплайн
 │   ├── forge-cli/         # CLI: chat, seed, worker, settle, wallet
-│   ├── forge-lightning/   # Мост CU ↔ Bitcoin Lightning
-│   ├── forge-net/         # P2P: iroh QUIC + Noise + gossip
-│   ├── forge-proto/       # Протокол передачи: 17 типов сообщений
+│   ├── forge-lightning/   # Мост CU ↔ Bitcoin Lightning (двунаправленный)
+│   ├── forge-net/         # P2P: iroh QUIC + Noise + gossip (сделки + займы)
+│   ├── forge-proto/       # Протокол передачи: 27+ типов сообщений, вкл. Loan*
 │   ├── forge-infer/       # Инференс: llama.cpp, GGUF, Metal/CPU
 │   ├── forge-core/        # Типы: NodeId, CU, Config
 │   └── forge-shard/       # Топология: назначение слоев
-└── docs/                  # Спецификации, модель угроз, роадмап
+├── sdk/python/forge_sdk.py        # Python-клиент с полным API кредитования
+├── mcp/forge-mcp-server.py        # MCP-сервер (инструменты кредитования для Claude/etc.)
+├── scripts/verify-impl.sh         # TDD регрессионный тест (24 утверждения)
+└── docs/                  # Спецификации, стратегия, модель угроз, роадмап
 ```
 
-~10,000 строк Rust. 76 тестов. 2 аудита безопасности завершены.
+~14 500 строк Rust. **143 теста проходят.** Фазы 1-6 завершены.
+
+## Сопутствующие репозитории (полная экосистема)
+
+| Репозиторий | Слой | Тесты | Статус |
+|------|-------|-------|--------|
+| [clearclown/forge](https://github.com/clearclown/forge) (этот) | L1 Экономика | 143 | Фаза 1-6 ✅ |
+| [clearclown/forge-bank](https://github.com/clearclown/forge-bank) | L2 Финансы | 45 | v0.1 ✅ |
+| [clearclown/forge-mind](https://github.com/clearclown/forge-mind) | L3 Интеллект | 40 | v0.1 ✅ |
+| [clearclown/forge-agora](https://github.com/clearclown/forge-agora) | L4 Обнаружение | 39 | v0.1 ✅ |
+| [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | Теория | 16/16 GREEN | ✅ |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Инференс | 43 (forge-economy) | ✅ |
 
 ## Документация
 
-- [Стратегия](../../strategy.md) — Конкурентное позиционирование, спецификация кредитования, 5-слойная архитектура
-- [Монетарная теория](../../monetary-theory.md) — Почему работает CU: Содди, Bitcoin, PoUW, валюта только для ИИ
-- [Концепция и видение](../../concept.md) — Почему вычисления — это деньги
-- [Экономическая модель](../../economy.md) — Экономика CU, доказательство полезной работы
-- [Архитектура](../../architecture.md) — Двухслойный дизайн
-- [Интеграция агентов](../../agent-integration.md) — SDK, MCP, процесс кредитования
-- [Протокол передачи](../../protocol-spec.md) — 17 типов сообщений
-- [Роадмап](../../roadmap.md) — Фазы разработки
-- [Модель угроз](../../threat-model.md) — Безопасность + экономические атаки
-- [Бутстрап](../../bootstrap.md) — Запуск, деградация, восстановление
-- [Платежи A2A](../../a2a-payment.md) — Расширение платежей CU для протоколов агентов
+- [Стратегия](../../../docs/strategy.md) — Конкурентное позиционирование, спецификация кредитования, 5-слойная архитектура
+- [Монетарная теория](../../../docs/monetary-theory.md) — Почему работает CU: Содди, Bitcoin, PoUW, валюта только для ИИ
+- [Концепция и видение](../../../docs/concept.md) — Почему вычисления — это деньги
+- [Экономическая модель](../../../docs/economy.md) — Экономика CU, доказательство полезной работы
+- [Архитектура](../../../docs/architecture.md) — Двухслойный дизайн
+- [Интеграция агентов](../../../docs/agent-integration.md) — SDK, MCP, процесс кредитования
+- [Протокол передачи](../../../docs/protocol-spec.md) — 17 типов сообщений
+- [Роадмап](../../../docs/roadmap.md) — Фазы разработки
+- [Модель угроз](../../../docs/threat-model.md) — Безопасность + экономические атаки
+- [Бутстрап](../../../docs/bootstrap.md) — Запуск, деградация, восстановление
+- [Платежи A2A](../../../docs/a2a-payment.md) — Расширение платежей CU для протоколов агентов
+- [Совместимость](../../../docs/compatibility.md) — Матрица функций против llama.cpp / Ollama / Bittensor
 
 ## Лицензия
 
