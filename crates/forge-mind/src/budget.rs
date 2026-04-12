@@ -287,4 +287,117 @@ mod tests {
         b.record_cycle_start().unwrap();
         assert!(!b.can_spend(100));
     }
+
+    // ===========================================================================
+    // Security tests — CuBudget exhaustion and hard-limit enforcement
+    // ===========================================================================
+
+    #[test]
+    fn sec_cu_budget_rejects_spend_over_per_cycle_limit() {
+        // An AI agent must not be able to spend more than max_cu_per_cycle in one call.
+        let b = CuBudget {
+            max_cu_per_cycle: 5_000,
+            ..CuBudget::default()
+        };
+        assert!(
+            !b.can_spend(5_001),
+            "spend of 5001 CU must be rejected when max_cu_per_cycle = 5000"
+        );
+        assert!(
+            b.can_spend(5_000),
+            "spend of exactly 5000 CU must be allowed at the limit"
+        );
+    }
+
+    #[test]
+    fn sec_cu_budget_rejects_spend_over_daily_limit() {
+        // Accumulate near the daily limit, then one more spend must be blocked.
+        let mut b = CuBudget {
+            max_cu_per_cycle: 50_000,
+            max_cu_per_day: 50_000,
+            max_cycles_per_day: 20,
+            ..CuBudget::default()
+        };
+        b.record_spend(49_000).unwrap();
+        assert!(b.can_spend(1_000), "1000 CU fits in remaining daily budget");
+        assert!(
+            !b.can_spend(1_001),
+            "1001 CU must be rejected: would exceed daily limit"
+        );
+        let result = b.record_spend(1_001);
+        assert!(
+            result.is_err(),
+            "record_spend over daily limit must return Err, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn sec_cu_budget_rejects_over_max_cycles_per_day() {
+        // Once max_cycles_per_day is exhausted, no further cycles may start.
+        let mut b = CuBudget {
+            max_cycles_per_day: 3,
+            ..CuBudget::default()
+        };
+        for _ in 0..3 {
+            b.record_cycle_start().unwrap();
+        }
+        let result = b.record_cycle_start();
+        assert!(
+            result.is_err(),
+            "starting a 4th cycle when max is 3 must return Err"
+        );
+        assert!(
+            !b.can_start_cycle(),
+            "can_start_cycle must return false when daily cycle limit is exhausted"
+        );
+    }
+
+    #[test]
+    fn sec_cu_budget_record_spend_enforces_per_cycle_cap() {
+        // record_spend must also enforce the per-cycle cap (not only can_spend).
+        let mut b = CuBudget {
+            max_cu_per_cycle: 100,
+            max_cu_per_day: 10_000,
+            max_cycles_per_day: 20,
+            ..CuBudget::default()
+        };
+        let result = b.record_spend(101);
+        assert!(
+            result.is_err(),
+            "record_spend of 101 CU with per-cycle cap 100 must fail"
+        );
+    }
+
+    #[test]
+    fn sec_cu_budget_daily_reset_clears_exhausted_cycle_count() {
+        // After day rollover, cycle count resets and spending resumes.
+        let mut b = CuBudget {
+            max_cycles_per_day: 1,
+            ..CuBudget::default()
+        };
+        b.record_cycle_start().unwrap();
+        assert!(!b.can_start_cycle(), "cycle limit reached");
+
+        // Simulate 24h + 1ms rollover.
+        let tomorrow = b.day_started_at_ms + 24 * 3_600_000 + 1;
+        b.maybe_reset_day(tomorrow);
+
+        assert!(
+            b.can_start_cycle(),
+            "after day rollover, cycle count must be reset"
+        );
+        assert_eq!(b.cycles_today, 0, "cycles_today must be 0 after reset");
+        assert_eq!(b.spent_today_cu, 0, "spent_today_cu must be 0 after reset");
+    }
+
+    #[test]
+    fn sec_cu_budget_zero_cu_spend_always_rejected() {
+        // A zero-CU spend must always be rejected regardless of budget state.
+        let b = CuBudget::default();
+        assert!(
+            !b.can_spend(0),
+            "zero-CU spend must always be rejected"
+        );
+    }
 }

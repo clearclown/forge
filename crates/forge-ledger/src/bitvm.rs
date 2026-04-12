@@ -386,4 +386,135 @@ mod tests {
         assert!(msg.contains("1000"));
         assert!(msg.contains("100000"));
     }
+
+    // =========================================================================
+    // Security tests: BitVM fraud proof validation
+    // =========================================================================
+
+    #[test]
+    fn sec_fraud_proof_rejects_wrong_merkle_root() {
+        // FraudProof targets root A, but claim has root B → ProofMismatch.
+        let root_a = [0xAAu8; 32];
+        let mut root_b = root_a;
+        root_b[0] = 0xBB; // root B differs by one byte
+
+        // Claim is for root_a.
+        let claim = claim_with_root(root_a);
+
+        // Proof targets root_b (wrong claim).
+        let proof = FraudProof {
+            challenged_root: root_b, // does NOT match claim.merkle_root
+            challenger: node(9),
+            fraud_type: FraudType::DoubleSpend,
+            evidence: vec![0x00u8; 32], // divergent first byte
+            created_at_ms: 1000,
+        };
+
+        assert_eq!(
+            MockFraudProofVerifier.verify(&claim, &proof),
+            Err(BitVmError::ProofMismatch),
+            "proof targeting wrong root must return ProofMismatch"
+        );
+    }
+
+    #[test]
+    fn sec_staked_claim_expired_window_not_challengeable() {
+        // A claim at height 800_000 with default window 2016 becomes final at 802_016.
+        let claim = claim_with_root([0xFFu8; 32]);
+
+        // At exactly the window end it is no longer challengeable.
+        assert!(
+            !claim.is_challengeable(800_000 + 2016),
+            "at window end (800_000 + 2016) the claim must not be challengeable"
+        );
+        // Even further in the future.
+        assert!(
+            !claim.is_challengeable(802_017),
+            "after challenge window expires, claim must not be challengeable"
+        );
+        // One block before window end — still challengeable.
+        assert!(
+            claim.is_challengeable(800_000 + 2015),
+            "one block before window end must still be challengeable"
+        );
+    }
+
+    #[test]
+    fn sec_fraud_proof_empty_evidence_rejected() {
+        // Evidence shorter than 32 bytes must cause MalformedEvidence.
+        let root = [0xAAu8; 32];
+        let claim = claim_with_root(root);
+        let proof = FraudProof {
+            challenged_root: root,
+            challenger: node(7),
+            fraud_type: FraudType::InvalidSignature,
+            evidence: vec![], // empty
+            created_at_ms: 500,
+        };
+        assert!(
+            matches!(MockFraudProofVerifier.verify(&claim, &proof), Err(BitVmError::MalformedEvidence(_))),
+            "empty evidence must return MalformedEvidence"
+        );
+    }
+
+    #[test]
+    fn sec_fraud_proof_single_byte_evidence_rejected() {
+        // 1-byte evidence (< 32) must return MalformedEvidence.
+        let root = [0xAAu8; 32];
+        let claim = claim_with_root(root);
+        let proof = FraudProof {
+            challenged_root: root,
+            challenger: node(7),
+            fraud_type: FraudType::MerkleInclusionMismatch,
+            evidence: vec![0x01], // 1 byte
+            created_at_ms: 500,
+        };
+        assert!(
+            matches!(MockFraudProofVerifier.verify(&claim, &proof), Err(BitVmError::MalformedEvidence(_))),
+            "1-byte evidence must return MalformedEvidence"
+        );
+    }
+
+    #[test]
+    fn sec_fraud_proof_non_diverging_evidence_rejected() {
+        // Evidence[0] == claim.merkle_root[0] → proof does not demonstrate fraud.
+        let root = [0x42u8; 32];
+        let claim = claim_with_root(root);
+
+        let mut evidence = vec![0u8; 32];
+        evidence[0] = 0x42; // same as root[0]
+
+        let proof = FraudProof {
+            challenged_root: root,
+            challenger: node(4),
+            fraud_type: FraudType::InvalidBalanceUpdate,
+            evidence,
+            created_at_ms: 1000,
+        };
+        assert_eq!(
+            MockFraudProofVerifier.verify(&claim, &proof),
+            Err(BitVmError::ProofDoesNotShowFraud),
+            "non-diverging evidence must return ProofDoesNotShowFraud"
+        );
+    }
+
+    #[test]
+    fn sec_staked_claim_below_min_stake_rejected() {
+        // Stake of 99_999 sats (below MIN_STAKE_SATS = 100_000) must fail.
+        let err = StakedClaim::new(node(1), [0u8; 32], 800_000, 99_999, 1000).unwrap_err();
+        assert!(
+            matches!(err, BitVmError::InsufficientStake { provided: 99_999, required: 100_000 }),
+            "stake below minimum must return InsufficientStake: {err:?}"
+        );
+    }
+
+    #[test]
+    fn sec_staked_claim_zero_stake_rejected() {
+        // Zero stake must also be rejected.
+        let err = StakedClaim::new(node(1), [0u8; 32], 800_000, 0, 1000).unwrap_err();
+        assert!(
+            matches!(err, BitVmError::InsufficientStake { provided: 0, .. }),
+            "zero stake must return InsufficientStake: {err:?}"
+        );
+    }
 }

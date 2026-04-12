@@ -923,4 +923,205 @@ mod tests {
         let err = payload.validate_with_sender(&NodeId([1u8; 32]));
         assert!(err.is_err());
     }
+
+    // =========================================================================
+    // Security tests: Ed25519 signature attacks on ReputationObservation
+    // =========================================================================
+
+    fn make_signed_obs_with_key(key: &SigningKey) -> ReputationObservation {
+        ReputationObservation::new_signed(
+            NodeId([0xBB; 32]),
+            0.8,
+            20,
+            2_000,
+            1_700_000_000_000,
+            key,
+        )
+    }
+
+    #[test]
+    fn test_reputation_obs_rejects_signature_with_flipped_bit() {
+        // A single flipped bit in the signature must cause verify() to return false.
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut obs = make_signed_obs_with_key(&key);
+        // Flip the very first bit of byte 0
+        obs.signature[0] ^= 0x01;
+        assert!(!obs.verify(), "flipped-bit signature must be rejected");
+    }
+
+    #[test]
+    fn test_reputation_obs_rejects_all_zero_signature() {
+        // A 64-byte all-zero "signature" is structurally valid length-wise
+        // but cryptographically invalid.
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut obs = make_signed_obs_with_key(&key);
+        obs.signature = vec![0u8; 64];
+        assert!(!obs.verify(), "all-zero 64-byte signature must be rejected");
+    }
+
+    #[test]
+    fn test_reputation_obs_rejects_all_ff_signature() {
+        // A 64-byte all-0xFF signature is not a valid Ed25519 signature.
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut obs = make_signed_obs_with_key(&key);
+        obs.signature = vec![0xFFu8; 64];
+        assert!(!obs.verify(), "all-0xFF 64-byte signature must be rejected");
+    }
+
+    #[test]
+    fn test_reputation_obs_rejects_replay_with_different_subject() {
+        // Sign for subject A, swap in subject B — the same signature must not verify.
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let obs_a = make_signed_obs_with_key(&key);
+        // Clone the whole struct and swap only the subject.
+        let mut obs_b = obs_a.clone();
+        obs_b.subject = NodeId([0xCC; 32]); // different subject
+        assert!(obs_a.verify(), "original must verify");
+        assert!(!obs_b.verify(), "swapped-subject replay must be rejected");
+    }
+
+    #[test]
+    fn test_reputation_obs_rejects_replay_with_different_reputation() {
+        // Valid sig over rep=0.8; bump to rep=0.99 — must fail.
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut obs = make_signed_obs_with_key(&key);
+        let original_sig = obs.signature.clone();
+        obs.reputation = 0.99;
+        obs.signature = original_sig;
+        assert!(!obs.verify(), "tampered-reputation replay must be rejected");
+    }
+
+    #[test]
+    fn test_reputation_obs_rejects_replay_with_different_timestamp() {
+        // Valid sig over timestamp=T; swap timestamp to T+1000 — must fail.
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut obs = make_signed_obs_with_key(&key);
+        let original_sig = obs.signature.clone();
+        obs.timestamp_ms += 1000;
+        obs.signature = original_sig;
+        assert!(!obs.verify(), "tampered-timestamp replay must be rejected");
+    }
+
+    #[test]
+    fn test_reputation_obs_rejects_signature_signed_by_different_key() {
+        // Sign with key A; the `observer` field still points at key A's pubkey,
+        // but the signature is produced by key B → verify() must fail.
+        let key_a = SigningKey::generate(&mut rand::rngs::OsRng);
+        let key_b = SigningKey::generate(&mut rand::rngs::OsRng);
+        let obs_a = make_signed_obs_with_key(&key_a);
+        let obs_b = make_signed_obs_with_key(&key_b);
+        // Put key_b's signature into key_a's observation (observer pubkey = key_a).
+        let mut tampered = obs_a.clone();
+        tampered.signature = obs_b.signature.clone();
+        assert!(obs_a.verify(), "original must verify");
+        assert!(!tampered.verify(), "cross-key signature must be rejected");
+    }
+
+    #[test]
+    fn test_reputation_obs_rejects_signature_truncated_to_32_bytes() {
+        // A 32-byte prefix of a valid 64-byte signature must fail.
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let obs = make_signed_obs_with_key(&key);
+        let mut truncated = obs.clone();
+        truncated.signature = obs.signature[..32].to_vec();
+        assert!(!truncated.verify(), "32-byte truncated signature must be rejected");
+    }
+
+    #[test]
+    fn test_reputation_gossip_validation_rejects_out_of_range_reputation() {
+        // reputation = 1.5 is out of [0.0, 1.0] — validate_with_sender must error.
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut obs = make_signed_obs_with_key(&key);
+        obs.reputation = 1.5;
+        let payload = Payload::ReputationGossip(obs.clone());
+        let err = payload.validate_with_sender(&obs.observer);
+        assert!(err.is_err(), "out-of-range reputation must be rejected by protocol validation");
+    }
+
+    #[test]
+    fn test_reputation_gossip_validation_rejects_negative_reputation() {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut obs = make_signed_obs_with_key(&key);
+        obs.reputation = -0.1;
+        let payload = Payload::ReputationGossip(obs.clone());
+        let err = payload.validate_with_sender(&obs.observer);
+        assert!(err.is_err(), "negative reputation must be rejected by protocol validation");
+    }
+
+    // =========================================================================
+    // Security tests: LoanProposal / LoanGossip signature-length enforcement
+    // =========================================================================
+
+    #[test]
+    fn test_loan_gossip_rejects_short_lender_sig() {
+        let msg = Payload::LoanGossip(LoanGossip {
+            lender: NodeId([1u8; 32]),
+            borrower: NodeId([2u8; 32]),
+            principal_cu: 1_000,
+            interest_rate_per_hour: 0.001,
+            term_hours: 24,
+            collateral_cu: 500,
+            created_at: 1_000,
+            due_at: 1_000 + 24 * 3_600_000,
+            lender_sig: vec![0u8; 32], // too short — must be 64
+            borrower_sig: vec![0u8; 64],
+        });
+        assert!(msg.validate_with_sender(&NodeId([0u8; 32])).is_err(),
+            "short lender_sig must be rejected");
+    }
+
+    #[test]
+    fn test_loan_gossip_rejects_short_borrower_sig() {
+        let msg = Payload::LoanGossip(LoanGossip {
+            lender: NodeId([1u8; 32]),
+            borrower: NodeId([2u8; 32]),
+            principal_cu: 1_000,
+            interest_rate_per_hour: 0.001,
+            term_hours: 24,
+            collateral_cu: 500,
+            created_at: 1_000,
+            due_at: 1_000 + 24 * 3_600_000,
+            lender_sig: vec![0u8; 64],
+            borrower_sig: vec![0u8; 16], // too short
+        });
+        assert!(msg.validate_with_sender(&NodeId([0u8; 32])).is_err(),
+            "short borrower_sig must be rejected");
+    }
+
+    #[test]
+    fn test_loan_gossip_rejects_zero_principal() {
+        let msg = Payload::LoanGossip(LoanGossip {
+            lender: NodeId([1u8; 32]),
+            borrower: NodeId([2u8; 32]),
+            principal_cu: 0, // zero — invalid
+            interest_rate_per_hour: 0.001,
+            term_hours: 24,
+            collateral_cu: 500,
+            created_at: 1_000,
+            due_at: 1_000 + 24 * 3_600_000,
+            lender_sig: vec![0u8; 64],
+            borrower_sig: vec![0u8; 64],
+        });
+        assert!(msg.validate_with_sender(&NodeId([0u8; 32])).is_err(),
+            "zero principal in LoanGossip must be rejected");
+    }
+
+    #[test]
+    fn test_loan_proposal_rejects_wrong_sender() {
+        // Lender field says node [1u8;32] but sender is [2u8;32] → mismatch.
+        let p = LoanProposal {
+            request_id: 1,
+            lender: NodeId([1u8; 32]),
+            borrower: NodeId([3u8; 32]),
+            principal_cu: 1_000,
+            interest_rate_per_hour: 0.001,
+            term_hours: 24,
+            collateral_cu: 500,
+            created_at: 0,
+            due_at: 24 * 3_600_000,
+            lender_sig: vec![0u8; 64],
+        };
+        let err = Payload::LoanProposal(p).validate_with_sender(&NodeId([2u8; 32]));
+        assert!(err.is_err(), "lender/sender mismatch must be rejected");
+    }
 }

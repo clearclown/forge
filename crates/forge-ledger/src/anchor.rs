@@ -206,4 +206,98 @@ mod tests {
         let test = build_anchor_payload(&root, Network::Testnet);
         assert_ne!(main, test); // network byte differs
     }
+
+    // =========================================================================
+    // Security tests: Bitcoin OP_RETURN boundary enforcement
+    // =========================================================================
+
+    #[test]
+    fn sec_anchor_payload_always_exactly_40_bytes() {
+        // For every interesting Merkle root value, the payload must be exactly 40 bytes.
+        for &root_byte in &[0x00u8, 0xFF, 0x42, 0xAB, 0x01, 0x7F, 0x80] {
+            for net in [Network::Bitcoin, Network::Testnet, Network::Signet, Network::Regtest] {
+                let payload = build_anchor_payload(&[root_byte; 32], net);
+                assert_eq!(
+                    payload.len(),
+                    40,
+                    "anchor payload for root_byte={root_byte:#04x} on {net:?} must be exactly 40 bytes, got {}",
+                    payload.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sec_anchor_script_never_exceeds_80_bytes() {
+        // Standard relay limit is 80 bytes for OP_RETURN.
+        for net in [Network::Bitcoin, Network::Testnet, Network::Signet, Network::Regtest] {
+            let script = build_anchor_script(&[0xABu8; 32], net);
+            assert!(
+                script.as_bytes().len() <= 80,
+                "OP_RETURN script for {net:?} must be <= 80 bytes (relay limit), got {}",
+                script.as_bytes().len()
+            );
+        }
+    }
+
+    #[test]
+    fn sec_anchor_payload_magic_never_corrupted() {
+        // Regardless of Merkle root content, bytes 0..4 must always equal ANCHOR_MAGIC.
+        for &root_byte in &[0x00u8, 0xFF, 0x01] {
+            let payload = build_anchor_payload(&[root_byte; 32], Network::Bitcoin);
+            assert_eq!(
+                &payload[0..4],
+                &ANCHOR_MAGIC,
+                "magic bytes must always be 'FRGE' regardless of root content"
+            );
+        }
+    }
+
+    #[test]
+    fn sec_anchor_payload_version_always_0x01() {
+        // Version byte must always be ANCHOR_VERSION = 0x01.
+        for net in [Network::Bitcoin, Network::Testnet] {
+            let payload = build_anchor_payload(&[0x99u8; 32], net);
+            assert_eq!(
+                payload[4],
+                ANCHOR_VERSION,
+                "version byte must always be {ANCHOR_VERSION:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn sec_anchor_payload_merkle_root_occupies_bytes_8_to_40() {
+        // The Merkle root must appear verbatim in bytes 8..40 of the payload.
+        let root = [0xDEu8; 32];
+        let payload = build_anchor_payload(&root, Network::Bitcoin);
+        assert_eq!(
+            &payload[8..40],
+            &root,
+            "Merkle root must be at bytes 8..40 of anchor payload"
+        );
+    }
+
+    #[test]
+    fn sec_anchor_script_opcode_is_op_return() {
+        // The first byte of the OP_RETURN script must be 0x6A.
+        for &root_byte in &[0x00u8, 0xFF, 0xAB] {
+            let script = build_anchor_script(&[root_byte; 32], Network::Bitcoin);
+            assert_eq!(
+                script.as_bytes()[0],
+                0x6A,
+                "first script byte must be OP_RETURN (0x6A)"
+            );
+        }
+    }
+
+    #[test]
+    fn sec_anchor_payload_reserved_bytes_are_zero() {
+        // Bytes 6 and 7 are reserved and must be 0x00.
+        for net in [Network::Bitcoin, Network::Testnet, Network::Regtest] {
+            let payload = build_anchor_payload(&[0x55u8; 32], net);
+            assert_eq!(payload[6], 0x00, "reserved byte 6 must be 0x00 for {net:?}");
+            assert_eq!(payload[7], 0x00, "reserved byte 7 must be 0x00 for {net:?}");
+        }
+    }
 }

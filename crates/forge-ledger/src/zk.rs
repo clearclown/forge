@@ -613,4 +613,126 @@ mod tests {
             "public_inputs must not affect dedup_key"
         );
     }
+
+    // =========================================================================
+    // Security tests: zkML proof forgery attacks
+    // =========================================================================
+
+    #[test]
+    fn sec_mock_verifier_rejects_empty_proof_bytes() {
+        // An empty proof_bytes vector is not sha256(canonical) and must fail.
+        let v = MockVerifier;
+        let mut proof = valid_proof();
+        proof.proof_bytes = vec![];
+        let err = v.verify(&proof).unwrap_err();
+        assert!(
+            matches!(err, ZkError::VerificationFailed(_)),
+            "empty proof_bytes must yield VerificationFailed, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn sec_mock_verifier_rejects_single_byte_flip() {
+        // A single-bit flip anywhere in proof_bytes must break verification.
+        let v = MockVerifier;
+        let mut proof = valid_proof();
+        assert!(proof.proof_bytes.len() >= 2, "proof must have at least 2 bytes");
+        // Flip byte at index 0.
+        proof.proof_bytes[0] ^= 0x01;
+        let err = v.verify(&proof).unwrap_err();
+        assert!(
+            matches!(err, ZkError::VerificationFailed(_)),
+            "single-byte flip must yield VerificationFailed"
+        );
+    }
+
+    #[test]
+    fn sec_mock_verifier_rejects_proof_for_different_model() {
+        // Build a valid proof for model_hash A; change model_hash to B
+        // and recompute valid proof_bytes for the new canonical → but
+        // the original proof_bytes no longer matches.
+        let v = MockVerifier;
+        // Build valid proof for model A.
+        let proof_for_a = valid_proof();
+        // Now change model_hash to B; do NOT update proof_bytes.
+        let mut proof_b = proof_for_a.clone();
+        proof_b.model_hash = {
+            let mut h = [0u8; 32];
+            h[0] = 0x01; // different first byte
+            h[1] = 0x23;
+            h
+        };
+        // proof_bytes was computed for model A — it no longer matches canonical for model B.
+        let err = v.verify(&proof_b).unwrap_err();
+        assert!(
+            matches!(err, ZkError::VerificationFailed(_)),
+            "proof for model A must not verify against model B canonical: {err:?}"
+        );
+    }
+
+    #[test]
+    fn sec_mock_verifier_rejects_proof_with_all_zero_proof_bytes() {
+        // 32 zero bytes is not sha256(anything_reasonable) for a valid proof.
+        let v = MockVerifier;
+        let mut proof = valid_proof();
+        proof.proof_bytes = vec![0u8; 32];
+        let err = v.verify(&proof).unwrap_err();
+        assert!(
+            matches!(err, ZkError::VerificationFailed(_)),
+            "32 zero bytes must not pass as valid proof_bytes: {err:?}"
+        );
+    }
+
+    #[test]
+    fn sec_verifier_registry_rejects_unregistered_backend_fake() {
+        // "fake-backend" is not registered → must return UnknownBackend.
+        let registry = VerifierRegistry::new();
+        let mut proof = valid_proof();
+        proof.backend = "fake-backend".to_string();
+        let err = registry.verify(&proof).unwrap_err();
+        assert!(
+            matches!(err, ZkError::UnknownBackend(ref b) if b == "fake-backend"),
+            "unregistered 'fake-backend' must yield UnknownBackend, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn sec_verifier_registry_rejects_empty_backend_string() {
+        // An empty backend string must also fail with UnknownBackend.
+        let registry = VerifierRegistry::new();
+        let mut proof = valid_proof();
+        proof.backend = String::new();
+        let err = registry.verify(&proof).unwrap_err();
+        assert!(
+            matches!(err, ZkError::UnknownBackend(ref b) if b.is_empty()),
+            "empty backend string must yield UnknownBackend, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn sec_mock_verifier_rejects_tampered_prover_field() {
+        // Change only the prover field after proof_bytes is computed
+        // → canonical_bytes differ → sha256 mismatch → VerificationFailed.
+        let v = MockVerifier;
+        let mut proof = valid_proof();
+        proof.prover = NodeId([0xDEu8; 32]);
+        let err = v.verify(&proof).unwrap_err();
+        assert!(
+            matches!(err, ZkError::VerificationFailed(_)),
+            "tampered prover must cause proof_bytes mismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn sec_mock_verifier_rejects_tampered_generated_at_ms() {
+        // Change generated_at_ms → canonical bytes change → proof_bytes stale.
+        let v = MockVerifier;
+        let mut proof = valid_proof();
+        proof.generated_at_ms += 1;
+        let err = v.verify(&proof).unwrap_err();
+        assert!(
+            matches!(err, ZkError::VerificationFailed(_)),
+            "tampered generated_at_ms must cause VerificationFailed, got {err:?}"
+        );
+    }
 }

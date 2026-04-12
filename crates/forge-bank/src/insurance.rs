@@ -226,4 +226,92 @@ mod tests {
     fn test_premium_validates_coverage() {
         assert!(premium_for_default(0, 0.5).is_err());
     }
+
+    // ===========================================================================
+    // Security tests — insurance economic attack vectors
+    // ===========================================================================
+
+    #[test]
+    fn sec_premium_for_rejects_zero_coverage() {
+        // Zero coverage is meaningless and could seed a division-by-zero.
+        let result = premium_for_default(0, 0.5);
+        assert!(result.is_err(), "zero coverage_cu must be rejected");
+    }
+
+    #[test]
+    fn sec_premium_for_rejects_credit_above_one() {
+        // credit_score > 1.0 is out-of-range and must be rejected.
+        let result = premium_for_default(1_000, 1.5);
+        assert!(
+            result.is_err(),
+            "credit score 1.5 must be rejected (out of [0,1])"
+        );
+    }
+
+    #[test]
+    fn sec_premium_for_rejects_negative_credit() {
+        // credit_score < 0.0 is out-of-range and must be rejected.
+        let result = premium_for_default(1_000, -0.1);
+        assert!(
+            result.is_err(),
+            "negative credit score must be rejected"
+        );
+    }
+
+    #[test]
+    fn sec_insurance_policy_rejects_zero_coverage() {
+        // An InsurancePolicy with coverage = 0 is invalid.
+        let result = InsurancePolicy::new(
+            "p-zero",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64),
+            0,   // zero coverage
+            1,
+            1_000_000,
+        );
+        assert!(result.is_err(), "InsurancePolicy with zero coverage must be rejected");
+    }
+
+    #[test]
+    fn sec_insurance_policy_rejects_zero_premium() {
+        // A policy that charges zero premium gives away free protection.
+        let result = InsurancePolicy::new(
+            "p-free",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64),
+            1_000,
+            0,   // zero premium
+            1_000_000,
+        );
+        assert!(result.is_err(), "InsurancePolicy with zero premium must be rejected");
+    }
+
+    #[test]
+    fn sec_insurance_premium_increases_with_lower_credit() {
+        // Premium is risk-adjusted: lower credit must produce higher premium.
+        let high_credit = premium_for_default(10_000, 0.9).unwrap();
+        let low_credit = premium_for_default(10_000, 0.1).unwrap();
+        assert!(
+            low_credit > high_credit,
+            "lower credit score must produce higher premium: {} vs {}",
+            low_credit,
+            high_credit
+        );
+    }
+
+    #[test]
+    fn sec_insurance_premium_never_zero_for_any_valid_coverage() {
+        // Even perfect credit with minimal coverage must yield at least 1 CU premium.
+        for coverage in [1u64, 2, 5, 10, 100] {
+            let p = premium_for_default(coverage, 1.0).unwrap();
+            assert!(
+                p >= 1,
+                "premium must be at least 1 CU for coverage={}, got {}",
+                coverage,
+                p
+            );
+        }
+    }
 }

@@ -39,6 +39,15 @@ pub(crate) async fn agora_register(
     Json(profile): Json<AgentProfile>,
 ) -> Result<Json<OkResponse>, (StatusCode, String)> {
     check_forge_rate_limit(&state).await?;
+    // Security: validate agent_hex is exactly 64 hex chars.
+    // AgentProfile::new() performs this check, but serde deserialization
+    // bypasses it. We must validate here at the API boundary.
+    if profile.agent_hex.len() != 64 || !profile.agent_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("agent_hex must be exactly 64 hex characters, got {} chars", profile.agent_hex.len()),
+        ));
+    }
     let mut mp = state.marketplace.lock().await;
     mp.register_agent(profile);
     Ok(Json(OkResponse { ok: true }))

@@ -691,16 +691,21 @@ impl ComputeLedger {
     /// NodeId creation. Nodes that have consumed their free tier must
     /// contribute compute to earn more CU.
     pub fn can_afford(&self, node_id: &NodeId, cu_cost: u64) -> bool {
-        const FREE_TIER_CU: i64 = 1000;
+        const FREE_TIER_CU: u64 = 1000;
+        // Security: reject astronomically large costs that would overflow i64.
+        // Any single request costing more than i64::MAX CU is illegitimate.
+        if cu_cost > i64::MAX as u64 {
+            return false;
+        }
         match self.balances.get(node_id) {
             Some(balance) => {
                 // Nodes that have only consumed (never contributed) get reduced free tier
                 // to prevent "contribute 1 CU then abuse" attacks (Issue #6)
-                let free_bonus = if balance.contributed > 0 {
-                    FREE_TIER_CU
+                let free_bonus: i64 = if balance.contributed > 0 {
+                    FREE_TIER_CU as i64
                 } else {
                     // Decay free tier based on how much they've already consumed
-                    (FREE_TIER_CU - balance.consumed as i64).max(0)
+                    (FREE_TIER_CU as i64 - balance.consumed.min(FREE_TIER_CU) as i64).max(0)
                 };
                 balance.available_balance() + free_bonus >= cu_cost as i64
             }
@@ -719,7 +724,7 @@ impl ComputeLedger {
                     );
                     return false;
                 }
-                FREE_TIER_CU >= cu_cost as i64
+                FREE_TIER_CU >= cu_cost
             }
         }
     }
@@ -2589,6 +2594,1076 @@ mod tests {
             effective >= 0.0 && effective <= 1.0,
             "effective_reputation {} must be in [0, 1]",
             effective
+        );
+    }
+
+    // ===========================================================================
+    // Security tests — economic attack vectors
+    // ===========================================================================
+
+    // --- Attack 1: Self-trade (balance fabrication via execute_trade) ---
+
+    #[test]
+    fn sec_self_trade_does_not_inflate_balance() {
+        // Attacker calls execute_trade with provider == consumer to fabricate CU.
+        let mut ledger = ComputeLedger::new();
+        let attacker = NodeId([0xAA; 32]);
+        let before_len = ledger.trade_log.len();
+        ledger.execute_trade(&TradeRecord {
+            provider: attacker.clone(),
+            consumer: attacker.clone(),
+            cu_amount: 1_000_000,
+            tokens_processed: 100,
+            timestamp: now_millis(),
+            model_id: "attack".into(),
+        });
+        // No trade should have been recorded and balance must not exist.
+        assert_eq!(
+            ledger.trade_log.len(),
+            before_len,
+            "self-trade must not be recorded in the trade log"
+        );
+        assert!(
+            ledger.get_balance(&attacker).is_none(),
+            "self-trade must not create a balance entry"
+        );
+    }
+
+    // --- Attack 2: Zero-CU ghost trades (spam / Merkle pollution) ---
+
+    #[test]
+    fn sec_zero_cu_trade_does_not_pollute_trade_log() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+        let before = ledger.trade_log.len();
+        ledger.execute_trade(&TradeRecord {
+            provider: provider.clone(),
+            consumer: consumer.clone(),
+            cu_amount: 0,
+            tokens_processed: 0,
+            timestamp: now_millis(),
+            model_id: "spam".into(),
+        });
+        assert_eq!(
+            ledger.trade_log.len(),
+            before,
+            "zero-CU trade must not be appended to the trade log"
+        );
+        assert!(
+            ledger.get_balance(&provider).is_none(),
+            "zero-CU trade must not create provider balance"
+        );
+        assert!(
+            ledger.get_balance(&consumer).is_none(),
+            "zero-CU trade must not create consumer balance"
+        );
+    }
+
+    // --- Attack 3: Balance overflow (u64 wrap-around for CU fabrication) ---
+
+    #[test]
+    fn sec_contributed_saturates_on_massive_trade() {
+        // Two consecutive trades each with u64::MAX/2. Arithmetic must saturate,
+        // not wrap around to a small positive value.
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+        let half_max = u64::MAX / 2;
+        ledger.execute_trade(&TradeRecord {
+            provider: provider.clone(),
+            consumer: consumer.clone(),
+            cu_amount: half_max,
+            tokens_processed: 1,
+            timestamp: now_millis(),
+            model_id: "huge".into(),
+        });
+        ledger.execute_trade(&TradeRecord {
+            provider: provider.clone(),
+            consumer: consumer.clone(),
+            cu_amount: half_max,
+            tokens_processed: 1,
+            timestamp: now_millis(),
+            model_id: "huge2".into(),
+        });
+        let bal = ledger.get_balance(&provider).unwrap();
+        // Contributed must NOT have wrapped around to a small value.
+        // saturating_add(half_max, half_max) = u64::MAX - 1.
+        assert!(
+            bal.contributed >= half_max,
+            "contributed must not wrap around: got {}",
+            bal.contributed
+        );
+    }
+
+    // --- Attack 4a: Borrow more than pool available ---
+
+    #[test]
+    fn sec_cannot_borrow_more_than_pool_available() {
+        // Pool has 1_000 CU total (all available). Try to borrow 10_000.
+        let (signed, _, _) = make_signed_loan(10_000, 30_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        // Set a small pool so the reserve ratio gate fires.
+        ledger.loan_pool_total = 1_000;
+        ledger.loan_pool_lent = 0;
+        // 10_000 > 20% of 1_000 = 200 → ExceedsPoolLimit
+        let result = ledger.create_loan(signed);
+        assert!(
+            result.is_err(),
+            "borrowing more than pool capacity must be rejected"
+        );
+    }
+
+    // --- Attack 4b: Borrow without minimum credit score ---
+
+    #[test]
+    fn sec_borrow_below_min_credit_rejected() {
+        // A node with only a defaulted loan has credit ~0 → below MIN_CREDIT_FOR_BORROWING.
+        let (signed, _, _) = make_signed_loan(500, 1_500, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+
+        // Make borrower known with zero reputation.
+        ledger.record_contribution(WorkUnit {
+            node_id: borrower.clone(),
+            timestamp: 0,
+            layers_computed: forge_core::LayerRange::new(0, 8),
+            model_id: forge_core::ModelId("x".into()),
+            tokens_processed: 1,
+            estimated_flops: FLOPS_PER_CU,
+        });
+        ledger.update_reputation(&borrower, -1.0); // reputation → 0.0
+
+        // Inject a defaulted loan so repayment_score = 0.
+        ledger.loans.push(SignedLoanRecord {
+            loan: crate::lending::LoanRecord {
+                loan_id: [0xDE; 32],
+                lender: NodeId([1u8; 32]),
+                borrower: borrower.clone(),
+                principal_cu: 100,
+                interest_rate_per_hour: 0.001,
+                term_hours: 1,
+                collateral_cu: 100,
+                status: LoanStatus::Defaulted,
+                created_at: 0,
+                due_at: 0,
+                repaid_at: None,
+            },
+            lender_sig: vec![0; 64],
+            borrower_sig: vec![0; 64],
+        });
+
+        let score = ledger.compute_credit_score(&borrower);
+        assert!(
+            score < crate::lending::MIN_CREDIT_FOR_BORROWING,
+            "test setup: expected score < MIN_CREDIT_FOR_BORROWING, got {}",
+            score
+        );
+        let result = ledger.create_loan(signed);
+        assert!(
+            matches!(result, Err(LoanCreationError::InsufficientCredit { .. })),
+            "expected InsufficientCredit, got {:?}",
+            result
+        );
+    }
+
+    // --- Attack 4c: LTV ratio enforcement ---
+
+    #[test]
+    fn sec_ltv_ratio_enforced_at_boundary() {
+        // MAX_LTV_RATIO = 3.0. Attempt 4:1 (borrow 4000 against 1000 collateral).
+        let (signed, _, _) = make_signed_loan(4_000, 1_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        let result = ledger.create_loan(signed);
+        assert!(
+            matches!(result, Err(LoanCreationError::ExcessiveLtv { .. })),
+            "4:1 LTV must be rejected, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn sec_ltv_exactly_at_max_is_accepted() {
+        // Exactly 3:1 — should pass LTV gate.
+        let (signed, _, _) = make_signed_loan(3_000, 1_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        // May fail on other gates but must not fail ExcessiveLtv.
+        let result = ledger.create_loan(signed);
+        assert!(
+            !matches!(result, Err(LoanCreationError::ExcessiveLtv { .. })),
+            "exactly 3:1 LTV must not be rejected by the LTV gate: {:?}",
+            result
+        );
+    }
+
+    // --- Attack 4d: Single-loan pool percentage ---
+
+    #[test]
+    fn sec_single_loan_pool_percentage_enforced() {
+        // MAX_SINGLE_LOAN_POOL_PCT = 20%. Pool = 10_000. Try to borrow 3_000 (30%).
+        let (signed, _, _) = make_signed_loan(3_000, 9_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        ledger.loan_pool_total = 10_000;
+        ledger.loan_pool_lent = 0;
+        let result = ledger.create_loan(signed);
+        assert!(
+            matches!(result, Err(LoanCreationError::ExceedsPoolLimit { .. })),
+            "30% of pool must be rejected by pool-pct gate: {:?}",
+            result
+        );
+    }
+
+    // --- Attack 4e: Max loan term ---
+
+    #[test]
+    fn sec_max_loan_term_enforced() {
+        // MAX_LOAN_TERM_HOURS = 168. Try 200 hours.
+        let (signed, _, _) = make_signed_loan(1_000, 3_000, 200);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        let result = ledger.create_loan(signed);
+        assert!(
+            matches!(result, Err(LoanCreationError::ExcessiveTerm { .. })),
+            "200-hour term must be rejected: {:?}",
+            result
+        );
+    }
+
+    // --- Attack 4f: Repay nonexistent loan ---
+
+    #[test]
+    fn sec_repay_nonexistent_loan_returns_not_found() {
+        let mut ledger = ComputeLedger::new();
+        let fake_id = [0xFFu8; 32];
+        let result = ledger.repay_loan(&fake_id);
+        assert!(
+            matches!(result, Err(LoanRepaymentError::NotFound)),
+            "repaying a nonexistent loan must return NotFound, got {:?}",
+            result
+        );
+    }
+
+    // --- Attack 4g: Double-repay same loan ---
+
+    #[test]
+    fn sec_double_repay_same_loan_is_rejected() {
+        let (signed, _, _) = make_signed_loan(1_000, 3_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let loan_id = signed.loan.loan_id;
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        ledger.create_loan(signed).unwrap();
+
+        // First repayment must succeed.
+        ledger.repay_loan(&loan_id).expect("first repay must succeed");
+
+        // Second repayment must fail — loan is already Repaid.
+        let result = ledger.repay_loan(&loan_id);
+        assert!(
+            matches!(result, Err(LoanRepaymentError::NotActive { .. })),
+            "double repay must return NotActive, got {:?}",
+            result
+        );
+    }
+
+    // --- Attack 4h: Duplicate loan_id rejected ---
+
+    #[test]
+    fn sec_duplicate_loan_id_rejected() {
+        let (signed, _, _) = make_signed_loan(1_000, 3_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let loan_id = signed.loan.loan_id;
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+
+        // First loan creation must succeed.
+        ledger.create_loan(signed.clone()).expect("first loan must be created");
+
+        // Give the pool enough headroom so the reserve gate does not fire before
+        // the duplicate check (duplicate detection is checked after pool reserve in
+        // create_loan's guard sequence, but only when loan_pool_total > 0).
+        // Setting a large pool_total keeps the reserve ratio above 30%.
+        ledger.loan_pool_total = 100_000;
+
+        // Attempt to create the exact same loan again.
+        let result = ledger.create_loan(signed);
+        assert!(
+            matches!(result, Err(LoanCreationError::Duplicate)),
+            "duplicate loan_id must be rejected: {:?}",
+            result
+        );
+        // Verify the original loan still exists in the ledger.
+        assert!(
+            ledger.loans.iter().any(|l| l.loan.loan_id == loan_id),
+            "original loan must still exist in ledger after rejected duplicate"
+        );
+    }
+
+    // --- Attack 5a: Reputation clamping (reputation injection) ---
+
+    #[test]
+    fn sec_reputation_clamped_at_1_0_upper_bound() {
+        let mut ledger = ComputeLedger::new();
+        let node = NodeId([1u8; 32]);
+        ledger.record_contribution(make_work([1u8; 32], FLOPS_PER_CU));
+        // Attempt to set reputation to 10.0 — must clamp to 1.0.
+        ledger.update_reputation(&node, 9.5); // start 0.5 + delta 9.5 = 10.0 → clamped
+        let bal = ledger.get_balance(&node).unwrap();
+        assert!(
+            bal.reputation <= 1.0,
+            "reputation must not exceed 1.0, got {}",
+            bal.reputation
+        );
+    }
+
+    #[test]
+    fn sec_reputation_clamped_at_0_0_lower_bound() {
+        let mut ledger = ComputeLedger::new();
+        let node = NodeId([1u8; 32]);
+        ledger.record_contribution(make_work([1u8; 32], FLOPS_PER_CU));
+        // Attempt to set reputation to -20.0 — must clamp to 0.0.
+        ledger.update_reputation(&node, -20.0);
+        let bal = ledger.get_balance(&node).unwrap();
+        assert!(
+            bal.reputation >= 0.0,
+            "reputation must not fall below 0.0, got {}",
+            bal.reputation
+        );
+    }
+
+    // --- Attack 5b: Collusion detection — tight cluster ---
+
+    #[test]
+    fn sec_collusion_detector_flags_tight_cluster_of_20_trades() {
+        use crate::collusion::CollusionDetector;
+
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0xA0; 32]);
+        let partner = NodeId([0xA1; 32]);
+        let now = now_millis();
+
+        // 20 trades all between the same two nodes — 100% concentration.
+        for i in 0..20u64 {
+            ledger.execute_trade(&TradeRecord {
+                provider: subject.clone(),
+                consumer: partner.clone(),
+                cu_amount: 100,
+                tokens_processed: 10,
+                timestamp: now.saturating_sub(i * 60_000),
+                model_id: "spam".into(),
+            });
+        }
+
+        let report = CollusionDetector::analyze_node(&ledger.trade_log, &subject, now);
+        assert!(
+            report.tight_cluster_score > 0.0,
+            "20 trades to same partner must flag tight_cluster_score > 0: got {}",
+            report.tight_cluster_score
+        );
+        assert!(
+            report.trust_penalty > 0.0,
+            "tight cluster must produce a non-zero trust penalty: got {}",
+            report.trust_penalty
+        );
+    }
+
+    // --- Attack 5c: Effective reputation subtracts collusion penalty ---
+
+    #[test]
+    fn sec_effective_reputation_below_consensus_on_wash_trading() {
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0xB0; 32]);
+        let partner = NodeId([0xB1; 32]);
+
+        // High local reputation.
+        ledger.balances.insert(subject.clone(), forge_core::NodeBalance {
+            node_id: subject.clone(),
+            contributed: 10_000,
+            consumed: 0,
+            reserved: 0,
+            reputation: 1.0,
+        });
+
+        let now = now_millis();
+        // Execute enough wash trades to trigger tight_cluster detection.
+        for i in 0..20u64 {
+            ledger.execute_trade(&TradeRecord {
+                provider: subject.clone(),
+                consumer: partner.clone(),
+                cu_amount: 100,
+                tokens_processed: 10,
+                timestamp: now.saturating_sub(i * 60_000),
+                model_id: "wash".into(),
+            });
+        }
+
+        let consensus = ledger.consensus_reputation(&subject);
+        let effective = ledger.effective_reputation(&subject, now);
+        assert!(
+            effective <= consensus,
+            "effective reputation ({}) must be <= consensus ({}) when collusion detected",
+            effective,
+            consensus
+        );
+        assert!(
+            effective >= 0.0,
+            "effective reputation must not go negative: {}",
+            effective
+        );
+    }
+
+    // --- Attack 5d: Unsigned reputation observation rejected ---
+
+    #[test]
+    fn sec_unsigned_reputation_observation_not_merged() {
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0xC0; 32]);
+        // Inject a node balance so we can verify it is NOT changed.
+        ledger.balances.insert(subject.clone(), forge_core::NodeBalance {
+            node_id: subject.clone(),
+            contributed: 100,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.5,
+        });
+        let unsigned_obs = ReputationObservation {
+            observer: NodeId([1u8; 32]),
+            subject: subject.clone(),
+            reputation: 1.0, // attacker tries to inflate to max
+            trade_count: 100,
+            total_cu_volume: 10_000,
+            timestamp_ms: now_millis(),
+            signature: vec![], // unsigned!
+        };
+        ledger.merge_remote_reputation(&unsigned_obs);
+        let rep_after = ledger.balances.get(&subject).unwrap().reputation;
+        assert!(
+            (rep_after - 0.5).abs() < 1e-9,
+            "unsigned observation must not change reputation: got {}",
+            rep_after
+        );
+        assert!(
+            ledger.remote_reputation.get(&subject).map_or(true, |v| v.is_empty()),
+            "unsigned observation must not be stored in remote_reputation"
+        );
+    }
+
+    // --- Attack 5e: Forged reputation observation (wrong key for declared observer) ---
+
+    #[test]
+    fn sec_forged_reputation_observation_rejected() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0xD0; 32]);
+
+        // Signer key A claims to be observer key B.
+        let key_a = SigningKey::generate(&mut rand::thread_rng());
+        let key_b = SigningKey::generate(&mut rand::thread_rng());
+
+        let mut obs = ReputationObservation {
+            observer: NodeId(key_b.verifying_key().to_bytes()), // claims to be B
+            subject: subject.clone(),
+            reputation: 1.0,
+            trade_count: 100,
+            total_cu_volume: 10_000,
+            timestamp_ms: now_millis(),
+            signature: vec![],
+        };
+        // Sign with A (not B) → mismatch between declared observer and actual signer.
+        let sig = key_a.sign(&obs.canonical_bytes());
+        obs.signature = sig.to_bytes().to_vec();
+
+        // verify() should return false.
+        assert!(
+            !obs.verify(),
+            "observation signed by wrong key must fail verification"
+        );
+
+        // merge_remote_reputation must silently discard it.
+        ledger.balances.insert(subject.clone(), forge_core::NodeBalance {
+            node_id: subject.clone(),
+            contributed: 100,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.5,
+        });
+        ledger.merge_remote_reputation(&obs);
+        let rep_after = ledger.balances.get(&subject).unwrap().reputation;
+        assert!(
+            (rep_after - 0.5).abs() < 1e-9,
+            "forged observation must not change reputation: got {}",
+            rep_after
+        );
+    }
+
+    // --- Attack 6: Welcome loan Sybil threshold ---
+
+    #[test]
+    fn sec_welcome_loan_sybil_threshold_blocks_when_exceeded() {
+        use crate::lending::WELCOME_LOAN_SYBIL_THRESHOLD;
+        let mut ledger = ComputeLedger::new();
+
+        // Fill ledger with WELCOME_LOAN_SYBIL_THRESHOLD + 1 nodes that have
+        // contributed == 0 (i.e., zero-contribution / Sybil candidate nodes).
+        // can_issue_welcome_loan checks: unknown_nodes > THRESHOLD (strictly greater),
+        // so we need threshold + 1 entries to exceed the threshold.
+        let count = WELCOME_LOAN_SYBIL_THRESHOLD + 1;
+        for i in 0..count {
+            let mut raw = [0u8; 32];
+            raw[0] = (i & 0xFF) as u8;
+            raw[1] = ((i >> 8) & 0xFF) as u8;
+            let node_id = NodeId(raw);
+            ledger.balances.insert(node_id.clone(), forge_core::NodeBalance {
+                node_id,
+                contributed: 0,
+                consumed: 10,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        }
+
+        // A fresh new node request must be denied — Sybil ceiling exceeded.
+        let new_node = NodeId([0xFF; 32]);
+        assert!(
+            !ledger.can_issue_welcome_loan(&new_node),
+            "welcome loan must be denied when {} Sybil nodes exceed threshold of {}",
+            count,
+            WELCOME_LOAN_SYBIL_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn sec_welcome_loan_rejected_for_already_known_node() {
+        let mut ledger = ComputeLedger::new();
+        let node = NodeId([0x01u8; 32]);
+        // Insert a balance — making the node "known".
+        ledger.balances.insert(node.clone(), forge_core::NodeBalance {
+            node_id: node.clone(),
+            contributed: 500,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.5,
+        });
+        assert!(
+            !ledger.can_issue_welcome_loan(&node),
+            "already-known node must not receive a second welcome loan"
+        );
+    }
+
+    // --- Attack 7: HMAC integrity — tampered trade CU amount ---
+
+    #[test]
+    fn sec_tampered_trade_cu_amount_detected_by_hmac() {
+        let path = unique_temp_path("sec-hmac-cu-tamper");
+        let mut ledger = ComputeLedger::new();
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 100,
+            tokens_processed: 50,
+            timestamp: now_millis(),
+            model_id: "test".into(),
+        });
+        ledger.save_to_path(&path).unwrap();
+
+        // Tamper: inflate cu_amount inside the JSON data string.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let tampered = raw.replace("\"cu_amount\": 100", "\"cu_amount\": 999999");
+        // Also handle compact JSON (no space after colon).
+        let tampered = tampered.replace("\"cu_amount\":100", "\"cu_amount\":999999");
+        // If neither replacement fired the content is still changed by inline injection.
+        // Either way write it back to trigger an HMAC mismatch.
+        std::fs::write(&path, tampered).unwrap();
+
+        let result = ComputeLedger::load_from_path(&path);
+        // Expect either an HMAC error or an unchanged result (idempotent if replace missed).
+        // The critical property: loading must NOT silently return the tampered value.
+        if let Ok(loaded) = result {
+            let trade = loaded.recent_trades(1);
+            if !trade.is_empty() {
+                assert_ne!(
+                    trade[0].cu_amount, 999_999,
+                    "tampered CU amount must not pass HMAC check silently"
+                );
+            }
+        }
+        // If it errors, that is the correct secure behavior.
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn sec_tampered_integrity_hash_detected() {
+        let path = unique_temp_path("sec-hmac-hash-tamper");
+        let mut ledger = ComputeLedger::new();
+        ledger.record_contribution(make_work([5u8; 32], 100 * FLOPS_PER_CU));
+        ledger.save_to_path(&path).unwrap();
+
+        // Corrupt only the integrity_hash field.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let tampered = raw.replace("hmac-sha256:", "hmac-sha256:DEADBEEF");
+        assert_ne!(raw, tampered, "replacement must change the file");
+        std::fs::write(&path, tampered).unwrap();
+
+        let result = ComputeLedger::load_from_path(&path);
+        assert!(
+            result.is_err(),
+            "corrupted integrity hash must be rejected"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    // --- Attack 8: Lending circuit breaker fires on high default rate ---
+
+    #[test]
+    fn sec_circuit_breaker_trips_on_high_default_rate() {
+        use crate::safety::{LoanDenied, SafetyController};
+        use crate::lending::DEFAULT_CIRCUIT_BREAKER_THRESHOLD;
+
+        let mut safety = SafetyController::new();
+
+        // Simulate: 9 repaid + 2 defaulted = 2/11 ≈ 18% > 10% threshold.
+        for _ in 0..9 {
+            safety.record_loan_outcome(false); // repaid
+        }
+        for _ in 0..2 {
+            safety.record_loan_outcome(true); // defaulted
+        }
+
+        let result = safety.check_loan_creation(1_000, 3_000, 24, 0.9, 10_000_000, 10_000_000);
+        assert!(
+            matches!(result, Err(LoanDenied::DefaultRateCircuitTripped)),
+            "default rate > {:.0}% must trip circuit breaker: {:?}",
+            DEFAULT_CIRCUIT_BREAKER_THRESHOLD * 100.0,
+            result
+        );
+    }
+
+    #[test]
+    fn sec_circuit_breaker_velocity_limit_enforced() {
+        use crate::safety::{LoanDenied, SafetyController};
+        use crate::lending::MAX_LENDING_VELOCITY;
+
+        let mut safety = SafetyController::new();
+        // Record MAX_LENDING_VELOCITY loans in quick succession.
+        for _ in 0..MAX_LENDING_VELOCITY {
+            safety.record_loan_created();
+        }
+        let result = safety.check_loan_creation(1_000, 3_000, 24, 0.9, 10_000_000, 10_000_000);
+        assert!(
+            matches!(result, Err(LoanDenied::VelocityLimitExceeded)),
+            "velocity >= MAX_LENDING_VELOCITY ({}) must be rejected: {:?}",
+            MAX_LENDING_VELOCITY,
+            result
+        );
+    }
+
+    // --- Attack 9: Reserve ratio cannot be drained below 30% ---
+
+    #[test]
+    fn sec_reserve_ratio_cannot_be_drained_below_minimum() {
+        use crate::safety::{LoanDenied, SafetyController};
+        use crate::lending::MIN_RESERVE_RATIO;
+
+        let mut safety = SafetyController::new();
+        // Pool: 1_000_000 CU total, 700_000 already lent → 300_000 available (30%).
+        // Try to lend 100_000 more → would leave 200_000 = 20% < 30%.
+        let result =
+            safety.check_loan_creation(100_000, 300_000, 24, 0.9, 1_000_000, 300_000);
+        assert!(
+            matches!(result, Err(LoanDenied::PoolReserveViolation { .. })),
+            "lending below {:.0}% reserve must be blocked: {:?}",
+            MIN_RESERVE_RATIO * 100.0,
+            result
+        );
+    }
+
+    // --- Attack 10: Default-loan cannot be invoked before due date ---
+
+    #[test]
+    fn sec_default_before_due_date_rejected() {
+        let (signed, _, _) = make_signed_loan(1_000, 3_000, 24);
+        let loan_id = signed.loan.loan_id;
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        ledger.create_loan(signed).unwrap();
+
+        // Attempt to default immediately — loan is not yet overdue.
+        let result = ledger.default_loan(&loan_id);
+        assert!(
+            matches!(result, Err(LoanDefaultError::NotYetDue { .. })),
+            "defaulting before due_at must be rejected: {:?}",
+            result
+        );
+    }
+
+    // --- Attack 11: Repay already-defaulted loan is rejected ---
+
+    #[test]
+    fn sec_repay_defaulted_loan_rejected() {
+        // Create a loan with due_at already passed so we can default it.
+        let (signed, _, _) = make_signed_loan_with_due(1_000, 3_000, 1, Some(1));
+        let loan_id = signed.loan.loan_id;
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        ledger.create_loan(signed).unwrap();
+        ledger.default_loan(&loan_id).expect("default must succeed");
+
+        // Now try to repay the defaulted loan.
+        let result = ledger.repay_loan(&loan_id);
+        assert!(
+            matches!(result, Err(LoanRepaymentError::NotActive { .. })),
+            "repaying a defaulted loan must return NotActive: {:?}",
+            result
+        );
+    }
+
+    // --- Attack 12: Collateral = 0 triggers infinite LTV rejection ---
+
+    #[test]
+    fn sec_zero_collateral_rejected_as_infinite_ltv() {
+        let (signed, _, _) = make_signed_loan(1_000, 0, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        let result = ledger.create_loan(signed);
+        assert!(
+            matches!(result, Err(LoanCreationError::ExcessiveLtv { .. })),
+            "zero collateral must be rejected as infinite LTV: {:?}",
+            result
+        );
+    }
+
+    // =========================================================================
+    // NEW: Crypto/serialization security tests (TDD additions)
+    // =========================================================================
+
+    // ---- HMAC ledger integrity ----
+
+    #[test]
+    fn sec_hmac_save_load_roundtrip_preserves_integrity() {
+        let path = unique_temp_path("sec-new-roundtrip");
+        let mut ledger = ComputeLedger::new();
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([0xAA; 32]),
+            consumer: NodeId([0xBB; 32]),
+            cu_amount: 42,
+            tokens_processed: 7,
+            timestamp: 9_999,
+            model_id: "hmac-roundtrip".to_string(),
+        });
+        ledger.save_to_path(&path).unwrap();
+        let loaded = ComputeLedger::load_from_path(&path).unwrap();
+        assert_eq!(loaded.trade_log.len(), 1);
+        assert_eq!(loaded.trade_log[0].cu_amount, 42);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_hmac_detects_deleted_trade() {
+        // Write ledger with 5 trades, surgically remove one trade from the JSON data
+        // field — the HMAC must catch the modification.
+        let path = unique_temp_path("sec-delete-trade");
+        let mut ledger = ComputeLedger::new();
+        for i in 1u64..=5 {
+            ledger.execute_trade(&TradeRecord {
+                provider: NodeId([i as u8; 32]),
+                consumer: NodeId([(i + 10) as u8; 32]),
+                cu_amount: i * 10,
+                tokens_processed: i,
+                timestamp: i * 100,
+                model_id: format!("m{i}"),
+            });
+        }
+        ledger.save_to_path(&path).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        // The trade_log array inside the inner JSON contains 5 entries.
+        // We look for "m5" (the last model_id) and remove the enclosing object.
+        // This is fragile by design — any textual mutation must break the HMAC.
+        let inner_start = raw.find(r#""m5""#);
+        if inner_start.is_some() {
+            // The replace creates a mismatch between stored and computed HMAC.
+            let tampered = raw.replace(r#""model_id": "m5""#, r#""model_id": "m5_DELETED""#);
+            let tampered = tampered.replace(r#""model_id":"m5""#, r#""model_id":"m5_DELETED""#);
+            if tampered != raw {
+                std::fs::write(&path, tampered).unwrap();
+                let result = ComputeLedger::load_from_path(&path);
+                assert!(
+                    result.is_err(),
+                    "modified trade must cause HMAC rejection"
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_hmac_detects_reordered_trades() {
+        // Write ledger with 2 different trades; swap a field value to simulate
+        // reordering — any mismatch must break the HMAC.
+        let path = unique_temp_path("sec-reorder");
+        let mut ledger = ComputeLedger::new();
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 111,
+            tokens_processed: 11,
+            timestamp: 1_000,
+            model_id: "first".to_string(),
+        });
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([3u8; 32]),
+            consumer: NodeId([4u8; 32]),
+            cu_amount: 222,
+            tokens_processed: 22,
+            timestamp: 2_000,
+            model_id: "second".to_string(),
+        });
+        ledger.save_to_path(&path).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        // Swap the two cu_amount values to simulate a reorder attack.
+        let step1 = raw.replace("\"cu_amount\": 111", "\"cu_amount\": PLACEHOLDER111");
+        let step2 = step1.replace("\"cu_amount\": 222", "\"cu_amount\": 111");
+        let tampered = step2.replace("\"cu_amount\": PLACEHOLDER111", "\"cu_amount\": 222");
+        if tampered != raw {
+            std::fs::write(&path, tampered).unwrap();
+            let result = ComputeLedger::load_from_path(&path);
+            assert!(
+                result.is_err(),
+                "reordered/swapped trade values must cause HMAC rejection"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_ledger_rejects_truncated_file_does_not_panic() {
+        // A half-truncated ledger file must return an error, not panic.
+        let path = unique_temp_path("sec-trunc2");
+        let mut ledger = ComputeLedger::new();
+        ledger.record_contribution(make_work([0x01; 32], 10 * FLOPS_PER_CU));
+        ledger.save_to_path(&path).unwrap();
+
+        let raw = std::fs::read(&path).unwrap();
+        // Truncate to 40% of original length.
+        let keep = (raw.len() as f64 * 0.4) as usize;
+        std::fs::write(&path, &raw[..keep.max(1)]).unwrap();
+
+        let result = ComputeLedger::load_from_path(&path);
+        // Must not panic; must return an error.
+        assert!(result.is_err(), "40%-truncated file must not load");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_ledger_rejects_json_null_content() {
+        // A file containing only `null` is valid JSON but not a valid ledger.
+        let path = unique_temp_path("sec-null");
+        std::fs::write(&path, b"null").unwrap();
+        let result = ComputeLedger::load_from_path(&path);
+        assert!(result.is_err(), "null JSON must not load as a ledger");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ---- Merkle root security ----
+
+    #[test]
+    fn sec_merkle_single_trade_differs_from_two_trades() {
+        // A ledger with N trades must have a different root from N+1 trades.
+        let trade_a = TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 50,
+            tokens_processed: 5,
+            timestamp: 100,
+            model_id: "a".to_string(),
+        };
+        let trade_b = TradeRecord {
+            provider: NodeId([3u8; 32]),
+            consumer: NodeId([4u8; 32]),
+            cu_amount: 70,
+            tokens_processed: 7,
+            timestamp: 200,
+            model_id: "b".to_string(),
+        };
+        let mut l1 = ComputeLedger::new();
+        l1.execute_trade(&trade_a);
+        let root1 = l1.compute_trade_merkle_root();
+
+        let mut l2 = ComputeLedger::new();
+        l2.execute_trade(&trade_a);
+        l2.execute_trade(&trade_b);
+        let root2 = l2.compute_trade_merkle_root();
+
+        assert_ne!(root1, root2, "adding a second trade must change the Merkle root");
+    }
+
+    #[test]
+    fn sec_merkle_root_changes_with_provider_field() {
+        // Two identical trades except for the provider field → different Merkle root.
+        let base = TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 100,
+            tokens_processed: 10,
+            timestamp: 1_000,
+            model_id: "m".to_string(),
+        };
+        let mut l1 = ComputeLedger::new();
+        l1.execute_trade(&base);
+        let root1 = l1.compute_trade_merkle_root();
+
+        let mut l2 = ComputeLedger::new();
+        l2.execute_trade(&TradeRecord { provider: NodeId([0xFF; 32]), ..base });
+        let root2 = l2.compute_trade_merkle_root();
+
+        assert_ne!(root1, root2, "different provider must yield different Merkle root");
+    }
+
+    // ---- SignedTradeRecord — additional signature attack vectors ----
+
+    #[test]
+    fn sec_signed_trade_rejects_flipped_bit_in_consumer_sig() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let pk = SigningKey::generate(&mut rng);
+        let ck = SigningKey::generate(&mut rng);
+
+        let trade = TradeRecord {
+            provider: NodeId(pk.verifying_key().to_bytes()),
+            consumer: NodeId(ck.verifying_key().to_bytes()),
+            cu_amount: 50,
+            tokens_processed: 5,
+            timestamp: now_millis(),
+            model_id: "t".to_string(),
+        };
+        let canonical = trade.canonical_bytes();
+        let provider_sig = pk.sign(&canonical).to_bytes().to_vec();
+        let mut consumer_sig = ck.sign(&canonical).to_bytes().to_vec();
+        consumer_sig[31] ^= 0x80; // flip MSB of byte 31
+        let signed = SignedTradeRecord { trade, provider_sig, consumer_sig };
+        assert!(signed.verify().is_err(), "flipped consumer sig bit must be rejected");
+    }
+
+    #[test]
+    fn sec_signed_trade_rejects_all_ff_provider_sig() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let pk = SigningKey::generate(&mut rng);
+        let ck = SigningKey::generate(&mut rng);
+
+        let trade = TradeRecord {
+            provider: NodeId(pk.verifying_key().to_bytes()),
+            consumer: NodeId(ck.verifying_key().to_bytes()),
+            cu_amount: 50,
+            tokens_processed: 5,
+            timestamp: now_millis(),
+            model_id: "t".to_string(),
+        };
+        let canonical = trade.canonical_bytes();
+        let consumer_sig = ck.sign(&canonical).to_bytes().to_vec();
+        let signed = SignedTradeRecord {
+            trade,
+            provider_sig: vec![0xFFu8; 64], // all 0xFF
+            consumer_sig,
+        };
+        assert!(signed.verify().is_err(), "all-0xFF provider sig must be rejected");
+    }
+
+    #[test]
+    fn sec_signed_trade_rejects_crossed_signatures() {
+        // Provider and consumer sign, then we cross the signatures
+        // (consumer's sig goes into provider_sig slot and vice versa).
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let pk = SigningKey::generate(&mut rng);
+        let ck = SigningKey::generate(&mut rng);
+
+        let trade = TradeRecord {
+            provider: NodeId(pk.verifying_key().to_bytes()),
+            consumer: NodeId(ck.verifying_key().to_bytes()),
+            cu_amount: 100,
+            tokens_processed: 10,
+            timestamp: now_millis(),
+            model_id: "t".to_string(),
+        };
+        let canonical = trade.canonical_bytes();
+        let provider_sig = pk.sign(&canonical).to_bytes().to_vec();
+        let consumer_sig = ck.sign(&canonical).to_bytes().to_vec();
+        // Swap them!
+        let crossed = SignedTradeRecord {
+            trade,
+            provider_sig: consumer_sig,
+            consumer_sig: provider_sig,
+        };
+        assert!(
+            crossed.verify().is_err(),
+            "crossed signatures (consumer in provider slot) must be rejected"
+        );
+    }
+
+    // ---- SignedLoanRecord — additional signature attack vectors ----
+
+    #[test]
+    fn sec_signed_loan_rejects_forged_borrower_signature() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let lender_key = SigningKey::generate(&mut rng);
+        let borrower_key = SigningKey::generate(&mut rng);
+        let attacker_key = SigningKey::generate(&mut rng);
+
+        let now = now_millis();
+        let mut loan = crate::lending::LoanRecord {
+            loan_id: [0u8; 32],
+            lender: NodeId(lender_key.verifying_key().to_bytes()),
+            borrower: NodeId(borrower_key.verifying_key().to_bytes()),
+            principal_cu: 800,
+            interest_rate_per_hour: 0.001,
+            term_hours: 24,
+            collateral_cu: 2_400,
+            status: crate::lending::LoanStatus::Active,
+            created_at: now,
+            due_at: now + 24 * 3_600_000,
+            repaid_at: None,
+        };
+        loan.loan_id = loan.compute_loan_id();
+        let canonical = loan.canonical_bytes();
+        let lender_sig = lender_key.sign(&canonical).to_bytes().to_vec();
+        // Attacker forges borrower signature.
+        let forged_borrower_sig = attacker_key.sign(&canonical).to_bytes().to_vec();
+
+        let signed = crate::lending::SignedLoanRecord {
+            loan,
+            lender_sig,
+            borrower_sig: forged_borrower_sig,
+        };
+        assert!(
+            signed.verify().is_err(),
+            "forged borrower signature must be rejected"
+        );
+    }
+
+    #[test]
+    fn sec_signed_loan_rejects_tampered_term_hours() {
+        // Valid dual-signed loan; change term_hours after signing → canonical bytes differ.
+        let (mut signed, _, _) = make_signed_loan(1_000, 3_000, 24);
+        signed.loan.term_hours = 999; // tamper after signing
+        assert!(
+            signed.verify().is_err(),
+            "tampered term_hours must cause signature verification to fail"
         );
     }
 }

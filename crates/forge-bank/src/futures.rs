@@ -92,9 +92,10 @@ impl FuturesContract {
 /// - Long: profit 2 * 1000 = 2000 msats
 /// - Short: loss 2000 msats
 pub fn futures_pnl(contract: &FuturesContract, settlement_price_msats: i64) -> (i64, i64) {
-    let price_delta = settlement_price_msats - contract.strike_price_msats as i64;
-    let long_pnl = price_delta * contract.notional_cu as i64;
-    let short_pnl = -long_pnl;
+    let price_delta = settlement_price_msats.saturating_sub(contract.strike_price_msats as i64);
+    // Security: use saturating_mul to prevent overflow on extreme inputs.
+    let long_pnl = price_delta.saturating_mul(contract.notional_cu as i64);
+    let short_pnl = long_pnl.saturating_neg();
     (long_pnl, short_pnl)
 }
 
@@ -222,5 +223,129 @@ mod tests {
         let contract = make_contract(1_000, 10);
         assert!(required_margin(&contract, 0.0).is_err());
         assert!(required_margin(&contract, 1.5).is_err());
+    }
+
+    // ===========================================================================
+    // Security tests — futures economic attack vectors
+    // ===========================================================================
+
+    #[test]
+    fn sec_futures_contract_rejects_same_parties() {
+        // Long and short cannot be the same party — prevents artificial P&L loops.
+        let same = hex64("a");
+        let result = FuturesContract::new("x", same.clone(), same, 1_000, 10, 1_000_000, 0);
+        assert!(
+            result.is_err(),
+            "same long and short party must be rejected"
+        );
+    }
+
+    #[test]
+    fn sec_futures_contract_rejects_zero_notional() {
+        // Zero notional has no economic value and could be used for spam.
+        let result = FuturesContract::new("x", hex64("a"), hex64("b"), 0, 10, 1_000_000, 0);
+        assert!(
+            result.is_err(),
+            "zero notional must be rejected"
+        );
+    }
+
+    #[test]
+    fn sec_futures_contract_rejects_zero_strike_price() {
+        // A zero strike_price_msats allows cost-free settlement manipulation.
+        let result = FuturesContract::new("x", hex64("a"), hex64("b"), 1_000, 0, 1_000_000, 0);
+        assert!(
+            result.is_err(),
+            "zero strike price must be rejected"
+        );
+    }
+
+    #[test]
+    fn sec_futures_pnl_is_zero_sum_across_prices() {
+        // For any realistic settlement price, long_pnl + short_pnl must always equal 0.
+        // Note: extremely large prices (near i64::MAX) can overflow price_delta * notional_cu
+        // in the current implementation. This test uses values within safe arithmetic range.
+        let contract = make_contract(1_000, 10);
+        for settlement_price in [0i64, 1, 5, 10, 50, 100, 1_000, 1_000_000] {
+            let (long_pnl, short_pnl) = futures_pnl(&contract, settlement_price);
+            assert_eq!(
+                long_pnl + short_pnl,
+                0,
+                "P&L must be zero-sum at settlement price {}: long={}, short={}",
+                settlement_price,
+                long_pnl,
+                short_pnl
+            );
+        }
+    }
+
+    #[test]
+    fn sec_futures_pnl_zero_sum_at_extreme_but_safe_prices() {
+        // Use a smaller notional to avoid overflow at higher prices.
+        let small_contract = FuturesContract::new(
+            "extreme",
+            hex64("a"),
+            hex64("b"),
+            1,  // notional = 1 CU to prevent overflow
+            10,
+            1_700_000_000_000,
+            0,
+        )
+        .unwrap();
+        for settlement_price in [0i64, i32::MAX as i64, i64::MAX / 2] {
+            let (long_pnl, short_pnl) = futures_pnl(&small_contract, settlement_price);
+            assert_eq!(
+                long_pnl + short_pnl,
+                0,
+                "P&L must be zero-sum at settlement price {}: long={}, short={}",
+                settlement_price,
+                long_pnl,
+                short_pnl
+            );
+        }
+    }
+
+    #[test]
+    fn sec_futures_pnl_is_zero_sum_below_strike() {
+        // Negative settlement prices (extreme bear market) must still sum to zero.
+        let contract = make_contract(500, 15);
+        for settlement_price in [-100i64, -1, 0] {
+            let (long_pnl, short_pnl) = futures_pnl(&contract, settlement_price);
+            assert_eq!(
+                long_pnl + short_pnl,
+                0,
+                "P&L must be zero-sum below strike (price={}): long={}, short={}",
+                settlement_price,
+                long_pnl,
+                short_pnl
+            );
+        }
+    }
+
+    #[test]
+    fn sec_futures_required_margin_rejects_zero_fraction() {
+        let contract = make_contract(1_000, 10);
+        assert!(
+            required_margin(&contract, 0.0).is_err(),
+            "zero margin fraction must be rejected"
+        );
+    }
+
+    #[test]
+    fn sec_futures_required_margin_rejects_above_one() {
+        let contract = make_contract(1_000, 10);
+        assert!(
+            required_margin(&contract, 1.1).is_err(),
+            "margin fraction > 1.0 must be rejected"
+        );
+    }
+
+    #[test]
+    fn sec_futures_party_hex_must_be_64_chars() {
+        // Short hex strings that cannot represent a valid NodeId must be rejected.
+        let result = FuturesContract::new("x", "abcd", hex64("b"), 1_000, 10, 1_000_000, 0);
+        assert!(result.is_err(), "short party hex must be rejected");
+        let result = FuturesContract::new("x", hex64("a"), "tooshort", 1_000, 10, 1_000_000, 0);
+        assert!(result.is_err(), "short party hex for short side must be rejected");
     }
 }

@@ -718,4 +718,159 @@ mod tests {
         assert!(state.seen_count() <= 200);
         assert!(state.seen_count() > 0);
     }
+
+    // =========================================================================
+    // Security tests: Gossip dedup prevents replay attacks
+    // =========================================================================
+
+    #[test]
+    fn sec_gossip_trade_dedup_prevents_replay() {
+        // The same signed trade presented twice must be deduplicated:
+        // the second call to mark_seen returns false (already seen).
+        let mut state = GossipState::new();
+        let signed = make_signed_trade();
+
+        let first = state.mark_seen(&signed);
+        let second = state.mark_seen(&signed);
+
+        assert!(first, "first presentation of a trade must be accepted (new)");
+        assert!(!second, "second presentation of the same trade must be rejected (replay)");
+        // Only one unique entry must be stored.
+        assert_eq!(state.seen_count(), 1, "dedup set must contain exactly one entry");
+    }
+
+    #[test]
+    fn sec_gossip_loan_dedup_prevents_replay() {
+        // The same signed loan presented twice must be deduplicated.
+        let mut state = GossipState::new();
+        let loan = forge_ledger::LoanRecord {
+            loan_id: [0xCA; 32],
+            lender: NodeId([1u8; 32]),
+            borrower: NodeId([2u8; 32]),
+            principal_cu: 1_000,
+            interest_rate_per_hour: 0.001,
+            term_hours: 24,
+            collateral_cu: 3_000,
+            status: forge_ledger::LoanStatus::Active,
+            created_at: now_millis(),
+            due_at: now_millis() + 24 * 3_600_000,
+            repaid_at: None,
+        };
+        let signed = SignedLoanRecord {
+            loan,
+            lender_sig: vec![0u8; 64],
+            borrower_sig: vec![0u8; 64],
+        };
+
+        let first = state.mark_loan_seen(&signed);
+        let second = state.mark_loan_seen(&signed);
+
+        assert!(first, "first presentation of a loan must be accepted (new)");
+        assert!(!second, "second presentation of the same loan must be rejected (replay)");
+        assert_eq!(state.seen_loan_count(), 1, "loan dedup set must contain exactly one entry");
+    }
+
+    #[test]
+    fn sec_gossip_reputation_dedup_prevents_replay() {
+        // The same reputation observation key presented twice must be deduplicated.
+        let mut state = GossipState::new();
+        let obs = forge_proto::ReputationObservation {
+            observer: NodeId([0xAA; 32]),
+            subject: NodeId([0xBB; 32]),
+            reputation: 0.75,
+            trade_count: 10,
+            total_cu_volume: 1_000,
+            timestamp_ms: 9_999_000,
+            signature: vec![],
+        };
+        let key = obs.dedup_key();
+
+        let first = state.mark_reputation_seen(&key);
+        let second = state.mark_reputation_seen(&key);
+
+        assert!(first, "first reputation observation must be new");
+        assert!(!second, "second identical reputation observation must be deduplicated (replay blocked)");
+        assert_eq!(state.seen_reputation_count(), 1);
+    }
+
+    #[test]
+    fn sec_gossip_different_trades_both_accepted() {
+        // Two structurally different trades must each be treated as new.
+        let mut state = GossipState::new();
+        let t1 = make_signed_trade();
+        let t2 = make_signed_trade(); // different keys → different canonical hash
+
+        let first = state.mark_seen(&t1);
+        let second = state.mark_seen(&t2);
+
+        assert!(first, "first trade must be new");
+        assert!(second, "second (different) trade must also be new");
+        assert_eq!(state.seen_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn sec_gossip_invalid_provider_sig_rejected_end_to_end() {
+        // A TradeGossip with an all-zero provider signature must be rejected
+        // by handle_trade_gossip (verify() fails → returns None).
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let msg = TradeGossip {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 100,
+            tokens_processed: 10,
+            timestamp: now_millis(),
+            model_id: "sec".to_string(),
+            provider_sig: vec![0u8; 64], // all-zero → invalid
+            consumer_sig: vec![0u8; 64],
+        };
+        let result = handle_trade_gossip(&gossip, &msg).await;
+        assert!(
+            result.is_none(),
+            "gossip trade with all-zero signatures must be rejected"
+        );
+        // Critically, the dedup set must remain EMPTY — an invalid trade must
+        // not be "remembered" as seen, which would allow an attacker to poison
+        // the dedup cache and block legitimate trades with the same canonical bytes.
+        // (The current implementation only marks as seen AFTER verification passes.)
+        assert_eq!(
+            gossip.lock().await.seen_count(),
+            0,
+            "invalid trade must not be added to the dedup cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn sec_gossip_all_ff_consumer_sig_rejected() {
+        // All-0xFF consumer signature — must fail verification.
+        use ed25519_dalek::SigningKey;
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+
+        // Build a valid trade and sign only the provider side.
+        let trade = forge_ledger::TradeRecord {
+            provider: NodeId(provider_key.verifying_key().to_bytes()),
+            consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+            cu_amount: 200,
+            tokens_processed: 20,
+            timestamp: now_millis(),
+            model_id: "sec2".to_string(),
+        };
+        let canonical = trade.canonical_bytes();
+        let provider_sig = provider_key.sign(&canonical).to_bytes().to_vec();
+
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let msg = TradeGossip {
+            provider: trade.provider.clone(),
+            consumer: trade.consumer.clone(),
+            cu_amount: trade.cu_amount,
+            tokens_processed: trade.tokens_processed,
+            timestamp: trade.timestamp,
+            model_id: trade.model_id.clone(),
+            provider_sig,
+            consumer_sig: vec![0xFFu8; 64], // all-0xFF → invalid
+        };
+        let result = handle_trade_gossip(&gossip, &msg).await;
+        assert!(result.is_none(), "all-0xFF consumer sig must be rejected by gossip handler");
+    }
 }
