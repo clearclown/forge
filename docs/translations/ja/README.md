@@ -2,7 +2,7 @@
 
 # Forge
 
-**計算は通貨である。すべてのワットは廃棄物ではなく知能を生み出す。**
+**計算は通貨である。すべての電力は廃棄物でなく知能を生む。**
 
 [![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
 [![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
@@ -15,314 +15,360 @@
 
 </div>
 
-**Forgeは、計算能力がお金となる分散型推論プロトコルです。** ノードは他者のために有用なLLM推論を実行することで、計算ユニット（CU: Compute Unit）を獲得します。無意味なハッシュ計算に電力を消費するBitcoinとは異なり、Forgeノードで費やされるすべてのジュールは、誰かが実際に必要としている本物の知能を生み出します。
+Forge は、**計算能力そのものが通貨になる**分散型 LLM 推論 (inference) プロトコルです。ノードは他のノードのために LLM 推論を実行し、その対価として Compute Unit (CU) を獲得します。1 CU = 10⁹ FLOP の検証済み有用計算 (parameters.md §1)。OpenAI 互換 API を完全サポートし、426 テスト / 95 アサーション GREEN、5 層エコシステム全体で 326 テスト合格済みです。
 
-分散型推論エンジンは、Michael Neale氏による [mesh-llm](https://github.com/michaelneale/mesh-llm) に基づいて構築されています。Forgeはその上に、CU会計、有益な仕事の証明（Proof of Useful Work）、動的価格設定、自律エージェント予算、およびフェイルセーフ制御といった計算経済層を追加します。[CREDITS.md](../../../CREDITS.md) を参照してください。
+分散推論エンジンは Michael Neale 氏の [mesh-llm](https://github.com/michaelneale/mesh-llm) を基盤とし、その上に Forge 独自の経済層 — CU 台帳、Proof of Useful Work、動的価格設定、AI 自律予算管理、フェイルセーフ制御 — を構築しています。詳細は [CREDITS.md](../../../CREDITS.md) を参照してください。
 
-**統合フォーク:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — Forge経済層が組み込まれたmesh-llm。
+---
 
-## ライブデモ
+## 30 秒デモ
 
-これは稼働中のForgeノードからの実際の出力です。すべての推論にはCUコストがかかります。すべてのCUは有用な計算によって獲得されます。
-
-```
-$ forge node -m "qwen2.5:0.5b" --ledger forge-ledger.json
-  Model loaded: Qwen2.5-0.5B (Metal-accelerated, 491MB)
-  API server listening on 127.0.0.1:3000
+```bash
+git clone https://github.com/clearclown/forge && cd forge
+bash scripts/demo-e2e.sh
 ```
 
-**残高確認 — すべての新しいノードは1,000 CUの無料枠を受け取ります:**
-```
-$ curl localhost:3000/v1/forge/balance
-{
-  "effective_balance": 1000,
-  "contributed": 0,
-  "consumed": 0,
-  "reputation": 0.5
-}
-```
-
-**質問する — 推論にはCUコストがかかります:**
-```
-$ curl localhost:3000/v1/chat/completions \
-    -d '{"messages":[{"role":"user","content":"日本語で挨拶して"}]}'
-{
-  "choices": [{"message": {"content": "こんにちは！ (konnichiwa!)"}}],
-  "usage": {"completion_tokens": 9},
-  "x_forge": {
-    "cu_cost": 9,
-    "effective_balance": 1009
-  }
-}
-```
-
-すべてのレスポンスには `x_forge` — **その計算のCUコスト** と残高が含まれます。プロバイダーは9 CUを獲得し、消費者は9 CUを支払いました。すべてのユニットは物理学（電力消費）に裏打ちされています。
-
-**3回の推論後 — 台帳上の実際の取引:**
-```
-$ curl localhost:3000/v1/forge/trades
-{
-  "count": 3,
-  "trades": [
-    {"cu_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"cu_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"cu_amount": 9, "tokens_processed": 9, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"}
-  ]
-}
-```
-
-**すべての取引はマークルルートを持ち、不変の証明のためにBitcoinにアンカー可能です:**
-```
-$ curl localhost:3000/v1/forge/network
-{
-  "total_trades": 3,
-  "total_contributed_cu": 19,
-  "merkle_root": "aac8db9f62dd9ff23926195a70ed8fcfc188fc867d9f2adabd8e694beb338748"
-}
-```
-
-**AIエージェントが暴走した？キルスイッチがミリ秒単位ですべてを凍結します:**
-```
-$ curl -X POST localhost:3000/v1/forge/kill \
-    -d '{"activate":true, "reason":"anomaly detected", "operator":"admin"}'
-→ KILL SWITCH ACTIVATED
-→ すべてのCUトランザクションを凍結。エージェントは支出不能。
-```
-
-**安全制御は常にオン:**
-```
-$ curl localhost:3000/v1/forge/safety
-{
-  "kill_switch_active": false,
-  "circuit_tripped": false,
-  "policy": {
-    "max_cu_per_hour": 10000,
-    "max_cu_per_request": 1000,
-    "max_cu_lifetime": 1000000,
-    "human_approval_threshold": 5000
-  }
-}
-```
-
-## Forgeが存在する理由
+Apple Silicon Metal GPU で検証済み (2026-04-09)。SmolLM2-135M (~100 MB) を HuggingFace から自動ダウンロードし、リアルノードを起動して全 Phase 1–12 エンドポイントを実行します。設定・API キー・アカウント登録は不要です。
 
 ```
-Bitcoin:  電力  →  無意味なSHA-256  →  BTC
-Forge:    電力  →  有用なLLM推論    →  CU
+✓ ノード PID 26860、モデル読み込み完了 (SmolLM2-135M on Metal)
+✓ 実際の推論 3 回完了 — contributed=41 CU
+✓ マークルルート: 094f694...                  ← 改ざん検知可能な台帳証明
+✓ Bitcoin OP_RETURN ペイロード生成済み        ← 外部アンカー可能
+✓ Prometheus /metrics: forge_trade_count_total 3
+✓ L2/L3/L4 全エンドポイント応答確認
 ```
 
-Bitcoinは「電力 → 計算 → お金」を証明しました。しかし、Bitcoinの計算には目的がありません。Forgeはそれを反転させます。すべてのCUは、誰かの実際の問題を解決した本物の知能を表しています。
+デモ完了後、同じノードで OpenAI 互換クライアントがそのまま動作します。
 
-**他のプロジェクトにはない4つの特徴:**
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+export OPENAI_API_KEY=$(cat ~/.forge/api_token 2>/dev/null || echo "$TOKEN")
+
+# リアルタイムストリーミング (Phase 11 実装)
+curl -N $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"こんにちは"}],"stream":true}'
+
+# 残高確認 / Bitcoin アンカー / Prometheus メトリクス
+curl $OPENAI_BASE_URL/forge/balance   -H "Authorization: Bearer $OPENAI_API_KEY"
+curl $OPENAI_BASE_URL/forge/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
+curl http://127.0.0.1:3001/metrics    # 認証不要 (Prometheus スクレイプ用)
+```
+
+---
+
+## なぜ Forge か 🔥
+
+```
+Bitcoin:  電力  →  無意味な SHA-256  →  BTC  (仕事は無価値)
+Forge:    電力  →  有用な LLM 推論  →  CU   (仕事が価値そのもの)
+```
+
+Bitcoin は「電力 → 計算 → 通貨」を世界に証明しました。ただし Bitcoin の計算自体には目的がありません。Forge はその構造を反転させます。すべての CU は、誰かの実際の問いに答えた本物の知能の証拠です。
 
 ### 1. 計算 = 通貨
 
-すべての推論は取引です。プロバイダーはCUを獲得し、消費者はCUを支払います。ブロックチェーンも、トークンも、ICOもありません。CUは物理学、つまり有用な仕事のために消費された電力によって裏打ちされています。
+推論リクエスト 1 件が 1 件の取引 (trade) です。プロバイダーは CU を獲得し、コンシューマーは CU を支払います。ブロックチェーン不要、トークン不要、ICO なし。CU は取引所で売買できません。獲得するには有用な計算を実行するしかありません。これが投機を構造的に不可能にする設計です。
 
-### 2. ブロックチェーンなしで改ざん防止
+### 2. ブロックチェーンなしの改ざん耐性
 
-すべての取引は双方によって二重署名（Ed25519）され、メッシュ全体でゴシップ同期されます。すべての取引のマークルルートは、不変の監査のためにBitcoinにアンカーできます。グローバルなコンセンサスは不要で、二者間の暗号学的証明で十分です。
+すべての取引は両当事者が Ed25519 で二重署名し、メッシュ全体にゴシップ (gossip) 伝播します。全取引のマークルルートは Bitcoin に OP_RETURN アンカーできます。グローバル合意は不要で、双方向の暗号証明で十分です。
 
-### 3. AIエージェントが自ら計算資源を管理
+### 3. AI エージェントが自ら予算を管理
 
-スマートフォンのエージェントが夜間にアイドル計算能力を貸し出す → CUを獲得 → 70Bモデルへのアクセスを購入 → より賢くなる → さらに稼ぐ。エージェントは自律的に `/v1/forge/balance` と `/v1/forge/pricing` を確認します。予算ポリシーとサーキットブレーカーが制御不能な支出を防ぎます。
+スマートフォン上のエージェントが夜間にアイドル計算を提供して CU を稼ぎ、翌朝に 70B モデルへのアクセスを買って賢くなり、さらに稼ぐ。このサイクルを `/v1/forge/balance` と `/v1/forge/pricing` を読んで自律的に回します。予算ポリシーとサーキットブレーカーが暴走支出を防ぎます。
 
 ```
-エージェント (スマホ上の1.5Bモデル)
-  → 夜間に推論を提供してCUを稼ぐ
-  → 70BモデルにCUを支払う → より賢い回答を得る
-  → より良い意思決定 → さらにCUを稼ぐ
-  → サイクルが繰り返される → エージェントが成長する
+エージェント (スマホ上 1.5B モデル)
+  → 夜間に推論を提供して CU を獲得
+  → 70B モデルに CU を支払う → より深い回答を得る
+  → より良い判断 → さらに多くの CU を稼ぐ
+  → このループが繰り返される → エージェントが自律的に成長
 ```
 
 ### 4. 計算マイクロファイナンス
 
-ノードはアイドル状態のCUを他のノードに利息付きで貸し出すことができます。小規模ノードがCUを借り入れ、より大きなモデルにアクセスし、さらに多くのCUを獲得し、利息付きで返済します。他の分散型推論プロジェクトでは計算貸付を提供していません — この分野のすべての主要プロジェクトを競合分析した結果、確認されています。これは、強力なハードウェアをすでに所有している人だけでなく、誰にとっても自己改善ループを経済的に実現可能にするエンジンです。
+アイドル CU を他のノードに利息付きで貸し出せます。小さなノードが CU を借りて大きなモデルにアクセスし、稼いで返済する。他のどの分散推論プロジェクトにも存在しない機能です。強力なハードウェアを持つ人だけでなく、誰でも自己改善ループに参加できる経済インフラです。
 
-## アーキテクチャ
+---
+
+## 5 層アーキテクチャ
 
 ```
-┌─────────────────────────────────────────────────┐
-│  L4: ディスカバリ (forge-agora)                 │
-│  エージェントマーケットプレイス、評判集約、       │
-│  Nostr NIP-90、Google A2A決済拡張                │
-├─────────────────────────────────────────────────┤
-│  L3: インテリジェンス (forge-mind)              │
-│  AutoAgent自己改善ループ、                       │
-│  ハーネスマーケットプレイス、メタ最適化           │
-├─────────────────────────────────────────────────┤
-│  L2: ファイナンス (forge-bank)                  │
-│  CU貸付、利回り最適化、信用スコアリング           │
-├─────────────────────────────────────────────────┤
-│  L1: 経済 (forge — このリポジトリ)              │
-│  CU台帳、二重署名取引、動的価格設定、             │
-│  貸付プリミティブ、安全制御                      │
-├─────────────────────────────────────────────────┤
-│  L0: 推論 (forge-mesh / mesh-llm)               │
-│  パイプライン並列化、MoEシャーディング、          │
-│  irohメッシュ、Nostrディスカバリ、MLX/llama.cpp   │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  L4: ディスカバリ (forge-agora) ✅ v0.1                 │
+│  エージェントマーケットプレイス、評判 (reputation) 集約、 │
+│  Nostr NIP-90 データ自動販売機、A2A 決済拡張             │
+├─────────────────────────────────────────────────────────┤
+│  L3: インテリジェンス (forge-mind) ✅ v0.1              │
+│  AutoAgent スタイルの自己改善ループ (CU で課金)、        │
+│  ベンチマーク、メタオプティマイザ、ROI ゲート            │
+├─────────────────────────────────────────────────────────┤
+│  L2: ファイナンス (forge-bank) ✅ v0.1                  │
+│  戦略 (Conservative / Balanced / HighYield)、           │
+│  先物 (futures)、保険、リスクモデル、yield オプティマイザ │
+├─────────────────────────────────────────────────────────┤
+│  L1: 経済 (forge — このリポジトリ) ✅ Phase 1–12        │
+│  CU 台帳、二重署名取引、動的価格設定、貸付、安全制御、    │
+│  Prometheus /metrics、Bitcoin OP_RETURN アンカー         │
+├─────────────────────────────────────────────────────────┤
+│  L0: 推論 (forge-mesh / mesh-llm) ✅                    │
+│  パイプライン並列化、MoE シャーディング、iroh QUIC メッシュ│
+│  Nostr ディスカバリ、MLX / llama.cpp バックエンド         │
+└─────────────────────────────────────────────────────────┘
+
+5 層すべて実装済み。エコシステム全体で 326 テスト合格。
 ```
+
+---
 
 ## クイックスタート
 
-### 方法1: Python（最速）
+### Option 1: エンドツーエンドデモ (推奨 — 約 30 秒)
 
 ```bash
-pip install forge-sdk
+git clone https://github.com/clearclown/forge && cd forge
+bash scripts/demo-e2e.sh
+```
+
+全 Phase 1–12 エンドポイントを実際のデータで確認できます。
+
+### Option 2: Python SDK
+
+```bash
+pip install forge-sdk forge-cu-mcp
 ```
 
 ```python
-from forge_sdk import ForgeNode
+from forge_sdk import ForgeClient
 
-node = ForgeNode(model="qwen2.5:0.5b")
-response = node.chat("重力とは何ですか？")
-print(f"コスト: {response.cu_cost} CU")
+c = ForgeClient(base_url="http://localhost:3001")
+print("残高:", c.balance())      # CU 残高を確認
+print("推奨行動:", c.bank_tick()) # L2 ポートフォリオマネージャーの判断
 ```
 
-> [PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) · [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/)
+[PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) — L2/L3/L4 を含む 20 メソッド  
+[PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/) — Claude Code / Cursor 向け 20 MCP ツール
 
-### 方法2: Rust（フルコントロール）
+### Option 3: Rust CLI
 
-> **前提条件**: [Rustをインストール](https://rustup.rs/)（約2分）
+**前提条件**: [Rust をインストール](https://rustup.rs/) (約 2 分)
 
 ```bash
-# ソースからビルド
 cargo build --release
 
-# 自動ダウンロードされたモデルでノードを実行
-./target/release/forged node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# ノードを起動 — モデルは HuggingFace から自動ダウンロード
+./target/release/forge node -m "qwen2.5:0.5b" --ledger forge-ledger.json
 
 # ローカルでチャット
-./target/release/forge chat -m "qwen2.5:0.5b" "重力とは何ですか？"
+./target/release/forge chat -m "smollm2:135m" "重力とは何ですか？"
 
-# シードを開始 (P2P、CUを稼ぐ)
-./target/release/forge seed -m "qwen2.5:0.5b" --ledger forge-ledger.json
+# シードノードとして起動 (P2P で推論を提供して CU を稼ぐ)
+./target/release/forge seed -m "qwen2.5:1.5b"
 
-# ワーカーとして接続 (P2P、CUを支払う)
+# ワーカーとして接続 (P2P でシードから推論を購入)
 ./target/release/forge worker --seed <public_key>
 
-# モデル一覧を表示
+# 登録済みモデル一覧を確認
 ./target/release/forge models
 ```
 
-> [Crates.io: forge](https://crates.io/crates/forge) · [Rustインストールガイド](https://rustup.rs/)
+[Crates.io: forge](https://crates.io/crates/forge) · [互換性ドキュメント](../../compatibility.md) · [デモスクリプト](../../../scripts/demo-e2e.sh)
 
-### 方法3: ビルド済みバイナリ
+### Option 4: Docker / ビルド済みバイナリ
 
-ビルド済みバイナリは近日公開予定です。[リリースページ](../../../releases)をご覧ください。
+ビルド済みバイナリと `clearclown/forge:latest` Docker イメージは [リリースページ](https://github.com/clearclown/forge/releases) で管理されています。現時点では Option 1 がソースから 2 分以内でビルドできます。
 
-### 方法4: Docker
+---
 
-```bash
-# 近日公開予定
-docker run -p 3000:3000 clearclown/forge:latest
-```
+## API リファレンス
 
-## APIリファレンス
-
-### 推論 (OpenAI互換)
+### 推論 — OpenAI 互換
 
 | エンドポイント | 説明 |
-|----------|-------------|
-| `POST /v1/chat/completions` | ストリーミング対応チャット。すべてのレスポンスに `x_forge.cu_cost` を含む |
-| `GET /v1/models` | ロードされたモデルの一覧 |
+|---|---|
+| `POST /v1/chat/completions` | ストリーミング対応チャット。レスポンスに `x_forge.cu_cost` を含む |
+| `GET /v1/models` | ロード済みモデル一覧 |
 
 ### 経済
 
 | エンドポイント | 説明 |
-|----------|-------------|
-| `GET /v1/forge/balance` | CU残高、評判、貢献履歴 |
-| `GET /v1/forge/pricing` | 市場価格 (EMA平滑化)、コスト見積もり |
-| `GET /v1/forge/trades` | 最近の取引とCU量 |
-| `GET /v1/forge/network` | 総CUフロー + マークルルート |
-| `GET /v1/forge/providers` | 評判とコストでランク付けされたプロバイダー |
-| `POST /v1/forge/invoice` | CU残高からLightningインボイスを作成 |
-| `GET /v1/forge/route` | 最適なプロバイダー選択（コスト/品質/バランス） |
-| `GET /settlement` | エクスポート可能な決済明細 |
+|---|---|
+| `GET /v1/forge/balance` | CU 残高、評判スコア、貢献履歴 |
+| `GET /v1/forge/pricing` | 市場価格 (EMA 平滑化)、需給状況、コスト見積もり |
+| `GET /v1/forge/trades` | 最近の取引一覧 (プロバイダー / CU 量 / トークン数) |
+| `GET /v1/forge/network` | メッシュ全体の CU フロー + マークルルート |
+| `GET /v1/forge/providers` | 評判・コスト調整済みのプロバイダーランキング (エージェントルーティング用) |
+| `POST /v1/forge/invoice` | CU 残高から Lightning インボイスを作成 |
+| `GET /v1/forge/route` | 最適プロバイダー選択 (cost / quality / balanced モード) |
+| `GET /settlement` | 決済明細エクスポート (マークルルート付き) |
+| `GET /v1/forge/anchor` | Bitcoin OP_RETURN アンカースクリプト生成 |
+| `GET /metrics` | Prometheus スクレイプエンドポイント (認証不要) |
 
-### 貸付
+### 貸付 (Lending)
 
 | エンドポイント | 説明 |
-|----------|-------------|
-| `POST /v1/forge/lend` | 貸付プールにCUを提供 |
-| `POST /v1/forge/borrow` | CUローンを申請 |
+|---|---|
+| `POST /v1/forge/lend` | 貸付プールに CU を提供 |
+| `POST /v1/forge/borrow` | CU ローンを申請 |
+| `POST /v1/forge/lend-to` | 貸し手主導で特定ノードにローンを提案 |
 | `POST /v1/forge/repay` | 未返済ローンを返済 |
-| `GET /v1/forge/credit` | 信用スコアと履歴 |
-| `GET /v1/forge/pool` | 貸付プールの状態 |
-| `GET /v1/forge/loans` | アクティブなローン |
+| `GET /v1/forge/credit` | 信用スコアと返済履歴 |
+| `GET /v1/forge/pool` | 貸付プールの状態 (利用可能残高 / 利用率 / 平均金利) |
+| `GET /v1/forge/loans` | 自ノードのアクティブローン一覧 |
 
-### 安全
+### 安全制御
 
 | エンドポイント | 説明 |
-|----------|-------------|
-| `GET /v1/forge/safety` | キルスイッチの状態、サーキットブレーカー、予算ポリシー |
-| `POST /v1/forge/kill` | 緊急停止 — すべてのCUトランザクションを凍結 |
-| `POST /v1/forge/policy` | エージェントごとの予算制限を設定 |
+|---|---|
+| `GET /v1/forge/safety` | キルスイッチ状態、サーキットブレーカー、予算ポリシー |
+| `POST /v1/forge/kill` | 緊急停止 — 全 CU トランザクションを即時凍結 |
+| `POST /v1/forge/policy` | エージェントごとの予算上限を設定 |
+
+### L2/L3/L4 レイヤー
+
+| エンドポイント | 説明 |
+|---|---|
+| `POST /v1/forge/bank/tick` | L2 ポートフォリオマネージャーを実行して最適行動を返す |
+| `GET /v1/forge/bank/risk` | VaR 99% リスクモデルの現在値 |
+| `POST /v1/forge/mind/improve` | L3 自己改善サイクルを 1 回実行 (CU を消費) |
+| `GET /v1/forge/agora/find` | L4 エージェントマーケットプレイスでケーパビリティを検索 |
+| `GET /v1/forge/collusion/{hex}` | 共謀検知スコアとトラストペナルティのデバッグ |
+| `POST /v1/forge/admin/save-state` | L2/L3/L4 状態を JSON スナップショットに永続化 |
+
+全エンドポイントはレート制限付き (トークンバケット、30 req/sec)。`/metrics` のみ制限除外。
+
+---
 
 ## 安全設計
 
-AIエージェントが自律的に計算資源を消費することは強力ですが危険です。Forgeには5つの安全層があります。
+AI エージェントが自律的に計算を消費する設計は強力である反面、制御を誤ると致命的です。Forge は 5 層の安全機構を持ちます。
 
-| 層 | メカニズム | 保護対象 |
-|-------|-----------|------------|
-| **キルスイッチ** | オペレーターが即座にすべての取引を凍結 | エージェントの暴走を停止 |
-| **予算ポリシー** | エージェントごとの制限：リクエストごと、時間、生涯 | 総露出額を制限 |
-| **サーキットブレーカー** | 5回のエラーまたは毎分30回以上の支出で自動発動 | 異常を検知 |
-| **速度検出** | 1分間のスライディングウィンドウによる支出率監視 | バースト支出を防止 |
-| **人間の承認** | しきい値を超える取引には人間の承認が必要 | 高額支出を保護 |
+| 層 | メカニズム | 保護内容 |
+|---|---|---|
+| **キルスイッチ** | オペレーターが全取引をミリ秒単位で凍結 | エージェント暴走の即時停止 |
+| **予算ポリシー** | リクエストごと・時間あたり・生涯の上限をエージェント単位で設定 | 総被曝量の制限 |
+| **サーキットブレーカー** | 5 回のエラー or 毎分 30 件超の支出で自動トリップ | 異常パターンの検知 |
+| **速度検出** | 1 分間スライディングウィンドウで支出レートを監視 | バースト支出の抑制 |
+| **人間承認閾値** | 設定額を超えるトランザクションはオペレーター承認が必要 | 高額支出の最終防衛線 |
 
-設計原則: **フェイルセーフ**。安全性を判断できない場合は、アクションを**拒否**します。
+設計原則: **フェイルセーフ (fail-safe)**。安全性を判断できない場合、常にアクションを**拒否**します。
 
-## アイデア
+---
 
-| 時代 | 基準 | 裏打ち |
-|-----|----------|---------|
-| 古代 | 金 | 地質学的な希少性 |
-| 1944–1971 | ブレトン・ウッズ | 金に固定された米ドル |
+## 他ツールとの比較
+
+| 特性 | **Forge** | Ollama | llama-server | Bittensor | Akash |
+|---|---|---|---|---|---|
+| LLM 推論 (GGUF / llama.cpp) | ✅ | ✅ | ✅ | 独自 | Docker |
+| OpenAI 互換 API | ✅ | ✅ | ✅ | ❌ | ❌ |
+| P2P メッシュ (iroh QUIC) | ✅ | ❌ | ❌ | 独自 | ❌ |
+| リクエスト単位の CU 計量 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 双方向署名取引台帳 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 計算貸付 (lending pool) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| AI 自律予算管理 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 評判ゴシップ + 共謀検知 | ✅ | ❌ | ❌ | △ | ❌ |
+| Bitcoin OP_RETURN アンカー | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Prometheus /metrics | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 投機トークンなし | ✅ | — | — | ❌ (TAO) | ❌ (AKT) |
+
+Forge の立場: 既存の競合はいずれも「電力を無意味な仕事に燃やす (Bitcoin)」「計算コストと切り離された投機トークンを使う (Bittensor, Akash)」「中央集権型商用サービスとして提供する (Together.ai)」のいずれかです。Forge だけが、計算の単位が FLOP であり、仕事の単位が推論であり、単位を増やす唯一の方法が有用な計算を実行することです。
+
+---
+
+## 理論的背景
+
+| 時代 | 基軸 | 裏打ち |
+|---|---|---|
+| 古代 | 金本位 | 地質学的希少性 |
+| 1944–1971 | ブレトン・ウッズ体制 | USD の金兌換 |
 | 1971–現在 | ペトロダラー | 石油需要 + 軍事力 |
-| 2009–現在 | Bitcoin | SHA-256へのエネルギー (無意味な仕事) |
-| **現在** | **計算本位制 (Compute Standard)** | **LLM推論へのエネルギー (有用な仕事)** |
+| 2009–現在 | Bitcoin | SHA-256 へのエネルギー (無意味な仕事) |
+| **現在** | **計算本位制 (Compute Standard)** | **LLM 推論へのエネルギー (有用な仕事)** |
 
-Forgeを実行しているMac Miniが並んだ部屋は、オーナーが眠っている間に有用な仕事を遂行して収益を生み出すアパートのようなものです。
+ソディ (Frederick Soddy) は 1920 年代に「富は流通中の実エネルギーである」と論じました。Bitcoin はそのエネルギー→通貨の変換を証明しましたが、仕事を無駄にしました。Forge は同じ変換を有用な仕事に向けます。CU は物理的な下限 (~$0.000001/CU 電力コスト) と上限 (~$0.000132/CU Mac Mini 運用コスト) を持ちます (parameters.md §9)。
+
+Mac Mini M4 1 台が Qwen2.5-7B を動かすと、年間約 500 万 CU の生産能力があります (parameters.md §9)。オーナーが眠っている間も、有用な推論を提供することで継続的に価値を生みます。
+
+---
 
 ## プロジェクト構造
 
 ```
-forge/
+forge/  (このリポジトリ — L1 経済層)
 ├── crates/
-│   ├── forge-ledger/      # CU会計、取引、価格設定、安全、マークルルート
-│   ├── forge-node/        # ノードデーモン、HTTP API、パイプラインコーディネーター
-│   ├── forge-cli/         # CLI: チャット、シード、ワーカー、決済、ウォレット
-│   ├── forge-lightning/   # CU ↔ Bitcoin Lightningブリッジ
-│   ├── forge-net/         # P2P: iroh QUIC + Noise + ゴシップ
-│   ├── forge-proto/       # 通信プロトコル: 17種類のメッセージ
-│   ├── forge-infer/       # 推論エンジン: llama.cpp、GGUF、Metal/CPU
-│   ├── forge-core/        # 型定義: NodeId、CU、Config
-│   └── forge-shard/       # トポロジー: レイヤー割り当て
-└── docs/                  # 仕様書、脅威モデル、ロードマップ
+│   ├── forge-ledger/     # CU 台帳、貸付、安全、NIP-90、共謀検知、アンカー
+│   ├── forge-node/       # ノードデーモン、HTTP API (45+ エンドポイント)、パイプライン
+│   ├── forge-cli/        # CLI: chat / seed / worker / settle / wallet
+│   ├── forge-lightning/  # CU ↔ Bitcoin Lightning 双方向ブリッジ
+│   ├── forge-net/        # P2P: iroh QUIC + Noise + ゴシップ (取引・ローン)
+│   ├── forge-proto/      # ワイヤプロトコル: 27 種類以上のメッセージ型
+│   ├── forge-infer/      # 推論: llama.cpp / GGUF / Metal / CUDA / CPU
+│   ├── forge-core/       # 共有型: NodeId, CU, Config
+│   └── forge-shard/      # トポロジー: レイヤー割り当て
+├── sdk/python/           # Python クライアント (全貸付 API 対応)
+├── mcp/                  # MCP サーバー (Claude Code / Cursor 向け)
+├── scripts/
+│   ├── demo-e2e.sh       # エンドツーエンドデモ (Phase 1–12 全エンドポイント)
+│   └── verify-impl.sh    # TDD 回帰テスト (95 アサーション)
+└── docs/                 # 仕様、戦略、脅威モデル、ロードマップ
 ```
 
-Rustで約10,000行。76のテスト。2回のセキュリティ監査完了。
+Rust 約 14,500 行。**426 テスト合格。** Phase 1–12 実装済み。
 
-## ドキュメント
+---
 
-- [戦略](strategy.md) — 競合ポジショニング、貸付仕様、5層アーキテクチャ
-- [貨幣理論](monetary-theory.md) — なぜCUが機能するのか: Soddy、Bitcoin、PoUW、AI専用通貨
-- [コンセプトとビジョン](concept.md) — なぜ計算がお金なのか
-- [経済モデル](economy.md) — CU経済、有益な仕事の証明、貸付
-- [アーキテクチャ](architecture.md) — 二層設計
-- [エージェント統合](agent-integration.md) — SDK、MCP、借入ワークフロー
-- [通信プロトコル](protocol-spec.md) — 17種類のメッセージ
-- [ロードマップ](roadmap.md) — 開発フェーズ
-- [脅威モデル](threat-model.md) — セキュリティ + 経済的攻撃
-- [ブートストラップ](bootstrap.md) — 起動、劣化、回復
-- [A2A決済](a2a-payment.md) — エージェントプロトコル向けCU決済拡張
+## 姉妹リポジトリ
 
-## ライセンス
+| リポジトリ | レイヤー | テスト数 | 状態 |
+|---|---|---|---|
+| [clearclown/forge](https://github.com/clearclown/forge) (このリポジトリ) | L1 経済 | 426 | Phase 1–12 ✅ |
+| [clearclown/forge-bank](https://github.com/clearclown/forge-bank) | L2 ファイナンス | 45 | v0.1 ✅ |
+| [clearclown/forge-mind](https://github.com/clearclown/forge-mind) | L3 インテリジェンス | 40 | v0.1 ✅ |
+| [clearclown/forge-agora](https://github.com/clearclown/forge-agora) | L4 ディスカバリ | 39 | v0.1 ✅ |
+| [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | 理論・仕様 | 16/16 GREEN | ✅ |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 推論 | 686 | ✅ |
 
-MIT
+---
 
-## 謝辞
+## ドキュメント一覧
 
-Forgeの分散型推論は、Michael Neale氏による [mesh-llm](https://github.com/michaelneale/mesh-llm) に基づいて構築されています。[CREDITS.md](../../../CREDITS.md) を参照してください。
+| ドキュメント | 内容 |
+|---|---|
+| [strategy.md](../../strategy.md) | 競合ポジショニング、貸付仕様、5 層アーキテクチャ詳細 |
+| [monetary-theory.md](../../monetary-theory.md) | CU が機能する理由: Soddy / Bitcoin / PoUW / AI 専用通貨論 |
+| [concept.md](../../concept.md) | 計算が通貨になる根拠、ポスト・マーケティング経済 |
+| [economy.md](../../economy.md) | CU 経済モデル、Proof of Useful Work、貸付の仕組み |
+| [architecture.md](../../architecture.md) | 経済層と推論層の 2 層設計 |
+| [agent-integration.md](../../agent-integration.md) | SDK / MCP / 借入ワークフロー / 信用スコア構築 |
+| [protocol-spec.md](../../protocol-spec.md) | ワイヤプロトコル仕様 (17 メッセージ型) |
+| [roadmap.md](../../roadmap.md) | 開発フェーズ (Phase 1–13+) |
+| [threat-model.md](../../threat-model.md) | セキュリティ脅威・経済的攻撃シナリオ (T1–T17) |
+| [bootstrap.md](../../bootstrap.md) | ノード起動、段階的劣化、障害回復 |
+| [a2a-payment.md](../../a2a-payment.md) | A2A / MCP プロトコル向け CU 決済拡張 |
+| [compatibility.md](../../compatibility.md) | llama.cpp / mesh-llm / Ollama / Bittensor / Akash との比較表 |
+| [faq.md](../../faq.md) | よくある質問 12 件 |
+
+---
+
+## 貢献
+
+コントリビューションを歓迎します。まず [CONTRIBUTING.md](../../../CONTRIBUTING.md) と [docs/developer-guide.md](../../developer-guide.md) をお読みください。
+
+**3 つの原則:**
+
+1. **テストファースト** — 新しい経済プリミティブは必ず仕様 (`forge-economics/spec/parameters.md`) を先に確定し、テストを書いてから実装します
+2. **仕様準拠** — 数値定数は `parameters.md` の §N を唯一の情報源とします。ハードコードは禁止です
+3. **パニック禁止** — `unwrap()` / `expect()` は本番コードパスに使用しません。エラーは `ForgeError` で伝播させます
+
+小さな修正 (typo・テスト追加・軽微なバグ) は直接 PR を送ってください。大きな変更 (新クレート・レイヤー追加・プロトコル変更) はコードを書く前に Issue で設計を議論してください。
+
+---
+
+## ライセンスと謝辞
+
+MIT ライセンス。
+
+Forge の分散推論エンジンは Michael Neale 氏の [mesh-llm](https://github.com/michaelneale/mesh-llm) を基盤としています。詳細は [CREDITS.md](../../../CREDITS.md) を参照してください。
