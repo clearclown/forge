@@ -8,6 +8,7 @@ pub mod governance;
 pub mod ledger;
 pub mod lending;
 pub mod metrics;
+pub mod peer_registry;
 pub mod referral;
 pub mod safety;
 pub mod staking;
@@ -43,3 +44,4 @@ pub use tokenomics::{
     RARITY_RARE, RARITY_UNCOMMON, TOTAL_TRM_SUPPLY, TRANSACTION_FEE_RATE,
 };
 pub use zk::{MockVerifier, ProofOfInference, ProofVerifier, VerifierRegistry, ZkError};
+pub use peer_registry::{PeerRegistry, PeerState};

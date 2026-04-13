@@ -54,6 +54,9 @@ pub enum Payload {
     LoanGossip(LoanGossip),
     /// Gossip: broadcast a reputation observation to the mesh.
     ReputationGossip(ReputationObservation),
+    /// Phase 14.1 — Gossip: broadcast a provider's current price/capacity.
+    /// Unsigned (gossip, not economic commitment) — sender identity from Envelope.
+    PriceSignalGossip(tirami_core::PriceSignal),
 }
 
 // --- Discovery & Handshake ---
@@ -703,6 +706,35 @@ impl Payload {
                 }
                 Ok(())
             }
+            Payload::PriceSignalGossip(signal) => {
+                // The signal's node_id must match the envelope sender — a
+                // node may only advertise its own prices.
+                if signal.node_id != *sender {
+                    return Err(ProtocolValidationError::SenderMismatch {
+                        expected: sender.to_hex(),
+                        actual: signal.node_id.to_hex(),
+                    });
+                }
+                // Multiplier must be within the allowed band.
+                if !signal.is_valid() {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "price_multiplier".into(),
+                        reason: format!(
+                            "must be finite and within [{}, {}]",
+                            tirami_core::PriceSignal::MIN_MULTIPLIER,
+                            tirami_core::PriceSignal::MAX_MULTIPLIER
+                        ),
+                    });
+                }
+                // Cap the model capabilities list to prevent gossip amplification.
+                if signal.model_capabilities.len() > 64 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "model_capabilities".into(),
+                        reason: "must advertise ≤ 64 models".into(),
+                    });
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -1123,5 +1155,74 @@ mod tests {
         };
         let err = Payload::LoanProposal(p).validate_with_sender(&NodeId([2u8; 32]));
         assert!(err.is_err(), "lender/sender mismatch must be rejected");
+    }
+
+    // ==========================================================================
+    // Phase 14.1 tests — PriceSignalGossip validation
+    // ==========================================================================
+
+    fn sample_price_signal(sender: NodeId) -> tirami_core::PriceSignal {
+        tirami_core::PriceSignal {
+            node_id: sender,
+            price_multiplier: 1.0,
+            available_cu: 1000,
+            model_capabilities: vec![ModelId("qwen2.5-0.5b".into())],
+            latency_hint_ms: 50,
+            timestamp: 1_000,
+        }
+    }
+
+    #[test]
+    fn price_signal_gossip_rejects_sender_mismatch() {
+        let sender = NodeId([1u8; 32]);
+        let signal_author = NodeId([2u8; 32]);
+        let msg = Payload::PriceSignalGossip(sample_price_signal(signal_author));
+        assert!(
+            msg.validate_with_sender(&sender).is_err(),
+            "signal claiming different node_id than envelope sender must be rejected"
+        );
+    }
+
+    #[test]
+    fn price_signal_gossip_rejects_nan_multiplier() {
+        let sender = NodeId([1u8; 32]);
+        let mut signal = sample_price_signal(sender.clone());
+        signal.price_multiplier = f64::NAN;
+        let msg = Payload::PriceSignalGossip(signal);
+        assert!(
+            msg.validate_with_sender(&sender).is_err(),
+            "NaN multiplier must be rejected"
+        );
+    }
+
+    #[test]
+    fn price_signal_gossip_rejects_excessive_model_list() {
+        let sender = NodeId([1u8; 32]);
+        let mut signal = sample_price_signal(sender.clone());
+        signal.model_capabilities = (0..70)
+            .map(|i| ModelId(format!("m{i}")))
+            .collect();
+        let msg = Payload::PriceSignalGossip(signal);
+        assert!(
+            msg.validate_with_sender(&sender).is_err(),
+            "model list > 64 must be rejected to prevent amplification"
+        );
+    }
+
+    #[test]
+    fn price_signal_gossip_accepts_valid() {
+        let sender = NodeId([1u8; 32]);
+        let msg = Payload::PriceSignalGossip(sample_price_signal(sender.clone()));
+        assert!(msg.validate_with_sender(&sender).is_ok());
+    }
+
+    #[test]
+    fn price_signal_gossip_roundtrips_bincode() {
+        let sender = NodeId([1u8; 32]);
+        let signal = sample_price_signal(sender);
+        let bytes = bincode::serialize(&signal).unwrap();
+        let back: tirami_core::PriceSignal = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back.price_multiplier, 1.0);
+        assert_eq!(back.available_cu, 1000);
     }
 }

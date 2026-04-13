@@ -217,6 +217,7 @@ pub fn create_router_with_services(
         .route("/v1/tirami/invoice", post(forge_invoice))
         .route("/v1/tirami/network", get(tirami_network))
         .route("/v1/tirami/providers", get(forge_providers))
+        .route("/v1/tirami/peers", get(forge_peers))
         .route("/v1/tirami/safety", get(forge_safety_status))
         .route("/v1/tirami/kill", post(forge_kill_switch))
         .route("/v1/tirami/policy", post(forge_set_policy))
@@ -1490,6 +1491,57 @@ async fn forge_providers(
     Ok(Json(serde_json::json!({
         "count": providers.len(),
         "providers": providers,
+    })))
+}
+
+/// GET /v1/tirami/peers — Phase 14.1 — known peers with their advertised prices.
+///
+/// Returns every peer the local node has observed via PriceSignal gossip.
+/// Each entry includes price_multiplier, available_cu, model capabilities,
+/// latency EMA, and (Phase 14.3) audit tier. Used by the CLI `tirami peers`
+/// command and by agents inspecting market state.
+async fn forge_peers(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let ledger = state.ledger.lock().await;
+
+    let peers: Vec<serde_json::Value> = ledger
+        .peer_registry
+        .peers()
+        .iter()
+        .map(|(node_id, state)| {
+            let (price_multiplier, available_cu, models, latency_hint_ms, timestamp) =
+                match &state.price_signal {
+                    Some(sig) => (
+                        sig.price_multiplier,
+                        sig.available_cu,
+                        sig.model_capabilities
+                            .iter()
+                            .map(|m| m.0.clone())
+                            .collect::<Vec<_>>(),
+                        sig.latency_hint_ms,
+                        sig.timestamp,
+                    ),
+                    None => (1.0, 0, vec![], 0, 0),
+                };
+            serde_json::json!({
+                "node_id": node_id.to_hex(),
+                "price_multiplier": price_multiplier,
+                "available_cu": available_cu,
+                "models": models,
+                "latency_hint_ms": latency_hint_ms,
+                "latency_ema_ms": state.latency_ema_ms,
+                "last_seen": timestamp,
+                "audit_tier": format!("{:?}", state.audit_tier),
+                "verified_trades": state.verified_trade_count,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "count": peers.len(),
+        "peers": peers,
     })))
 }
 

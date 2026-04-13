@@ -30,6 +30,11 @@ pub struct GossipState {
     /// Separate dedup set for reputation observations (Phase 9 A3).
     seen_reputation: HashSet<[u8; 32]>,
     order_reputation: VecDeque<[u8; 32]>,
+    /// Phase 14.1 — dedup for price signals. Keyed by (node_id, timestamp).
+    /// We only dedup exact replays; newer signals from the same node always
+    /// replace older ones in the PeerRegistry.
+    seen_price_signals: HashSet<[u8; 32]>,
+    order_price_signals: VecDeque<[u8; 32]>,
     /// Rate limiting for incoming gossip (Issue #14).
     ingest_count: u32,
     ingest_window: std::time::Instant,
@@ -44,9 +49,36 @@ impl GossipState {
             order_loans: VecDeque::new(),
             seen_reputation: HashSet::new(),
             order_reputation: VecDeque::new(),
+            seen_price_signals: HashSet::new(),
+            order_price_signals: VecDeque::new(),
             ingest_count: 0,
             ingest_window: std::time::Instant::now(),
         }
+    }
+
+    /// Phase 14.1 — check if a price signal is new. Returns true if new.
+    /// Key is sha256(node_id || timestamp_le_bytes) for cheap replay dedup.
+    pub fn mark_price_signal_seen(
+        &mut self,
+        node_id: &tirami_core::NodeId,
+        timestamp: u64,
+    ) -> bool {
+        let mut key = [0u8; 32];
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(&node_id.0);
+        h.update(&timestamp.to_le_bytes());
+        key.copy_from_slice(&h.finalize());
+        if !self.seen_price_signals.insert(key) {
+            return false;
+        }
+        self.order_price_signals.push_back(key);
+        while self.order_price_signals.len() > MAX_GOSSIP_SEEN {
+            if let Some(evicted) = self.order_price_signals.pop_front() {
+                self.seen_price_signals.remove(&evicted);
+            }
+        }
+        true
     }
 
     /// Check if we can accept more gossip trades this second.
@@ -400,6 +432,130 @@ pub async fn handle_reputation_gossip(
             for peer_id in &peers {
                 if let Err(e) = transport.send_to(peer_id, &msg).await {
                     tracing::debug!("Re-flood reputation gossip to {} failed: {}", peer_id, e);
+                }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// Phase 14.1 — PriceSignal gossip
+// ===========================================================================
+
+/// Broadcast our own price signal to all connected peers.
+///
+/// Called periodically by the node daemon (default 30s). Also marks the
+/// signal as seen locally so we don't re-flood it on receive.
+pub async fn broadcast_price_signal(
+    transport: &ForgeTransport,
+    gossip: &Arc<Mutex<GossipState>>,
+    signal: &tirami_core::PriceSignal,
+) {
+    // Dedup locally first.
+    if !gossip
+        .lock()
+        .await
+        .mark_price_signal_seen(&signal.node_id, signal.timestamp)
+    {
+        return;
+    }
+
+    let node_id = transport.tirami_node_id();
+    let peers = transport.connected_peers().await;
+
+    if peers.is_empty() {
+        return;
+    }
+
+    let msg = Envelope {
+        msg_id: rand::random(),
+        sender: node_id,
+        timestamp: now_millis(),
+        payload: Payload::PriceSignalGossip(signal.clone()),
+    };
+
+    for peer_id in &peers {
+        if let Err(e) = transport.send_to(peer_id, &msg).await {
+            tracing::debug!("Price signal gossip to {} failed: {}", peer_id, e);
+        }
+    }
+
+    tracing::debug!(
+        "Broadcast price signal: node={} multiplier={:.3} available_cu={}",
+        signal.node_id.to_hex(),
+        signal.price_multiplier,
+        signal.available_cu,
+    );
+}
+
+/// Handle an incoming price signal gossip message.
+///
+/// Validates the signal, checks dedup, merges into the ledger's PeerRegistry,
+/// and re-floods to peers that haven't seen it yet.
+pub async fn handle_price_signal_gossip(
+    signal: tirami_core::PriceSignal,
+    ledger: &Arc<Mutex<ComputeLedger>>,
+    gossip: &Arc<Mutex<GossipState>>,
+    transport: Option<&ForgeTransport>,
+) {
+    // Backpressure.
+    if !gossip.lock().await.can_ingest() {
+        tracing::debug!("Gossip rate limit exceeded, dropping price signal");
+        return;
+    }
+
+    // Format validation (defense in depth — Envelope::validate_with_sender
+    // already checked).
+    if !signal.is_valid() {
+        tracing::warn!(
+            "Price signal with invalid multiplier from {}, dropping",
+            signal.node_id.to_hex()
+        );
+        return;
+    }
+
+    // Exact-replay dedup.
+    let is_new = gossip
+        .lock()
+        .await
+        .mark_price_signal_seen(&signal.node_id, signal.timestamp);
+    if !is_new {
+        return;
+    }
+
+    // Merge into the PeerRegistry. ingest_price_signal internally rejects
+    // stale timestamps, so no risk of regression.
+    let merged = {
+        let mut ledger_guard = ledger.lock().await;
+        ledger_guard.ingest_price_signal(&signal)
+    };
+
+    if merged {
+        tracing::debug!(
+            "Merged price signal: node={} multiplier={:.3}",
+            signal.node_id.to_hex(),
+            signal.price_multiplier,
+        );
+    }
+
+    // Re-flood to peers so the signal propagates across the mesh.
+    if let Some(transport) = transport {
+        let node_id = transport.tirami_node_id();
+        let peers = transport.connected_peers().await;
+        if !peers.is_empty() {
+            let msg = Envelope {
+                msg_id: rand::random(),
+                sender: node_id,
+                timestamp: now_millis(),
+                payload: Payload::PriceSignalGossip(signal),
+            };
+            for peer_id in &peers {
+                if let Err(e) = transport.send_to(peer_id, &msg).await {
+                    tracing::debug!(
+                        "Re-flood price signal to {} failed: {}",
+                        peer_id,
+                        e
+                    );
                 }
             }
         }

@@ -412,6 +412,20 @@ impl PipelineCoordinator {
                             ).await;
                         });
                     }
+                    // Phase 14.1 — price signal gossip.
+                    Payload::PriceSignalGossip(signal) => {
+                        let ledger = ledger.clone();
+                        let gossip = gossip.clone();
+                        let transport = self.transport.clone();
+                        tokio::spawn(async move {
+                            tirami_net::gossip::handle_price_signal_gossip(
+                                signal,
+                                &ledger,
+                                &gossip,
+                                Some(&transport),
+                            ).await;
+                        });
+                    }
                     _ => {}
                 },
                 None => {

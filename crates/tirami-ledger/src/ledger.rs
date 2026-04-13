@@ -56,6 +56,11 @@ pub struct ComputeLedger {
     /// Monotonically increasing; never exceeds `tokenomics::TOTAL_TRM_SUPPLY`.
     #[serde(default)]
     pub total_minted: u64,
+    /// Phase 14.1 — peer registry for price signals and audit tier tracking.
+    /// Populated via `ingest_price_signal` (gossip) and `update_latency`.
+    /// Read by `select_provider` (Phase 14.2) when scheduling inference.
+    #[serde(default)]
+    pub peer_registry: crate::peer_registry::PeerRegistry,
 }
 
 /// Dynamic pricing based on supply/demand and network scale.
@@ -381,7 +386,32 @@ impl ComputeLedger {
             loan_pool_total: 0,
             remote_reputation: HashMap::new(),
             total_minted: 0,
+            peer_registry: crate::peer_registry::PeerRegistry::new(),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 14.1 — PeerRegistry access
+    // -----------------------------------------------------------------------
+
+    /// Ingest a price signal received via gossip.
+    ///
+    /// Returns true if the signal was accepted, false if rejected (invalid
+    /// format or stale timestamp).
+    pub fn ingest_price_signal(&mut self, signal: &tirami_core::PriceSignal) -> bool {
+        self.peer_registry.ingest_price_signal(signal)
+    }
+
+    /// Update the latency EMA for a peer based on an observed RTT sample.
+    /// Called by the pipeline coordinator when an inference round trip
+    /// completes. Samples that are non-finite or negative are ignored.
+    pub fn update_peer_latency(&mut self, node_id: &NodeId, observed_ms: f64) {
+        self.peer_registry.update_latency(node_id, observed_ms);
+    }
+
+    /// Number of peers currently in the registry.
+    pub fn peer_count(&self) -> usize {
+        self.peer_registry.len()
     }
 
     /// Get the current market price.
@@ -482,6 +512,7 @@ impl ComputeLedger {
             loan_pool_total: snapshot.loan_pool_total,
             remote_reputation: HashMap::new(), // ephemeral; re-built from peers on startup
             total_minted: 0,
+            peer_registry: crate::peer_registry::PeerRegistry::new(), // ephemeral; rebuilt from gossip
         }
     }
 
