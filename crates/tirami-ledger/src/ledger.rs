@@ -52,6 +52,10 @@ pub struct ComputeLedger {
     /// Not persisted to disk (ephemeral gossip state, re-built from peers on startup).
     #[serde(default, skip_serializing)]
     pub remote_reputation: HashMap<NodeId, Vec<ReputationObservation>>,
+    /// Cumulative TRM minted since genesis. Used for supply_factor and epoch computation.
+    /// Monotonically increasing; never exceeds `tokenomics::TOTAL_TRM_SUPPLY`.
+    #[serde(default)]
+    pub total_minted: u64,
 }
 
 /// Dynamic pricing based on supply/demand and network scale.
@@ -376,6 +380,7 @@ impl ComputeLedger {
             loan_pool_lent: 0,
             loan_pool_total: 0,
             remote_reputation: HashMap::new(),
+            total_minted: 0,
         }
     }
 
@@ -476,6 +481,7 @@ impl ComputeLedger {
             loan_pool_lent: snapshot.loan_pool_lent,
             loan_pool_total: snapshot.loan_pool_total,
             remote_reputation: HashMap::new(), // ephemeral; re-built from peers on startup
+            total_minted: 0,
         }
     }
 
@@ -682,7 +688,35 @@ impl ComputeLedger {
         consumer.reserved = consumer.reserved.saturating_sub(trade.trm_amount);
         self.trade_log.push(trade.clone());
         self.price.total_trades_ever += 1;
+        // Track cumulative minted TRM for supply_factor / epoch computation.
+        self.total_minted = self
+            .total_minted
+            .saturating_add(trade.trm_amount)
+            .min(crate::tokenomics::TOTAL_TRM_SUPPLY);
     }
+
+    // -----------------------------------------------------------------------
+    // Tokenomics helpers — supply cap, halving, yield
+    // -----------------------------------------------------------------------
+
+    /// Current supply factor: fraction of 21B TRM cap that remains unminted.
+    /// Returns `1.0` at genesis and approaches `0.0` as the cap is reached.
+    pub fn supply_factor(&self) -> f64 {
+        crate::tokenomics::supply_factor(self.total_minted)
+    }
+
+    /// Current halving epoch derived from cumulative minted TRM.
+    /// Epoch 0 → 50% minted, Epoch 1 → 75%, Epoch 2 → 87.5%, etc.
+    pub fn current_epoch(&self) -> u32 {
+        crate::tokenomics::current_epoch(self.total_minted)
+    }
+
+    /// Availability yield rate for the current epoch (`INITIAL_YIELD_RATE / 2^epoch`).
+    pub fn epoch_yield_rate(&self) -> f64 {
+        crate::tokenomics::epoch_yield_rate(self.total_minted)
+    }
+
+    // -----------------------------------------------------------------------
 
     /// Can a node afford a given CU cost?
     ///
