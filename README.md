@@ -1,13 +1,13 @@
 <div align="center">
 
-# Forge
+# Tirami
 
 **Computation is currency. Every watt produces intelligence, not waste.**
 
-[![PyPI: tirami-sdk](https://img.shields.io/pypi/v/tirami-sdk?label=tirami-sdk&color=3775A9)](https://pypi.org/project/tirami-sdk/)
-[![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
-[![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
+[![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-785_passing-brightgreen)]()
+[![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
 
 ---
 
@@ -15,23 +15,23 @@
 
 </div>
 
-**Forge is a distributed inference protocol where compute is money.** Nodes earn TRMs (CU) by performing useful LLM inference for others. Unlike Bitcoin — where electricity is burned on meaningless hashes — every joule spent on a Forge node produces real intelligence that someone actually needs.
+**Tirami is a distributed inference protocol where compute is money.** Nodes earn TRM (Tirami Resource Merit) by performing useful LLM inference for others. Unlike Bitcoin — where electricity is burned on meaningless hashes — every joule spent on a Tirami node produces real intelligence that someone actually needs.
 
-The distributed inference engine is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. Forge adds a compute economy on top: TRM accounting, Proof of Useful Work, dynamic pricing, autonomous agent budgets, and fail-safe controls. See [CREDITS.md](CREDITS.md).
+The distributed inference engine is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. Tirami adds a compute economy on top: TRM accounting, Proof of Useful Work, dynamic pricing, autonomous agent budgets, and fail-safe controls. See [CREDITS.md](CREDITS.md).
 
-**Integrated fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm with Forge economic layer built in.
+**Integrated fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm with Tirami economic layer built in.
 
 ## Live Demo
 
-This is real output from a running Forge node. Every inference costs CU. Every TRM is earned by useful computation.
+This is real output from a running Tirami node. Every inference costs TRM. Every TRM is earned by useful computation.
 
 ```
-$ forge node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
+$ tirami node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
   Model loaded: Qwen2.5-0.5B (Metal-accelerated, 491MB)
   API server listening on 127.0.0.1:3000
 ```
 
-**Check balance — every new node gets 1,000 TRM free tier:**
+**Check balance — every new node gets a 1,000 TRM welcome loan:**
 ```
 $ curl localhost:3000/v1/tirami/balance
 {
@@ -42,7 +42,7 @@ $ curl localhost:3000/v1/tirami/balance
 }
 ```
 
-**Ask a question — inference costs CU:**
+**Ask a question — inference costs TRM:**
 ```
 $ curl localhost:3000/v1/chat/completions \
     -d '{"messages":[{"role":"user","content":"Say hello in Japanese"}]}'
@@ -56,19 +56,16 @@ $ curl localhost:3000/v1/chat/completions \
 }
 ```
 
-Every response includes `x_forge` — **the cost of that computation in CU** and the remaining balance. The provider earned 9 CU. The consumer spent 9 CU. Physics backed every unit.
+Every response includes `x_forge` — **the cost of that computation in TRM** and the remaining balance. The provider earned 9 TRM. The consumer spent 9 TRM. Physics backed every unit.
 
-**Three inferences later — real trades on the ledger:**
+**Check tokenomics — Bitcoin-inspired supply curve:**
 ```
-$ curl localhost:3000/v1/tirami/trades
-{
-  "count": 3,
-  "trades": [
-    {"cu_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"cu_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"cu_amount": 9, "tokens_processed": 9, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"}
-  ]
-}
+$ tirami su supply
+  Total Supply Cap:    21,000,000,000 TRM
+  Total Minted:        0
+  Supply Factor:       1.0 (genesis)
+  Current Epoch:       0
+  Yield Rate:          0.001/hr
 ```
 
 **Every trade has a Merkle root — anchorable to Bitcoin for immutable proof:**
@@ -77,7 +74,7 @@ $ curl localhost:3000/v1/tirami/network
 {
   "total_trades": 3,
   "total_contributed_cu": 19,
-  "merkle_root": "aac8db9f62dd9ff23926195a70ed8fcfc188fc867d9f2adabd8e694beb338748"
+  "merkle_root": "aac8db9f...38748"
 }
 ```
 
@@ -89,39 +86,24 @@ $ curl -X POST localhost:3000/v1/tirami/kill \
 → All TRM transactions frozen. No agent can spend.
 ```
 
-**Safety controls always on:**
-```
-$ curl localhost:3000/v1/tirami/safety
-{
-  "kill_switch_active": false,
-  "circuit_tripped": false,
-  "policy": {
-    "max_cu_per_hour": 10000,
-    "max_cu_per_request": 1000,
-    "max_cu_lifetime": 1000000,
-    "human_approval_threshold": 5000
-  }
-}
-```
-
-## Why Forge Exists
+## Why Tirami Exists
 
 ```
 Bitcoin:  electricity  →  meaningless SHA-256  →  BTC
-Forge:    electricity  →  useful LLM inference →  CU
+Tirami:   electricity  →  useful LLM inference →  TRM
 ```
 
-Bitcoin proved `electricity → computation → money`. But Bitcoin's computation is purposeless. Forge inverts it: every TRM represents real intelligence that solved someone's real problem.
+Bitcoin proved `electricity → computation → money`. But Bitcoin's computation is purposeless. Tirami inverts it: every TRM represents real intelligence that solved someone's real problem.
 
 **Four things no other project does:**
 
-### 1. Compute = Currency
+### 1. Compute = Currency (21B Supply Cap)
 
-Every inference is a trade. Provider earns CU, consumer spends CU. No blockchain, no token, no ICO. TRM is backed by physics — the electricity consumed for useful work. Unlike Bittensor (TAO), Akash (AKT), or Golem (GLM), TRM cannot be speculated on — it is earned by performing useful computation.
+Every inference is a trade. Provider earns TRM, consumer spends TRM. No blockchain, no token, no ICO. TRM is backed by physics — the electricity consumed for useful work. Bitcoin-inspired tokenomics: 21 billion TRM supply cap, halving epochs, staking with multipliers, and referral bonuses for network growth.
 
 ### 2. Tamper-Proof Without a Blockchain
 
-Every trade is dual-signed (Ed25519) by both parties and gossip-synced across the mesh. A Merkle root of all trades can be anchored to Bitcoin for immutable audit. No global consensus needed — bilateral cryptographic proof is sufficient.
+Every trade is dual-signed (Ed25519) by both parties and gossip-synced across the mesh. A Merkle root of all trades can be anchored to Bitcoin via OP_RETURN for immutable audit. No global consensus needed — bilateral cryptographic proof is sufficient.
 
 ### 3. AI Agents Manage Their Own Compute
 
@@ -137,64 +119,65 @@ Agent (1.5B on phone)
 
 ### 4. Compute Microfinance
 
-Nodes can lend idle TRM to other nodes at interest. A small node borrows CU, accesses a larger model, earns more CU, repays with interest. No other distributed inference project offers compute lending — confirmed through competitive analysis of every major project in this space. This is the engine that makes the self-improvement loop economically viable for everyone, not just those who already own powerful hardware.
+Nodes can lend idle TRM to other nodes at interest. A small node borrows TRM, accesses a larger model, earns more TRM, repays with interest. This is the engine that makes the self-improvement loop economically viable for everyone, not just those who already own powerful hardware.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  L4: Discovery (tirami-agora) ✅ v0.1            │
-│  Agent marketplace, reputation aggregation,     │
-│  Nostr NIP-90, Google A2A payment extension     │
+│  L4: Discovery (tirami-agora) ✅                 │
+│  Agent marketplace, reputation, Nostr NIP-90,   │
+│  governance (stake-weighted voting)             │
 ├─────────────────────────────────────────────────┤
-│  L3: Intelligence (tirami-mind) ✅ v0.1          │
-│  AutoAgent self-improvement loops paid in CU,   │
-│  harness marketplace, meta-optimization         │
+│  L3: Intelligence (tirami-mind) ✅               │
+│  AutoAgent self-improvement loops paid in TRM,  │
+│  harness marketplace, meta-optimization,        │
+│  federated training scaffold                    │
 ├─────────────────────────────────────────────────┤
-│  L2: Finance (tirami-bank) ✅ v0.1               │
+│  L2: Finance (tirami-bank) ✅                    │
 │  Strategies, portfolios, futures, insurance,    │
-│  risk model, yield optimizer                    │
+│  risk model, yield optimizer, staking           │
 ├─────────────────────────────────────────────────┤
-│  L1: Economy (forge — this repo) ✅ Phase 1-6   │
+│  L1: Economy (tirami — this repo) ✅ Phase 1-13 │
 │  TRM ledger, dual-signed trades, dynamic pricing,│
-│  lending primitives, safety controls            │
+│  lending, tokenomics (21B cap, halving),        │
+│  safety controls, Prometheus, Bitcoin anchoring  │
 ├─────────────────────────────────────────────────┤
 │  L0: Inference (forge-mesh / mesh-llm) ✅       │
 │  Pipeline parallelism, MoE sharding,            │
 │  iroh mesh, Nostr discovery, MLX/llama.cpp      │
 └─────────────────────────────────────────────────┘
 
-All 5 layers exist. 326 tests passing across the ecosystem.
+All 5 layers are Rust. 785 tests passing. 123/123 verify-impl GREEN.
 ```
 
 ## Quick Start
 
-### Option 1: One-command end-to-end demo (Rust, ~30 seconds cold)
+### Option 1: One-command end-to-end demo (~30 seconds cold)
 
 ```bash
-git clone https://github.com/clearclown/forge && cd forge
+git clone https://github.com/clearclown/tirami && cd tirami
 bash scripts/demo-e2e.sh
 ```
 
-This downloads SmolLM2-135M (~100 MB) from HuggingFace, starts a real Forge
-node with Metal/CUDA acceleration, runs three real chat completions, walks
-through every Phase 1-12 endpoint, and prints a colored summary. Verified
-2026-04-09 on Apple Silicon Metal GPU.
+This downloads SmolLM2-135M (~100 MB) from HuggingFace, starts a real Tirami
+node with Metal/CUDA acceleration, runs real chat completions, walks
+through every Phase 1-13 endpoint, and prints a colored summary.
 
 After it finishes, the same node also responds to:
 
 ```bash
 # Drop-in OpenAI client
 export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
-export OPENAI_API_KEY=$(cat ~/.forge/api_token 2>/dev/null || echo "$TOKEN")
+export OPENAI_API_KEY=$(cat ~/.tirami/api_token 2>/dev/null || echo "$TOKEN")
 
-# Real token-by-token streaming (Phase 11)
+# Real token-by-token streaming
 curl -N $OPENAI_BASE_URL/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
 
-# Phase 8 economy / 9 reputation / 10 metrics / anchoring
+# Economy / reputation / metrics / anchoring
 curl $OPENAI_BASE_URL/forge/balance -H "Authorization: Bearer $OPENAI_API_KEY"
 curl $OPENAI_BASE_URL/forge/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
 curl http://127.0.0.1:3001/metrics  # Prometheus, no auth
@@ -203,21 +186,16 @@ curl http://127.0.0.1:3001/metrics  # Prometheus, no auth
 See [`docs/compatibility.md`](docs/compatibility.md) for the full feature matrix
 vs llama.cpp / mesh-llm / Ollama / Bittensor / Akash.
 
-### Option 2: Python (drives everything via SDK + MCP)
+### Option 2: Rust SDK + MCP (all Rust, no Python)
 
 ```bash
-pip install tirami-sdk forge-cu-mcp
+# SDK — async HTTP client for all Tirami endpoints
+cargo add tirami-sdk
 
-python -c "
-from forge_sdk import ForgeClient
-c = ForgeClient(base_url='http://localhost:3001')
-print('balance:', c.balance())
-print('decision:', c.bank_tick())
-"
+# MCP server — 40 tools for Claude Code / Cursor / ChatGPT
+cargo install tirami-mcp
+tirami-mcp  # stdio JSON-RPC server
 ```
-
-[PyPI: tirami-sdk](https://pypi.org/project/tirami-sdk/) (20 L2/L3/L4 methods) ·
-[PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/) (20 MCP tools for Claude Code / Cursor)
 
 ### Option 3: Manual Rust commands
 
@@ -227,24 +205,16 @@ print('decision:', c.bank_tick())
 cargo build --release
 
 # Run a node — auto-downloads the model from HuggingFace
-./target/release/forge node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
+./target/release/tirami node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
 
 # Or any of:
-./target/release/forge chat -m "smollm2:135m" "What is gravity?"
-./target/release/forge seed -m "qwen2.5:1.5b"               # earn TRM as a P2P provider
-./target/release/forge worker --seed <public_key>           # spend TRM as a P2P consumer
-./target/release/forge models                                # list catalog (or use HF URLs / shorthand)
+./target/release/tirami chat -m "smollm2:135m" "What is gravity?"
+./target/release/tirami seed -m "qwen2.5:1.5b"               # earn TRM as a P2P provider
+./target/release/tirami worker --seed <public_key>            # spend TRM as a P2P consumer
+./target/release/tirami models                                 # list catalog
+./target/release/tirami su supply                              # check tokenomics
+./target/release/tirami su stake 10000 90d                     # stake TRM for 90 days (2.0× multiplier)
 ```
-
-**[Crates.io: forge](https://crates.io/crates/forge)** ·
-**[Compatibility doc](docs/compatibility.md)** ·
-**[Demo script](scripts/demo-e2e.sh)**
-
-### Option 4: Pre-built binaries / Docker
-
-Pre-built binaries and `clearclown/forge:latest` Docker image are tracked under
-[releases](../../releases). Until then, Option 1 builds from source in under
-two minutes.
 
 ## API Reference
 
@@ -268,6 +238,25 @@ two minutes.
 | `GET /v1/tirami/route` | Optimal provider selection (cost/quality/balanced) |
 | `GET /settlement` | Exportable settlement statement |
 
+### Tokenomics (Tirami Su)
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/tirami/su/supply` | Supply cap, minted, epoch, yield rate |
+| `POST /v1/tirami/su/stake` | Lock TRM for staking (7d/30d/90d/365d multipliers) |
+| `POST /v1/tirami/su/unstake` | Unlock staked TRM |
+| `POST /v1/tirami/su/refer` | Register a referral (100 TRM bonus) |
+| `GET /v1/tirami/su/referrals` | Referral stats |
+
+### Governance
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /v1/tirami/governance/propose` | Create a governance proposal |
+| `POST /v1/tirami/governance/vote` | Cast a stake-weighted vote |
+| `GET /v1/tirami/governance/proposals` | List active proposals |
+| `GET /v1/tirami/governance/tally/{id}` | Tally votes for a proposal |
+
 ### Lending
 
 | Endpoint | Description |
@@ -287,9 +276,17 @@ two minutes.
 | `POST /v1/tirami/kill` | Emergency halt — freeze all TRM transactions |
 | `POST /v1/tirami/policy` | Set per-agent budget limits |
 
+### Observability
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /metrics` | Prometheus/OpenMetrics (20+ gauges including tokenomics, governance) |
+| `GET /v1/tirami/anchor` | Bitcoin OP_RETURN anchor payload (40-byte FRGE header + Merkle root) |
+| `GET /v1/tirami/collusion/{hex}` | Collusion score for a node (Tarjan SCC + volume spike) |
+
 ## Safety Design
 
-AI agents spending compute autonomously is powerful but dangerous. Forge has five safety layers:
+AI agents spending compute autonomously is powerful but dangerous. Tirami has five safety layers:
 
 | Layer | Mechanism | Protection |
 |-------|-----------|------------|
@@ -306,45 +303,48 @@ Design principle: **fail-safe**. If any check cannot determine safety, it **deni
 | Era | Standard | Backing |
 |-----|----------|---------|
 | Ancient | Gold | Geological scarcity |
-| 1944–1971 | Bretton Woods | USD pegged to gold |
-| 1971–present | Petrodollar | Oil demand + military power |
-| 2009–present | Bitcoin | Energy on SHA-256 (useless work) |
+| 1944-1971 | Bretton Woods | USD pegged to gold |
+| 1971-present | Petrodollar | Oil demand + military power |
+| 2009-present | Bitcoin | Energy on SHA-256 (useless work) |
 | **Now** | **Compute Standard** | **Energy on LLM inference (useful work)** |
 
-A room full of Mac Minis running Forge is an apartment building — generating yield by performing useful work while the owner sleeps.
+A room full of Mac Minis running Tirami is an apartment building — generating yield by performing useful work while the owner sleeps.
 
 ## Project Structure
 
 ```
-forge/  (this repo — Layer 1)
+tirami/  (this repo — all 5 layers, 14 Rust crates)
 ├── crates/
-│   ├── tirami-ledger/      # TRM accounting, lending, agora (NIP-90), safety
-│   ├── tirami-node/        # Node daemon, HTTP API (lending + routing), pipeline
-│   ├── tirami-cli/         # CLI: chat, seed, worker, settle, wallet
-│   ├── tirami-lightning/   # TRM ↔ Bitcoin Lightning bridge (bidirectional)
-│   ├── tirami-net/         # P2P: iroh QUIC + Noise + gossip (trades + loans)
-│   ├── tirami-proto/       # Wire protocol: 27+ message types incl. Loan*
+│   ├── tirami-ledger/      # TRM accounting, lending, tokenomics, staking, governance, collusion
+│   ├── tirami-node/        # Node daemon, HTTP API (54+ endpoints), pipeline
+│   ├── tirami-cli/         # CLI: chat, seed, worker, settle, wallet, su
+│   ├── tirami-sdk/         # Rust async HTTP client (54 methods)
+│   ├── tirami-mcp/         # Rust MCP server (40 tools for Claude/Cursor)
+│   ├── tirami-bank/        # L2: Strategies, portfolios, futures, insurance, risk
+│   ├── tirami-mind/        # L3: AutoAgent self-improvement, federated training
+│   ├── tirami-agora/       # L4: Agent marketplace, reputation, NIP-90
+│   ├── tirami-lightning/   # TRM <-> Bitcoin Lightning bridge (bidirectional)
+│   ├── tirami-net/         # P2P: iroh QUIC + Noise + gossip (trades + loans + reputation)
+│   ├── tirami-proto/       # Wire protocol: 27+ message types incl. signed reputation
 │   ├── tirami-infer/       # Inference: llama.cpp, GGUF, Metal/CPU
-│   ├── tirami-core/        # Types: NodeId, CU, Config
-│   └── forge-shard/       # Topology: layer assignment
-├── sdk/python/forge_sdk.py        # Python client with full lending API
-├── mcp/tirami-mcp-server.py        # MCP server (lending tools for Claude/etc.)
-├── scripts/verify-impl.sh         # TDD regression test (24 assertions)
-└── docs/                  # Specs, strategy, threat model, roadmap
+│   ├── tirami-core/        # Types: NodeId, TRM, Config
+│   └── tirami-shard/       # Topology: layer assignment
+├── scripts/verify-impl.sh  # TDD conformance (123 assertions)
+└── docs/                   # Specs, strategy, threat model, roadmap
 ```
 
-~14,500 lines of Rust. **143 tests passing.** Phase 1-6 complete.
+~20,000 lines of Rust. **785 tests passing.** Phase 1-13 complete.
 
-## Sister repositories (full ecosystem)
+## Ecosystem
 
 | Repo | Layer | Tests | Status |
 |------|-------|-------|--------|
-| [clearclown/forge](https://github.com/clearclown/forge) (this) | L1 Economy | 143 | Phase 1-6 ✅ |
-| [clearclown/tirami-bank](https://github.com/clearclown/tirami-bank) | L2 Finance | 45 | v0.1 ✅ |
-| [clearclown/tirami-mind](https://github.com/clearclown/tirami-mind) | L3 Intelligence | 40 | v0.1 ✅ |
-| [clearclown/tirami-agora](https://github.com/clearclown/tirami-agora) | L4 Discovery | 39 | v0.1 ✅ |
-| [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | Theory | 16/16 GREEN | ✅ |
-| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 43 (forge-economy) | ✅ |
+| [clearclown/tirami](https://github.com/clearclown/tirami) (this) | L1-L4 | 785 | Phase 1-13 ✅ |
+| [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | Theory | 16/16 GREEN | Spec + papers ✅ |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 646 | forge-economy port ✅ |
+| clearclown/tirami-bank | L2 Finance | archived | Superseded by `crates/tirami-bank/` |
+| clearclown/tirami-mind | L3 Intelligence | archived | Superseded by `crates/tirami-mind/` |
+| clearclown/tirami-agora | L4 Discovery | archived | Superseded by `crates/tirami-agora/` |
 
 ## Docs
 
@@ -354,11 +354,17 @@ forge/  (this repo — Layer 1)
 - [Economic Model](docs/economy.md) — TRM economy, Proof of Useful Work, lending
 - [Architecture](docs/architecture.md) — Two-layer design
 - [Agent Integration](docs/agent-integration.md) — SDK, MCP, borrowing workflow
-- [Wire Protocol](docs/protocol-spec.md) — 17 message types
+- [Wire Protocol](docs/protocol-spec.md) — 27+ message types
 - [Roadmap](docs/roadmap.md) — Development phases
 - [Threat Model](docs/threat-model.md) — Security + economic attacks
 - [Bootstrap](docs/bootstrap.md) — Startup, degradation, recovery
 - [A2A Payment](docs/a2a-payment.md) — TRM payment extension for agent protocols
+- [Compatibility](docs/compatibility.md) — llama.cpp / mesh-llm / Ollama / Bittensor comparison
+- [BitVM Design](docs/bitvm-design.md) — Optimistic verification via fraud proofs
+- [Operator Guide](docs/operator-guide.md) — How to run a node in production
+- [Developer Guide](docs/developer-guide.md) — How to contribute
+- [FAQ](docs/faq.md) — Common questions
+- [Migration Guide](docs/migration-guide.md) — From llama-server / Ollama / Bittensor
 
 ## License
 
@@ -366,4 +372,4 @@ MIT
 
 ## Acknowledgements
 
-Forge's distributed inference is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. See [CREDITS.md](CREDITS.md).
+Tirami's distributed inference is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. See [CREDITS.md](CREDITS.md).

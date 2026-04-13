@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Forge are documented here. Format follows
+All notable changes to Tirami are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
@@ -28,7 +28,7 @@ hardware with a real GGUF model. 426 tests passing (Rust), 27 pytest
 - **A1 forge-mesh sync**: 45 new `/api/forge/*` endpoints ported to the
   production mesh-llm runtime. 393 → 641 tests in forge-mesh.
 - **A2 persistent L2/L3/L4 state**: `BankServices`, `Marketplace`, and
-  `ForgeMindAgent` survive node restarts via JSON snapshots. New
+  `TiramiMindAgent` survive node restarts via JSON snapshots. New
   `StrategyKind` enum and `MindAgentSnapshot` handle trait-object
   fields. New `state_persist.rs` module.
   `POST /v1/tirami/admin/save-state` admin endpoint.
@@ -187,7 +187,7 @@ $ bash scripts/demo-e2e.sh
 ✓ PortfolioManager.tick() → action=lend
 ✓ RiskModel VaR 99%: 692 TRM (DEFAULT_RATE=0.02, LGD=0.50, σ=2.33)
 ✓ Marketplace.find() returned 1 matches
-✓ ForgeMindAgent initialized with EchoMetaOptimizer
+✓ TiramiMindAgent initialized with EchoMetaOptimizer
 ✓ improve(1) → decision=Revert (correct)
 ✓ trust_penalty=0.0 (below MIN_TRADES_FOR_ANALYSIS)
 ✓ forge_trade_count_total 3
@@ -212,7 +212,7 @@ All Phase 1-12 endpoints verified with live data.
 
 ## [0.1.0] - 2026-04-02
 
-Initial public MVP prerelease of Forge.
+Initial public MVP prerelease of Tirami.
 
 - Encrypted seed/worker inference over iroh QUIC with Noise handshake
 - Loopback-first HTTP API with optional bearer token protection

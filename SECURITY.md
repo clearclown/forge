@@ -65,7 +65,7 @@ code execution, ledger corruption, signature bypass) may fast-track.
 
 ## Hardening guidance
 
-Run a Forge node in a dedicated user account with minimal privileges.
+Run a Tirami node in a dedicated user account with minimal privileges.
 Do not expose the P2P QUIC port to the public internet without a
 reverse proxy or WAF. Keep the `api_bearer_token` secret and rotate
 periodically. Back up `tirami-ledger.json` and the L2/L3/L4 state
