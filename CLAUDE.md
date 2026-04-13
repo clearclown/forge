@@ -14,7 +14,7 @@ Tirami is a distributed LLM inference protocol where **compute is currency**. Th
 | Repo | Language | Status | Layer | Purpose |
 |------|----------|--------|-------|---------|
 | `clearclown/tirami` (this) | Rust | Active (785 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace + tokenomics + governance + staking + signed reputation gossip + collusion detection + NIP-90 relay publish + Prometheus metrics + Bitcoin OP_RETURN anchoring (Rust workspace, 14 crates) |
-| `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Forge economy = production runtime |
+| `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Tirami economy = production runtime |
 | `clearclown/tirami-bank` | Python (archived) | Scaffold v0.1 (45 tests) | — | Superseded by `crates/tirami-bank/` in this repo |
 | `clearclown/tirami-mind` | Python (archived) | Scaffold v0.1 (40 tests) | — | Superseded by `crates/tirami-mind/` in this repo |
 | `clearclown/tirami-agora` | Python (archived) | Scaffold v0.1 (39 tests) | — | Superseded by `crates/tirami-agora/` in this repo |
@@ -40,12 +40,12 @@ workspace crates. Phase 8 (2026-04-08) wired them into tirami-node with
 20 new HTTP endpoints (8 bank + 7 agora + 5 mind), plus a CuPaidOptimizer
 that calls a frontier LLM via reqwest and records the TRM consumption as
 a real TradeRecord on the ledger. A single `forge node --port 3000` now
-exposes the full 5-layer Forge ecosystem.
+exposes the full 5-layer Tirami ecosystem.
 
 All L2/L3/L4 numeric constants reference `forge-economics/spec/parameters.md`
 §10/§11/§12 as the single source of truth — no re-definition in Rust code.
 
-The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's full distributed inference engine with Forge's economic crates (`forge-economy/`) and API routes (`/api/forge/*`).
+The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's full distributed inference engine with Tirami's economic crates (`forge-economy/`) and API routes (`/api/forge/*`).
 
 ## Build & Test
 
