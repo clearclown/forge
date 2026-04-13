@@ -1,9 +1,9 @@
-# Contributing to Forge
+# Contributing to Tirami
 
-Thank you for considering a contribution. Forge is a compute-as-currency
+Thank you for considering a contribution. Tirami is a compute-as-currency
 protocol where the unit of account is 10^9 FLOPs of verified inference.
-The code is in Rust (5-layer workspace, 12 crates) with Python SDK + MCP
-clients. This document covers how to build, test, and submit changes.
+The code is in Rust (5-layer workspace, 14 crates) with Rust SDK + MCP
+server. This document covers how to build, test, and submit changes.
 
 ## Quick start for contributors
 
@@ -47,7 +47,7 @@ Three invariants that every PR must respect:
    `#[cfg(test)]` block + a `verify-impl.sh` grep assertion. Never
    merge a PR without tests for the new code path.
 
-3. **No panics in library code.** Use `Result<T, ForgeError>` or a
+3. **No panics in library code.** Use `Result<T, TiramiError>` or a
    crate-local error enum. `unwrap()` and `expect()` are acceptable in
    tests and in initialization-only code paths where failure means the
    program should abort anyway. Everywhere else, return an error.

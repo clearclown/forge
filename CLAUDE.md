@@ -1,8 +1,8 @@
-# Forge — Development Guide
+# Tirami — Development Guide
 
 ## What This Project Is
 
-Forge is a distributed LLM inference protocol where **compute is currency**. The inference layer is built on [mesh-llm](https://github.com/michaelneale/mesh-llm). Forge's original contribution is the **economic layer**: TRM (TRM) accounting, Proof of Useful Work, dynamic pricing, and autonomous agent budgets.
+Tirami is a distributed LLM inference protocol where **compute is currency**. The inference layer is built on [mesh-llm](https://github.com/michaelneale/mesh-llm). Tirami's original contribution is the **economic layer**: TRM (Tirami Resource Merit) accounting, Proof of Useful Work, dynamic pricing, and autonomous agent budgets.
 
 **Three pillars:**
 1. CU-native economy — compute is the currency, not Bitcoin
@@ -13,14 +13,14 @@ Forge is a distributed LLM inference protocol where **compute is currency**. The
 
 | Repo | Language | Status | Layer | Purpose |
 |------|----------|--------|-------|---------|
-| `clearclown/forge` (this) | Rust | Active (359 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace + persistence + signed reputation gossip + collusion detection + NIP-90 relay publish + Prometheus metrics + Bitcoin OP_RETURN anchoring (Rust workspace, 12 crates) |
+| `clearclown/tirami` (this) | Rust | Active (785 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace + tokenomics + governance + staking + signed reputation gossip + collusion detection + NIP-90 relay publish + Prometheus metrics + Bitcoin OP_RETURN anchoring (Rust workspace, 14 crates) |
 | `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Forge economy = production runtime |
 | `clearclown/tirami-bank` | Python (archived) | Scaffold v0.1 (45 tests) | — | Superseded by `crates/tirami-bank/` in this repo |
 | `clearclown/tirami-mind` | Python (archived) | Scaffold v0.1 (40 tests) | — | Superseded by `crates/tirami-mind/` in this repo |
 | `clearclown/tirami-agora` | Python (archived) | Scaffold v0.1 (39 tests) | — | Superseded by `crates/tirami-agora/` in this repo |
 | `clearclown/forge-economics` | Markdown | Active (16/16 GREEN) | Theory | Economic theory, design rationale, parameters (§1-§12 = single source of truth for all layers) |
-| `tirami-sdk` | Python | Published (PyPI) | Client | Python SDK for Forge API |
-| `forge-cu-mcp` | Python | Published (PyPI) | Client | MCP server for AI tools |
+| `tirami-sdk` (in-tree) | Rust | Active (15 tests) | Client | Rust async HTTP client for Tirami API |
+| `tirami-mcp` (in-tree) | Rust | Active (5 tests) | Client | Rust MCP server (40 tools for Claude/Cursor) |
 
 ### 5-Layer Architecture (all layers are Rust as of 2026-04-07, Phase 7)
 
@@ -32,8 +32,8 @@ L1: Economy       crates/tirami-ledger et al.  — TRM ledger, trades, lending, 
 L0: Inference     nm-arealnormalman/mesh-llm  — Distributed LLM inference + forge-economy port
 ```
 
-**Total tests across the ecosystem:** 359 (forge workspace) + 646 (forge-mesh Phase 10 P4)
-+ 16 (forge-economics SPEC-AUDIT) + 27 (tirami-sdk pytest) = **1,048 passing**.
+**Total tests across the ecosystem:** 785 (tirami workspace) + 646 (forge-mesh Phase 10 P4)
++ 16 (forge-economics SPEC-AUDIT) = **1,447 passing**.
 
 Phase 7 (2026-04-07) rewrote L2/L3/L4 from Python scaffolds into Rust
 workspace crates. Phase 8 (2026-04-08) wired them into tirami-node with
@@ -51,7 +51,7 @@ The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's f
 
 ```bash
 cargo build --release          # Full build
-cargo test --workspace         # All tests (359 across 12 crates)
+cargo test --workspace         # All tests (785 across 14 crates)
 cargo check --workspace        # Fast type check
 cargo clippy --workspace       # Lint
 ```
@@ -61,7 +61,7 @@ Rust edition 2024, resolver v2. Apple Silicon Metal enabled by default for infer
 ## Architecture: Two Layers
 
 ```
-Economic Layer (Forge-original)     ← This is what we build
+Economic Layer (Tirami-original)    ← This is what we build
 ├── tirami-ledger   TRM trades, pricing, yield, settlement
 ├── tirami-lightning CU↔BTC bridge (optional)
 ├── tirami-node/api OpenAI API + /v1/tirami/* economic endpoints
@@ -85,7 +85,7 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 | `tirami-lightning` | ~330 | CU↔Bitcoin Lightning bridge | Medium |
 | `tirami-proto` | ~430 | Wire protocol messages | Medium |
 | `tirami-core` | ~330 | Shared types: NodeId, CU, Config | Medium |
-| `tirami-cli` | ~900 | Reference CLI | Low (will change with mesh-llm fork) |
+| `tirami-cli` | ~1050 | Reference CLI (chat, seed, worker, su) | Low (will change with mesh-llm fork) |
 | `tirami-net` | ~1400 | P2P transport | Low (replaced by mesh-llm) |
 | `tirami-infer` | ~1270 | llama.cpp inference | Low (replaced by mesh-llm) |
 | `forge-shard` | ~130 | Topology planner | Low (replaced by mesh-llm) |
@@ -112,7 +112,7 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 
 ## Code Conventions
 
-- Error handling: `ForgeError` enum in tirami-core, `anyhow` in CLI only
+- Error handling: `TiramiError` enum in tirami-core, `anyhow` in CLI only
 - Serialization: `serde` for JSON/config, `bincode` for wire protocol
 - Async: `tokio` runtime, `Arc<Mutex<T>>` for shared state
 - Logging: `tracing` crate, INFO for user-visible events, DEBUG for protocol details
@@ -125,7 +125,7 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 - `POST /v1/chat/completions` — Chat with streaming, includes `x_forge` TRM cost
 - `GET /v1/models` — List loaded models
 
-### Forge Economic (our original contribution)
+### Tirami Economic (our original contribution)
 - `GET /v1/tirami/balance` — TRM balance, reputation, contribution history
 - `GET /v1/tirami/pricing` — Market price (EMA smoothed), supply/demand, cost estimates
 - `GET /v1/tirami/trades` — Recent trade history (provider, consumer, CU, tokens)
@@ -136,7 +136,7 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 - `GET /settlement` — Exportable settlement statement with Merkle root
 - `GET /topology` — Model manifest, peer capabilities
 
-### Forge Lending (Phase 5.5 — implemented)
+### Tirami Lending (Phase 5.5 — implemented)
 - `POST /v1/tirami/lend` — Offer TRM to lending pool
 - `POST /v1/tirami/borrow` — Request a TRM loan
 - `POST /v1/tirami/lend-to` — Lender-initiated loan proposal to a specific borrower
@@ -145,10 +145,10 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 - `GET /v1/tirami/pool` — Lending pool status (available, utilization, avg rate, your max borrow)
 - `GET /v1/tirami/loans` — Active loans (as lender or borrower)
 
-### Forge Routing (Phase 6 — implemented)
+### Tirami Routing (Phase 6 — implemented)
 - `GET /v1/tirami/route?model=X&max_cu=Y&mode=cost|quality|balanced` — Optimal provider selection
 
-### Forge Bank L2 (Phase 8 — implemented)
+### Tirami Bank L2 (Phase 8 — implemented)
 - `GET /v1/tirami/bank/portfolio` — Portfolio snapshot + cash/lent/borrowed/exposure
 - `POST /v1/tirami/bank/tick` — Run PortfolioManager.tick() with live PoolSnapshot from ledger
 - `POST /v1/tirami/bank/strategy` — Hot-swap strategy (conservative / highyield / balanced)
@@ -158,7 +158,7 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 - `GET /v1/tirami/bank/risk-assessment` — RiskModel VaR 99% on current portfolio
 - `POST /v1/tirami/bank/optimize` — YieldOptimizer with VaR cap
 
-### Forge Agora L4 (Phase 8 — implemented)
+### Tirami Agora L4 (Phase 8 — implemented)
 - `POST /v1/tirami/agora/register` — Register an AgentProfile
 - `GET /v1/tirami/agora/agents` — List registered agents
 - `GET /v1/tirami/agora/reputation/{hex}` — ReputationScore (lazy-refreshes from ledger trade log)
@@ -167,7 +167,7 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 - `GET /v1/tirami/agora/snapshot` — Serialize RegistrySnapshot for backup
 - `POST /v1/tirami/agora/restore` — Restore from RegistrySnapshot
 
-### Forge Mind L3 (Phase 8 — implemented)
+### Tirami Mind L3 (Phase 8 — implemented)
 - `POST /v1/tirami/mind/init` — Initialize ForgeMindAgent (echo / prompt_rewrite / cu_paid optimizer)
 - `GET /v1/tirami/mind/state` — Harness summary + cycle history + budget remaining
 - `POST /v1/tirami/mind/improve` — Run N improvement cycles; TRM is deducted from ledger when CuPaidOptimizer is active
