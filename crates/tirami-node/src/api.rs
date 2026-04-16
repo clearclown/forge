@@ -733,15 +733,20 @@ fn parse_consumer_header(headers: &axum::http::HeaderMap) -> Option<NodeId> {
 }
 
 /// Record a trade in the ledger after inference.
+///
+/// Phase 15 Step 3: now also populates `flops_estimated` from the model
+/// manifest (if loaded). This anchors the "1 TRM = 10⁹ FLOP" principle.
 async fn record_api_trade(
     ledger: &LedgerState,
     provider: &NodeId,
     consumer: Option<NodeId>,
     tokens: u32,
     model_id: &str,
+    flops_per_token: u64,
 ) -> u64 {
     let mut ledger = ledger.lock().await;
     let trm_cost = ledger.estimate_cost(tokens as u64, 1, 1);
+    let flops_estimated = flops_per_token.saturating_mul(tokens as u64);
     let trade = TradeRecord {
         provider: provider.clone(),
         consumer: consumer.unwrap_or(NodeId([255u8; 32])),
@@ -749,9 +754,21 @@ async fn record_api_trade(
         tokens_processed: tokens as u64,
         timestamp: now_millis(),
         model_id: model_id.to_string(),
+        flops_estimated,
     };
     ledger.execute_trade(&trade);
     trm_cost
+}
+
+/// Load flops_per_token from the current model manifest (0 if none loaded).
+async fn flops_per_token_from_manifest(state: &AppState) -> u64 {
+    state
+        .model_manifest
+        .lock()
+        .await
+        .as_ref()
+        .map(|m| m.flops_per_token())
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,9 +1067,17 @@ async fn openai_sync_response(
     let completion_tokens = tokens.len() as u32;
     let text = tokens.join("");
 
-    // Record trade in ledger
-    let trm_cost =
-        record_api_trade(&state.ledger, &state.local_node_id, consumer_id, completion_tokens, &model).await;
+    // Record trade in ledger (Phase 15: with FLOP measurement)
+    let flops_per_token = flops_per_token_from_manifest(&state).await;
+    let trm_cost = record_api_trade(
+        &state.ledger,
+        &state.local_node_id,
+        consumer_id,
+        completion_tokens,
+        &model,
+        flops_per_token,
+    )
+    .await;
     let effective_balance = state.ledger.lock().await.effective_balance(&state.local_node_id);
 
     // If tools were injected, try to extract a tool call from the model output.
@@ -1187,6 +1212,8 @@ async fn openai_stream_response(
     let tx_content = tx.clone();
     let req_id_clone = request_id.clone();
     let model_stream_clone = model_for_stream.clone();
+    // Phase 15 Step 3: pre-capture flops_per_token for the trade record.
+    let flops_per_token_for_trade = flops_per_token_from_manifest(&state).await;
 
     // For tool-call detection, we accumulate all streamed tokens.
     // Limitation: tool_calls arrive as a single final chunk rather than incrementally.
@@ -1290,7 +1317,15 @@ async fn openai_stream_response(
 
         // Record trade in ledger asynchronously after streaming finishes.
         rt.spawn(async move {
-            record_api_trade(&ledger_arc, &provider_id, consumer_id, count, &model_for_trade).await;
+            record_api_trade(
+                &ledger_arc,
+                &provider_id,
+                consumer_id,
+                count,
+                &model_for_trade,
+                flops_per_token_for_trade,
+            )
+            .await;
         });
     });
 
@@ -1406,6 +1441,7 @@ async fn forge_trades(
                 tokens_processed: t.tokens_processed,
                 timestamp: t.timestamp,
                 model_id: t.model_id,
+                flops_estimated: t.flops_estimated,
             })
             .collect(),
     }))
@@ -1430,6 +1466,10 @@ pub struct TradeEntry {
     pub tokens_processed: u64,
     pub timestamp: u64,
     pub model_id: String,
+    /// Phase 15 Step 3 — estimated FLOP for this inference.
+    /// Anchors the "1 TRM = 10⁹ FLOP" principle; 0 for pre-Phase-15 trades.
+    #[serde(default)]
+    pub flops_estimated: u64,
 }
 
 /// GET /v1/tirami/network — mesh-wide economic summary.
@@ -3177,7 +3217,7 @@ mod tests {
 
         // With an explicit consumer
         let consumer = NodeId([42u8; 32]);
-        record_api_trade(&ledger, &provider, Some(consumer.clone()), 100, "test-model").await;
+        record_api_trade(&ledger, &provider, Some(consumer.clone()), 100, "test-model", 0).await;
 
         let trades = ledger.lock().await.recent_trades(1);
         assert_eq!(trades.len(), 1);
@@ -3190,11 +3230,54 @@ mod tests {
         let provider = NodeId([1u8; 32]);
 
         // Without a consumer (None) → anonymous
-        record_api_trade(&ledger, &provider, None, 100, "test-model").await;
+        record_api_trade(&ledger, &provider, None, 100, "test-model", 0).await;
 
         let trades = ledger.lock().await.recent_trades(1);
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].consumer, NodeId([255u8; 32]));
+    }
+
+    #[tokio::test]
+    async fn record_api_trade_populates_flops_estimated() {
+        // Phase 15 Step 3 — verify FLOP accounting is wired through.
+        let ledger: LedgerState = Arc::new(Mutex::new(ComputeLedger::new()));
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+
+        // Simulate a 1M-FLOP-per-token model processing 100 tokens → 100M FLOP.
+        record_api_trade(
+            &ledger,
+            &provider,
+            Some(consumer),
+            100,
+            "metered-model",
+            1_000_000,
+        )
+        .await;
+
+        let trades = ledger.lock().await.recent_trades(1);
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].flops_estimated, 100_000_000);
+    }
+
+    #[test]
+    fn model_manifest_flops_per_token_estimate() {
+        // Phase 15 Step 3 — sanity-check the transformer FLOP approximation.
+        // 896 hidden × 896 × 24 layers × 3 × 2 = ~115M FLOP/token for Qwen 0.5B.
+        let manifest = tirami_core::ModelManifest {
+            id: tirami_core::ModelId("qwen2.5-0.5b-instruct-q4_k_m".to_string()),
+            total_layers: 24,
+            hidden_dim: 896,
+            vocab_size: 151936,
+            head_count: 14,
+            kv_head_count: 2,
+            context_length: 32768,
+            file_size_bytes: 500_000_000,
+            quantization: "Q4_K_M".to_string(),
+        };
+        let flops = manifest.flops_per_token();
+        // Expect ~115M FLOP per token for Qwen 0.5B.
+        assert!((50_000_000..200_000_000).contains(&flops));
     }
 
     #[test]

@@ -81,6 +81,41 @@ pub struct ModelManifest {
     pub quantization: String, // e.g., "Q4_0", "Q4_K_M"
 }
 
+impl ModelManifest {
+    /// Estimate FLOP per token for this model (Phase 15 Step 3).
+    ///
+    /// Formula (approximate transformer forward pass):
+    ///   2 × hidden_dim² × total_layers × 3
+    ///
+    /// Factor 2 = multiply + add per matmul element.
+    /// Factor 3 = Q + K + V projections per attention layer (FFN folded in).
+    ///
+    /// This is the foundational metric for Tirami's core principle:
+    /// **1 TRM = 10⁹ FLOP of verified useful computation.**
+    /// Used by `record_api_trade` to populate `TradeRecord::flops_estimated`.
+    pub fn flops_per_token(&self) -> u64 {
+        2u64.saturating_mul(self.hidden_dim as u64)
+            .saturating_mul(self.hidden_dim as u64)
+            .saturating_mul(self.total_layers as u64)
+            .saturating_mul(3)
+    }
+}
+
+/// Computation meter reading (Phase 15 Step 3).
+///
+/// Records computational cost of an inference execution. Used to:
+/// - Verify the "1 TRM = 10⁹ FLOP" principle in trade records
+/// - Feed provider performance tracking (wall_time_ms → latency EMA)
+/// - Support audit verdicts (hash of deterministic output)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeterReading {
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub flops_estimated: u64,
+    pub wall_time_ms: u64,
+    pub model_id: ModelId,
+}
+
 /// A node's hardware and network capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerCapability {

@@ -137,6 +137,16 @@ pub struct TradeRecord {
     pub tokens_processed: u64,
     pub timestamp: u64,
     pub model_id: String,
+    /// Phase 15 Step 3 — estimated FLOP for this inference.
+    ///
+    /// Populated from `ModelManifest::flops_per_token() × tokens_processed`.
+    /// Anchors the core principle "1 TRM = 10⁹ FLOP": callers can verify
+    /// `flops_estimated ≈ trm_amount × 10⁹` as a sanity check.
+    ///
+    /// `serde(default)` preserves compatibility with pre-Phase-15 snapshots
+    /// and signed trades (not included in `canonical_bytes` for the same reason).
+    #[serde(default)]
+    pub flops_estimated: u64,
 }
 
 impl TradeRecord {
@@ -1545,6 +1555,7 @@ mod tests {
             tokens_processed: 256,
             timestamp: 1000,
             model_id: "llama-7b".to_string(),
+            flops_estimated: 0,
         };
 
         ledger.execute_trade(&trade);
@@ -1628,6 +1639,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: 1,
             model_id: "small".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider,
@@ -1636,6 +1648,7 @@ mod tests {
             tokens_processed: 20,
             timestamp: 2,
             model_id: "large".to_string(),
+            flops_estimated: 0,
         });
 
         let trades = ledger.recent_trades(2);
@@ -1656,6 +1669,7 @@ mod tests {
             tokens_processed: 12,
             timestamp: 42,
             model_id: "persisted".to_string(),
+            flops_estimated: 0,
         });
 
         ledger.save_to_path(&path).unwrap();
@@ -1679,6 +1693,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: 100,
             model_id: "m1".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider: NodeId([2u8; 32]),
@@ -1687,6 +1702,7 @@ mod tests {
             tokens_processed: 4,
             timestamp: 200,
             model_id: "m2".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider: NodeId([9u8; 32]),
@@ -1695,6 +1711,7 @@ mod tests {
             tokens_processed: 99,
             timestamp: 999,
             model_id: "ignored".to_string(),
+            flops_estimated: 0,
         });
 
         let statement = ledger.export_settlement_statement(50, 250, Some(0.5));
@@ -1754,6 +1771,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: 1000,
             model_id: "m1".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider,
@@ -1762,6 +1780,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: 2000,
             model_id: "m2".to_string(),
+            flops_estimated: 0,
         });
 
         let root1 = ledger.compute_trade_merkle_root();
@@ -1780,6 +1799,7 @@ mod tests {
             tokens_processed: 25,
             timestamp: 500,
             model_id: "test".to_string(),
+            flops_estimated: 0,
         });
 
         let statement = ledger.export_settlement_statement(0, 10000, None);
@@ -1817,6 +1837,7 @@ mod tests {
             tokens_processed: 256,
             timestamp: 1000,
             model_id: "llama-7b".to_string(),
+            flops_estimated: 0,
         };
 
         let bytes1 = trade.canonical_bytes();
@@ -1835,6 +1856,7 @@ mod tests {
             tokens_processed: 256,
             timestamp: 1000,
             model_id: "model-a".to_string(),
+            flops_estimated: 0,
         };
         let trade2 = TradeRecord {
             provider: NodeId([1u8; 32]),
@@ -1843,6 +1865,7 @@ mod tests {
             tokens_processed: 256,
             timestamp: 1000,
             model_id: "model-a".to_string(),
+            flops_estimated: 0,
         };
         assert_ne!(trade1.canonical_bytes(), trade2.canonical_bytes());
     }
@@ -1892,6 +1915,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: 1000,
             model_id: "test".to_string(),
+            flops_estimated: 0,
         };
         ledger.execute_trade(&trade);
 
@@ -1919,6 +1943,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "test-model".to_string(),
+            flops_estimated: 0,
         };
 
         let canonical = trade.canonical_bytes();
@@ -1954,6 +1979,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         };
 
         let canonical = trade.canonical_bytes();
@@ -1993,6 +2019,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         };
 
         let canonical = trade.canonical_bytes();
@@ -2064,6 +2091,7 @@ mod tests {
             tokens_processed: 25,
             timestamp: now_millis(),
             model_id: "m1".to_string(),
+            flops_estimated: 0,
         });
         let root1 = ledger.compute_trade_merkle_root();
 
@@ -2074,6 +2102,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "m2".to_string(),
+            flops_estimated: 0,
         });
         let root2 = ledger.compute_trade_merkle_root();
 
@@ -2135,6 +2164,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         });
         let data = ledger.prepare_anchor_data();
         assert_eq!(data.len(), 80);
@@ -2152,6 +2182,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         });
         // Self-trade should not be recorded
         assert!(ledger.get_balance(&node).is_none());
@@ -2235,6 +2266,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "seed".into(),
+            flops_estimated: 0,
         });
         ledger.update_reputation(borrower, 1.0);
         // Give borrower headroom so collateral reservation succeeds.
@@ -2441,6 +2473,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "m".into(),
+            flops_estimated: 0,
         });
         ledger.update_reputation(&node, 1.0);
         let after = ledger.compute_credit_score(&node);
@@ -2497,6 +2530,7 @@ mod tests {
             tokens_processed: 0,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         });
         assert_eq!(ledger.recent_trades(10).len(), 0);
     }
@@ -2650,6 +2684,7 @@ mod tests {
                 tokens_processed: 10,
                 timestamp: now_millis().saturating_sub(i * 60_000),
                 model_id: "test".into(),
+                flops_estimated: 0,
             });
         }
         let raw = ledger.consensus_reputation(&subject);
@@ -2687,6 +2722,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "attack".into(),
+            flops_estimated: 0,
         });
         // No trade should have been recorded and balance must not exist.
         assert_eq!(
@@ -2715,6 +2751,7 @@ mod tests {
             tokens_processed: 0,
             timestamp: now_millis(),
             model_id: "spam".into(),
+            flops_estimated: 0,
         });
         assert_eq!(
             ledger.trade_log.len(),
@@ -2748,6 +2785,7 @@ mod tests {
             tokens_processed: 1,
             timestamp: now_millis(),
             model_id: "huge".into(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider: provider.clone(),
@@ -2756,6 +2794,7 @@ mod tests {
             tokens_processed: 1,
             timestamp: now_millis(),
             model_id: "huge2".into(),
+            flops_estimated: 0,
         });
         let bal = ledger.get_balance(&provider).unwrap();
         // Contributed must NOT have wrapped around to a small value.
@@ -3031,6 +3070,7 @@ mod tests {
                 tokens_processed: 10,
                 timestamp: now.saturating_sub(i * 60_000),
                 model_id: "spam".into(),
+                flops_estimated: 0,
             });
         }
 
@@ -3074,6 +3114,7 @@ mod tests {
                 tokens_processed: 10,
                 timestamp: now.saturating_sub(i * 60_000),
                 model_id: "wash".into(),
+                flops_estimated: 0,
             });
         }
 
@@ -3244,6 +3285,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "test".into(),
+            flops_estimated: 0,
         });
         ledger.save_to_path(&path).unwrap();
 
@@ -3433,6 +3475,7 @@ mod tests {
             tokens_processed: 7,
             timestamp: 9_999,
             model_id: "hmac-roundtrip".to_string(),
+            flops_estimated: 0,
         });
         ledger.save_to_path(&path).unwrap();
         let loaded = ComputeLedger::load_from_path(&path).unwrap();
@@ -3455,6 +3498,7 @@ mod tests {
                 tokens_processed: i,
                 timestamp: i * 100,
                 model_id: format!("m{i}"),
+                flops_estimated: 0,
             });
         }
         ledger.save_to_path(&path).unwrap();
@@ -3493,6 +3537,7 @@ mod tests {
             tokens_processed: 11,
             timestamp: 1_000,
             model_id: "first".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider: NodeId([3u8; 32]),
@@ -3501,6 +3546,7 @@ mod tests {
             tokens_processed: 22,
             timestamp: 2_000,
             model_id: "second".to_string(),
+            flops_estimated: 0,
         });
         ledger.save_to_path(&path).unwrap();
 
@@ -3561,6 +3607,7 @@ mod tests {
             tokens_processed: 5,
             timestamp: 100,
             model_id: "a".to_string(),
+            flops_estimated: 0,
         };
         let trade_b = TradeRecord {
             provider: NodeId([3u8; 32]),
@@ -3569,6 +3616,7 @@ mod tests {
             tokens_processed: 7,
             timestamp: 200,
             model_id: "b".to_string(),
+            flops_estimated: 0,
         };
         let mut l1 = ComputeLedger::new();
         l1.execute_trade(&trade_a);
@@ -3592,6 +3640,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: 1_000,
             model_id: "m".to_string(),
+            flops_estimated: 0,
         };
         let mut l1 = ComputeLedger::new();
         l1.execute_trade(&base);
@@ -3620,6 +3669,7 @@ mod tests {
             tokens_processed: 5,
             timestamp: now_millis(),
             model_id: "t".to_string(),
+            flops_estimated: 0,
         };
         let canonical = trade.canonical_bytes();
         let provider_sig = pk.sign(&canonical).to_bytes().to_vec();
@@ -3643,6 +3693,7 @@ mod tests {
             tokens_processed: 5,
             timestamp: now_millis(),
             model_id: "t".to_string(),
+            flops_estimated: 0,
         };
         let canonical = trade.canonical_bytes();
         let consumer_sig = ck.sign(&canonical).to_bytes().to_vec();
@@ -3670,6 +3721,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: now_millis(),
             model_id: "t".to_string(),
+            flops_estimated: 0,
         };
         let canonical = trade.canonical_bytes();
         let provider_sig = pk.sign(&canonical).to_bytes().to_vec();
@@ -3899,6 +3951,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: now_millis(),
             model_id: "m".into(),
+            flops_estimated: 0,
         }];
         let report = crate::collusion::CollusionDetector::analyze_node(&trades, &subject, now_millis());
         assert_eq!(report.trust_penalty, 0.0, "single trade below MIN_TRADES threshold must yield 0 penalty");
@@ -4098,6 +4151,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "m".into(),
+            flops_estimated: 0,
         };
         let len_before = ledger.recent_trades(100).len();
         ledger.execute_trade(&self_trade);
@@ -4116,6 +4170,7 @@ mod tests {
             tokens_processed: 0,
             timestamp: now_millis(),
             model_id: "m".into(),
+            flops_estimated: 0,
         };
         ledger.execute_trade(&zero_trade);
         assert_eq!(ledger.recent_trades(10).len(), 0, "zero-CU trade must not be recorded");

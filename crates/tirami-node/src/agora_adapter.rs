@@ -97,6 +97,7 @@ mod tests {
             tokens_processed: cu / 10,
             timestamp: 1_700_000_000_000,
             model_id: "test-model".to_string(),
+            flops_estimated: 0,
         }
     }
 
