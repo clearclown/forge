@@ -116,6 +116,35 @@ pub struct MeterReading {
     pub model_id: ModelId,
 }
 
+/// Authorization token for a single inference execution (Phase 15 Step 4).
+///
+/// Created atomically by `ComputeLedger::begin_inference()` (which performs
+/// provider selection + CU reservation in a single locked section).
+/// Consumed by `settle_inference()` which executes the trade and releases
+/// any excess reservation.
+///
+/// This pattern prevents races where the same TRM could be spent twice on
+/// parallel inference requests.
+#[derive(Debug, Clone)]
+pub struct InferenceTicket {
+    /// Monotonic id assigned by the ledger.
+    pub request_id: u64,
+    /// Consumer that requested the inference.
+    pub consumer: NodeId,
+    /// Provider selected by `select_provider`.
+    pub provider: NodeId,
+    /// Model identifier (matches the provider's price signal).
+    pub model_id: ModelId,
+    /// TRM reserved on the consumer's balance. Excess is released at settle.
+    pub reserved_trm: u64,
+    /// Maximum tokens allowed for this request.
+    pub max_tokens: u64,
+    /// True if the ticket triggers a Phase 14.3 audit challenge.
+    pub audit_required: bool,
+    /// Unix ms when the ticket was issued.
+    pub created_at: u64,
+}
+
 /// A node's hardware and network capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerCapability {

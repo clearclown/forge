@@ -218,6 +218,7 @@ pub fn create_router_with_services(
         .route("/v1/tirami/network", get(tirami_network))
         .route("/v1/tirami/providers", get(forge_providers))
         .route("/v1/tirami/peers", get(forge_peers))
+        .route("/v1/tirami/schedule", post(forge_schedule))
         .route("/v1/tirami/safety", get(forge_safety_status))
         .route("/v1/tirami/kill", post(forge_kill_switch))
         .route("/v1/tirami/policy", post(forge_set_policy))
@@ -1583,6 +1584,54 @@ async fn forge_peers(
         "count": peers.len(),
         "peers": peers,
     })))
+}
+
+/// POST /v1/tirami/schedule — Phase 14.2 Ledger-as-Brain scheduling probe.
+///
+/// Given `{model_id, max_tokens, [consumer]}`, returns the provider that
+/// `select_provider` would pick (or 404 if none). Does NOT reserve TRM —
+/// it's a read-only "what would you do?" query for agents and testing.
+async fn forge_schedule(
+    State(state): State<AppState>,
+    Json(req): Json<ScheduleRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+
+    let consumer = match req.consumer {
+        Some(hex_str) if hex_str.len() == 64 => {
+            let mut buf = [0u8; 32];
+            hex::decode_to_slice(&hex_str, &mut buf)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid consumer hex".to_string()))?;
+            NodeId(buf)
+        }
+        _ => state.local_node_id.clone(),
+    };
+
+    let ledger = state.ledger.lock().await;
+    match ledger.select_provider(
+        &tirami_core::ModelId(req.model_id.clone()),
+        req.max_tokens,
+        &consumer,
+    ) {
+        Some((provider, estimated_cost)) => Ok(Json(serde_json::json!({
+            "provider": provider.to_hex(),
+            "estimated_trm_cost": estimated_cost,
+            "model_id": req.model_id,
+            "max_tokens": req.max_tokens,
+        }))),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            "no provider available for this model".to_string(),
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScheduleRequest {
+    pub model_id: String,
+    pub max_tokens: u64,
+    /// Optional hex NodeId. Defaults to the local node if omitted.
+    pub consumer: Option<String>,
 }
 
 /// GET /v1/tirami/safety — safety status for this node.

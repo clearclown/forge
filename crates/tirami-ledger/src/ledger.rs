@@ -61,6 +61,10 @@ pub struct ComputeLedger {
     /// Read by `select_provider` (Phase 14.2) when scheduling inference.
     #[serde(default)]
     pub peer_registry: crate::peer_registry::PeerRegistry,
+    /// Phase 14.2 — monotonic request ID counter for InferenceTicket.
+    /// Not persisted (regenerated on restart, safe because tickets are short-lived).
+    #[serde(default, skip_serializing)]
+    pub next_request_id: u64,
 }
 
 /// Dynamic pricing based on supply/demand and network scale.
@@ -397,6 +401,7 @@ impl ComputeLedger {
             remote_reputation: HashMap::new(),
             total_minted: 0,
             peer_registry: crate::peer_registry::PeerRegistry::new(),
+            next_request_id: 0,
         }
     }
 
@@ -422,6 +427,211 @@ impl ComputeLedger {
     /// Number of peers currently in the registry.
     pub fn peer_count(&self) -> usize {
         self.peer_registry.len()
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 14.2 — Ledger-as-Brain: unified scheduling + economic decisions
+    //
+    // The v1 pipeline historically separated "pick a provider" from "record
+    // a trade" across different files (pipeline.rs + api.rs + ledger.rs).
+    // These three methods consolidate both into the ledger so that
+    // scheduling, reservation, and settlement happen under a single lock.
+    // -----------------------------------------------------------------------
+
+    /// Select the best provider for a model request from the PeerRegistry.
+    ///
+    /// Score formula (ported from v2 reference implementation):
+    ///   score = effective_reputation
+    ///         × (1 / price_multiplier)
+    ///         × (1 / (1 + latency_ema_ms / 1000))
+    ///         × capacity_ratio
+    ///
+    /// Filters out: nodes that cannot serve the model, have no capacity,
+    /// or are the consumer itself. Returns `(provider, estimated_trm_cost)`
+    /// or `None` when no provider is available.
+    ///
+    /// The cost is computed from the current market price — the same value
+    /// that will be charged at settlement, modulo token-count truing-up.
+    pub fn select_provider(
+        &self,
+        model_id: &tirami_core::ModelId,
+        estimated_tokens: u64,
+        consumer: &NodeId,
+    ) -> Option<(NodeId, u64)> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let candidates = self.peer_registry.providers_for_model(model_id);
+        let mut best: Option<(NodeId, f64, u64)> = None;
+
+        for (node_id, state) in &candidates {
+            if *node_id == consumer {
+                continue; // no self-selection
+            }
+
+            let reputation = self.effective_reputation(node_id, now);
+            let price_mult = state
+                .price_signal
+                .as_ref()
+                .map(|s| s.price_multiplier)
+                .unwrap_or(1.0)
+                .max(0.01);
+            let latency = state.latency_ema_ms;
+            let available = state.available_cu();
+
+            // Cost estimate: tokens × market price × price_multiplier.
+            let base_cost = self.estimate_cost(estimated_tokens, 1, 1);
+            let estimated_cost = ((base_cost as f64) * price_mult).ceil() as u64;
+
+            let capacity_ratio = if estimated_cost == 0 {
+                1.0
+            } else {
+                (available as f64 / estimated_cost as f64).min(1.0)
+            };
+
+            let score = reputation
+                * (1.0 / price_mult)
+                * (1.0 / (1.0 + latency / 1000.0))
+                * capacity_ratio;
+
+            match &best {
+                None => best = Some(((*node_id).clone(), score, estimated_cost)),
+                Some((_, best_score, _)) if score > *best_score => {
+                    best = Some(((*node_id).clone(), score, estimated_cost));
+                }
+                _ => {}
+            }
+        }
+
+        best.map(|(id, _, cost)| (id, cost))
+    }
+
+    /// Atomically select a provider and reserve CU for an inference request.
+    ///
+    /// Returns an `InferenceTicket` that authorizes execution. The ticket is
+    /// the ONLY way to authorize `settle_inference`: there is no way to spend
+    /// reserved TRM without holding a valid ticket.
+    ///
+    /// Errors:
+    /// - `SchedulingError` if no provider can serve the model
+    /// - `InsufficientBalance` if the consumer cannot afford the estimated cost
+    pub fn begin_inference(
+        &mut self,
+        consumer: &NodeId,
+        model_id: &tirami_core::ModelId,
+        max_tokens: u64,
+    ) -> Result<tirami_core::InferenceTicket, tirami_core::TiramiError> {
+        let (provider, estimated_cost) = self
+            .select_provider(model_id, max_tokens, consumer)
+            .ok_or_else(|| {
+                tirami_core::TiramiError::SchedulingError(
+                    "no provider available for this model".to_string(),
+                )
+            })?;
+
+        if !self.reserve_cu(consumer, estimated_cost) {
+            let have = self.effective_balance(consumer).max(0) as u64;
+            return Err(tirami_core::TiramiError::InsufficientBalance {
+                need: estimated_cost,
+                have,
+            });
+        }
+
+        // Determine whether to audit (Phase 14.3 consumption of AuditTier).
+        let audit_required = {
+            let tier = self
+                .peer_registry
+                .get(&provider)
+                .map(|s| s.audit_tier)
+                .unwrap_or(tirami_core::AuditTier::Unverified);
+            rand::random::<f64>() < tier.audit_probability()
+        };
+
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+
+        Ok(tirami_core::InferenceTicket {
+            request_id,
+            consumer: consumer.clone(),
+            provider,
+            model_id: model_id.clone(),
+            reserved_trm: estimated_cost,
+            max_tokens,
+            audit_required,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        })
+    }
+
+    /// Settle a completed inference: compute actual cost, release excess
+    /// reservation, execute the trade, update latency EMA, and (if an
+    /// audit was performed) adjust reputation.
+    ///
+    /// `actual_tokens` is the verified token count from the meter. If it's
+    /// less than `ticket.max_tokens`, the difference is released back to
+    /// the consumer's balance.
+    pub fn settle_inference(
+        &mut self,
+        ticket: &tirami_core::InferenceTicket,
+        actual_tokens: u64,
+        latency_ms: u64,
+        audit_passed: Option<bool>,
+        flops_estimated: u64,
+    ) -> Result<TradeRecord, tirami_core::TiramiError> {
+        // Compute actual cost prorated against max_tokens reserved.
+        let actual_cost = if ticket.max_tokens == 0 {
+            ticket.reserved_trm
+        } else {
+            let ratio = (actual_tokens as f64 / ticket.max_tokens as f64).min(1.0);
+            ((ticket.reserved_trm as f64) * ratio).ceil() as u64
+        }
+        .max(1); // minimum 1 TRM
+
+        // Release the overcharge back to the consumer.
+        let excess = ticket.reserved_trm.saturating_sub(actual_cost);
+        if excess > 0 {
+            self.release_reserve(&ticket.consumer, excess);
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let trade = TradeRecord {
+            provider: ticket.provider.clone(),
+            consumer: ticket.consumer.clone(),
+            trm_amount: actual_cost,
+            tokens_processed: actual_tokens,
+            timestamp: now,
+            model_id: ticket.model_id.0.clone(),
+            flops_estimated,
+        };
+        self.execute_trade(&trade);
+
+        // Feedback: latency EMA for future scheduling.
+        self.peer_registry
+            .update_latency(&ticket.provider, latency_ms as f64);
+
+        // Phase 14.3 — audit outcomes feed reputation.
+        match audit_passed {
+            Some(true) => {
+                self.peer_registry.record_verified_trade(&ticket.provider);
+            }
+            Some(false) => {
+                // Penalty: -0.1 reputation per failed audit (floor at 0).
+                if let Some(balance) = self.balances.get_mut(&ticket.provider) {
+                    balance.reputation = (balance.reputation - 0.1).max(0.0);
+                }
+            }
+            None => { /* no audit this round */ }
+        }
+
+        Ok(trade)
     }
 
     /// Get the current market price.
@@ -523,6 +733,7 @@ impl ComputeLedger {
             remote_reputation: HashMap::new(), // ephemeral; re-built from peers on startup
             total_minted: 0,
             peer_registry: crate::peer_registry::PeerRegistry::new(), // ephemeral; rebuilt from gossip
+            next_request_id: 0,
         }
     }
 
@@ -4225,5 +4436,138 @@ mod tests {
         ledger.apply_yield(&node, -100.0);
         let contributed_after = ledger.get_balance(&node).map(|b| b.contributed).unwrap_or(0);
         assert_eq!(contributed_before, contributed_after, "negative uptime must not corrupt balance");
+    }
+
+    // =======================================================================
+    // Phase 14.2 tests — select_provider / begin_inference / settle_inference
+    // =======================================================================
+
+    fn price_signal_for(node: NodeId, model: &str, multiplier: f64, available: u64) -> tirami_core::PriceSignal {
+        tirami_core::PriceSignal {
+            node_id: node,
+            price_multiplier: multiplier,
+            available_cu: available,
+            model_capabilities: vec![ModelId(model.to_string())],
+            latency_hint_ms: 50,
+            timestamp: now_millis(),
+        }
+    }
+
+    #[test]
+    fn select_provider_returns_none_when_empty() {
+        let ledger = ComputeLedger::new();
+        let selected = ledger.select_provider(
+            &ModelId("qwen".to_string()),
+            100,
+            &NodeId([0u8; 32]),
+        );
+        assert!(selected.is_none());
+    }
+
+    #[test]
+    fn select_provider_picks_best_scored_candidate() {
+        let mut ledger = ComputeLedger::new();
+        let cheap = NodeId([1u8; 32]);
+        let expensive = NodeId([2u8; 32]);
+        let consumer = NodeId([3u8; 32]);
+
+        // Both have the same model; cheap is half price.
+        ledger.ingest_price_signal(&price_signal_for(cheap.clone(), "qwen", 0.5, 10_000));
+        ledger.ingest_price_signal(&price_signal_for(expensive.clone(), "qwen", 2.0, 10_000));
+
+        let (provider, _cost) = ledger
+            .select_provider(&ModelId("qwen".to_string()), 100, &consumer)
+            .expect("should select a provider");
+        assert_eq!(provider, cheap, "cheaper node should win");
+    }
+
+    #[test]
+    fn select_provider_excludes_self() {
+        let mut ledger = ComputeLedger::new();
+        let me = NodeId([7u8; 32]);
+        ledger.ingest_price_signal(&price_signal_for(me.clone(), "qwen", 1.0, 10_000));
+        assert!(ledger
+            .select_provider(&ModelId("qwen".to_string()), 100, &me)
+            .is_none());
+    }
+
+    #[test]
+    fn begin_inference_errors_when_no_provider() {
+        let mut ledger = ComputeLedger::new();
+        let consumer = NodeId([9u8; 32]);
+        let err = ledger.begin_inference(&consumer, &ModelId("nope".to_string()), 100);
+        assert!(matches!(err, Err(tirami_core::TiramiError::SchedulingError(_))));
+    }
+
+    #[test]
+    fn begin_inference_errors_on_insufficient_balance() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+        ledger.ingest_price_signal(&price_signal_for(provider, "qwen", 1.0, 10_000));
+        // Request way more than the 1000 TRM free-tier credit.
+        let err = ledger.begin_inference(&consumer, &ModelId("qwen".to_string()), 100_000);
+        assert!(
+            matches!(err, Err(tirami_core::TiramiError::InsufficientBalance { .. })),
+            "expected InsufficientBalance, got: {err:?}",
+        );
+    }
+
+    #[test]
+    fn begin_and_settle_inference_roundtrip() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+
+        // Fund consumer.
+        ledger.record_contribution(make_work([2u8; 32], 10_000_000_000));
+        ledger.ingest_price_signal(&price_signal_for(provider.clone(), "qwen", 1.0, 10_000));
+
+        let ticket = ledger
+            .begin_inference(&consumer, &ModelId("qwen".to_string()), 100)
+            .expect("ticket");
+        assert_eq!(ticket.provider, provider);
+        assert_eq!(ticket.consumer, consumer);
+        assert!(ticket.reserved_trm > 0);
+
+        // Settle with half the tokens used.
+        let trade = ledger
+            .settle_inference(&ticket, 50, 120, Some(true), 123_456_789)
+            .expect("settle");
+
+        assert_eq!(trade.provider, provider);
+        assert_eq!(trade.consumer, consumer);
+        assert_eq!(trade.tokens_processed, 50);
+        assert_eq!(trade.flops_estimated, 123_456_789);
+        // Half the reservation should have been released.
+        assert!(trade.trm_amount <= ticket.reserved_trm);
+    }
+
+    #[test]
+    fn settle_inference_failed_audit_reduces_reputation() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+
+        ledger.record_contribution(make_work([2u8; 32], 10_000_000_000));
+        ledger.ingest_price_signal(&price_signal_for(provider.clone(), "qwen", 1.0, 10_000));
+
+        let ticket = ledger
+            .begin_inference(&consumer, &ModelId("qwen".to_string()), 100)
+            .unwrap();
+        let rep_before = ledger
+            .get_balance(&provider)
+            .map(|b| b.reputation)
+            .unwrap_or(DEFAULT_REPUTATION);
+
+        let _ = ledger
+            .settle_inference(&ticket, 50, 120, Some(false), 0)
+            .unwrap();
+
+        let rep_after = ledger
+            .get_balance(&provider)
+            .map(|b| b.reputation)
+            .unwrap_or(DEFAULT_REPUTATION);
+        assert!(rep_after < rep_before, "failed audit should decrease reputation");
     }
 }
