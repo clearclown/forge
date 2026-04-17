@@ -288,6 +288,8 @@ pub fn create_router_with_services(
         .route("/v1/tirami/reputation-gossip-status", get(forge_reputation_gossip_status))
         // Phase 9 A5 — Collusion resistance debug endpoint
         .route("/v1/tirami/collusion/{hex}", get(forge_collusion_report))
+        // Phase 17 Wave 1.3 — slashing audit trail
+        .route("/v1/tirami/slash-events", get(forge_slash_events))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -2621,6 +2623,37 @@ async fn forge_collusion_report(
         "round_robin_score": report.round_robin_score,
         "trust_penalty": report.trust_penalty,
         "flags": report.flags,
+    })))
+}
+
+/// Phase 17 Wave 1.3 — GET /v1/tirami/slash-events
+///
+/// Returns the append-only slashing audit trail: every stake burn
+/// applied by the local node, newest last. Useful for operators
+/// inspecting why a peer was penalized, and for external auditors
+/// verifying the integrity of the trust-penalty loop.
+async fn forge_slash_events(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let ledger = state.ledger.lock().await;
+    let events: Vec<serde_json::Value> = ledger
+        .slash_events()
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "node_id": e.node_id.to_hex(),
+                "trust_penalty": e.trust_penalty,
+                "burned_trm": e.burned_trm,
+                "timestamp_ms": e.timestamp_ms,
+                "reason": e.reason,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "total": events.len(),
+        "total_burned_trm": ledger.slash_events().iter().map(|e| e.burned_trm).sum::<u64>(),
+        "events": events,
     })))
 }
 

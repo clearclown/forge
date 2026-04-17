@@ -80,6 +80,29 @@ pub struct ComputeLedger {
     /// exemption out.
     #[serde(default, skip_serializing)]
     pub(crate) seen_nonces: HashMap<NodeId, NonceCache>,
+    /// Phase 17 Wave 1.3 — append-only record of slash events applied by
+    /// the local node. Persisted to the snapshot so operators and
+    /// auditors can see the full disciplinary trail across restarts.
+    #[serde(default)]
+    pub slash_events: Vec<SlashEvent>,
+}
+
+/// Audit trail entry written each time [`ComputeLedger::update_trust_penalties`]
+/// or an audit-failure bridge decides to slash a peer's stake.
+///
+/// A SlashEvent is *not* itself a ledger-moving operation — the burn
+/// happened when [`crate::StakingPool::apply_slash`] ran and removed
+/// the TRM from the node's lock. This type just records *that* it
+/// happened, along with why, so it can be inspected / served via API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SlashEvent {
+    pub node_id: NodeId,
+    pub trust_penalty: f64,
+    pub burned_trm: u64,
+    pub timestamp_ms: u64,
+    /// Short machine-readable tag. Current values: `"collusion"`,
+    /// `"audit-fail"`. Kept as a free-form string for forward-compat.
+    pub reason: String,
 }
 
 /// Bounded per-provider nonce cache with FIFO eviction.
@@ -445,6 +468,10 @@ struct PersistedLedger {
     loan_pool_lent: u64,
     #[serde(default)]
     loan_pool_total: u64,
+    /// Phase 17 Wave 1.3 — persisted slashing audit trail.
+    /// `#[serde(default)]` preserves compatibility with pre-Phase-17 snapshots.
+    #[serde(default)]
+    slash_events: Vec<SlashEvent>,
 }
 
 /// Wrapper for signed/integrity-checked ledger persistence.
@@ -516,6 +543,7 @@ impl ComputeLedger {
             next_request_id: 0,
             audit_tracker: crate::audit::AuditTracker::new(),
             seen_nonces: HashMap::new(),
+            slash_events: Vec::new(),
         }
     }
 
@@ -784,6 +812,7 @@ impl ComputeLedger {
             loan_log: self.loans.clone(),
             loan_pool_lent: self.loan_pool_lent,
             loan_pool_total: self.loan_pool_total,
+            slash_events: self.slash_events.clone(),
         };
 
         let json = serde_json::to_string_pretty(&snapshot)
@@ -851,6 +880,7 @@ impl ComputeLedger {
             next_request_id: 0,
             audit_tracker: crate::audit::AuditTracker::new(),
             seen_nonces: HashMap::new(),
+            slash_events: snapshot.slash_events,
         };
         // Phase 17 Wave 1.2 — replay defense must survive a restart.
         ledger.rebuild_nonce_cache();
@@ -1053,6 +1083,114 @@ impl ComputeLedger {
                 cache.insert(trade.nonce);
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 17 Wave 1.3 — Slashing wired into production
+    // -----------------------------------------------------------------------
+
+    /// Minimum trust penalty before slashing fires. Below this threshold
+    /// we treat the collusion signals as noise and do not touch the stake.
+    pub const SLASH_PENALTY_THRESHOLD: f64 = 0.1;
+
+    /// Append one entry to the persistent slash audit trail. Callers MUST
+    /// have already burned the stake via [`crate::StakingPool::apply_slash`]
+    /// — this method does not transfer or burn TRM itself.
+    pub fn record_slash_event(
+        &mut self,
+        node_id: NodeId,
+        trust_penalty: f64,
+        burned_trm: u64,
+        reason: impl Into<String>,
+        now_ms: u64,
+    ) {
+        self.slash_events.push(SlashEvent {
+            node_id,
+            trust_penalty,
+            burned_trm,
+            timestamp_ms: now_ms,
+            reason: reason.into(),
+        });
+    }
+
+    /// Full snapshot of slash events, newest last. Intended for operator
+    /// dashboards and external auditors.
+    pub fn slash_events(&self) -> &[SlashEvent] {
+        &self.slash_events
+    }
+
+    /// Scan the ledger for collusion and apply stake slashing to offending
+    /// nodes. Returns the events that were recorded this cycle so the
+    /// caller can log / export them.
+    ///
+    /// Semantics:
+    /// * Runs [`crate::CollusionDetector::analyze_node`] on every node
+    ///   that appears in balances (fast) or in recent trades.
+    /// * When `trust_penalty >= SLASH_PENALTY_THRESHOLD`, calls
+    ///   [`crate::StakingPool::apply_slash`] to burn part of the stake,
+    ///   and records a [`SlashEvent`] with reason `"collusion"`.
+    /// * Nodes without a stake slot produce `burned = 0` from
+    ///   `apply_slash` — we skip them to keep the event log signal-rich.
+    /// * Nodes that have already been slashed in the last 5 minutes
+    ///   are skipped too, so repeated runs don't zero the same stake
+    ///   to dust over one bad streak.
+    pub fn update_trust_penalties(
+        &mut self,
+        staking: &mut crate::StakingPool,
+        now_ms: u64,
+    ) -> Vec<SlashEvent> {
+        let candidates: Vec<NodeId> = {
+            let mut seen: std::collections::HashSet<NodeId> =
+                self.balances.keys().cloned().collect();
+            for trade in &self.trade_log {
+                seen.insert(trade.provider.clone());
+                seen.insert(trade.consumer.clone());
+            }
+            seen.into_iter().collect()
+        };
+
+        // Build a "recently slashed" set so we don't pile multiple
+        // penalties on the same node within a single 5-minute window.
+        let recent_window_ms: u64 = 5 * 60 * 1_000;
+        let recently_slashed: std::collections::HashSet<NodeId> = self
+            .slash_events
+            .iter()
+            .filter(|e| now_ms.saturating_sub(e.timestamp_ms) < recent_window_ms)
+            .map(|e| e.node_id.clone())
+            .collect();
+
+        let mut new_events = Vec::new();
+        for node_id in candidates {
+            if recently_slashed.contains(&node_id) {
+                continue;
+            }
+            let report = crate::collusion::CollusionDetector::analyze_node(
+                &self.trade_log,
+                &node_id,
+                now_ms,
+            );
+            if report.trust_penalty < Self::SLASH_PENALTY_THRESHOLD {
+                continue;
+            }
+            let burned = staking.apply_slash(&node_id, report.trust_penalty);
+            if burned == 0 {
+                // Node has no stake to slash — still not a free pass,
+                // reputation already reflects the collusion score via
+                // effective_reputation(). Skip the event log to avoid
+                // spamming it with 0-impact entries.
+                continue;
+            }
+            let event = SlashEvent {
+                node_id: node_id.clone(),
+                trust_penalty: report.trust_penalty,
+                burned_trm: burned,
+                timestamp_ms: now_ms,
+                reason: "collusion".to_string(),
+            };
+            self.slash_events.push(event.clone());
+            new_events.push(event);
+        }
+        new_events
     }
 
     /// Execute a trade: provider earns CU, consumer spends CU.
@@ -2187,6 +2325,171 @@ mod tests {
         assert!(!cache.contains(&[0u8; 16]));
         assert!(cache.contains(&fresh));
         assert_eq!(cache.order.len(), NonceCache::CAPACITY);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 17 Wave 1.3 — update_trust_penalties + slash_event tests.
+    // ------------------------------------------------------------------
+
+    /// Inject a tight-cluster collusion pattern: `subject` trades with a
+    /// single counterparty many times within the detection window.
+    /// Nonces are generated so v2 dedup doesn't interfere.
+    fn inject_tight_cluster(
+        ledger: &mut ComputeLedger,
+        subject: NodeId,
+        counterparty: NodeId,
+        count: usize,
+        now_ms: u64,
+    ) {
+        for i in 0..count {
+            let trade = TradeRecord {
+                provider: subject.clone(),
+                consumer: counterparty.clone(),
+                trm_amount: 100,
+                tokens_processed: 10,
+                timestamp: now_ms.saturating_sub(i as u64 * 1_000),
+                model_id: "m".into(),
+                flops_estimated: 0,
+                // Distinct nonces — legal from a replay-defense POV.
+                nonce: {
+                    let mut n = [0u8; 16];
+                    n[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    n[15] = 0xAA; // ensure non-zero
+                    n
+                },
+            };
+            ledger.trade_log.push(trade);
+        }
+    }
+
+    #[test]
+    fn update_trust_penalties_burns_stake_for_collusion() {
+        use crate::{StakeDuration, StakingPool};
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0x11u8; 32]);
+        let counterparty = NodeId([0x22u8; 32]);
+        let now = now_millis();
+
+        // Build a stake for the subject so apply_slash has something to burn.
+        let mut staking = StakingPool::new();
+        let stake_amount = 10_000u64;
+        staking
+            .stake(subject.clone(), stake_amount, StakeDuration::Days30, now)
+            .unwrap();
+
+        // Inject a tight-cluster pattern: 20 trades with a single peer in
+        // the recent window. This should trip the collusion detector.
+        inject_tight_cluster(&mut ledger, subject.clone(), counterparty, 20, now);
+
+        let events = ledger.update_trust_penalties(&mut staking, now);
+
+        // At least one event recorded for the subject, stake actually burned.
+        assert!(!events.is_empty(), "expected at least one slash event");
+        let subject_event = events.iter().find(|e| e.node_id == subject).unwrap();
+        assert!(subject_event.burned_trm > 0);
+        assert_eq!(subject_event.reason, "collusion");
+
+        // Stake should have been reduced by exactly the burned amount.
+        let remaining = staking.total_staked();
+        assert_eq!(
+            remaining,
+            stake_amount - subject_event.burned_trm,
+            "stake reduced exactly by burned amount"
+        );
+
+        // Persistent audit trail matches the returned events.
+        assert_eq!(ledger.slash_events().len(), events.len());
+        assert!(ledger.slash_events().contains(subject_event));
+    }
+
+    #[test]
+    fn update_trust_penalties_noops_on_clean_ledger() {
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let mut staking = StakingPool::new();
+        let now = now_millis();
+        let events = ledger.update_trust_penalties(&mut staking, now);
+        assert!(events.is_empty(), "clean ledger must not slash");
+        assert!(ledger.slash_events().is_empty());
+    }
+
+    #[test]
+    fn update_trust_penalties_respects_cooldown_window() {
+        use crate::{StakeDuration, StakingPool};
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0x33u8; 32]);
+        let counterparty = NodeId([0x44u8; 32]);
+        let now = now_millis();
+
+        let mut staking = StakingPool::new();
+        staking
+            .stake(subject.clone(), 10_000, StakeDuration::Days30, now)
+            .unwrap();
+
+        inject_tight_cluster(&mut ledger, subject.clone(), counterparty, 20, now);
+
+        // First sweep fires once.
+        let first = ledger.update_trust_penalties(&mut staking, now);
+        assert!(!first.is_empty());
+
+        // Second sweep with no time elapsed must NOT double-slash the
+        // same node — the 5-minute cooldown window guards against this.
+        let second = ledger.update_trust_penalties(&mut staking, now + 60_000);
+        assert!(
+            !second.iter().any(|e| e.node_id == subject),
+            "must not double-slash within the cooldown window"
+        );
+    }
+
+    #[test]
+    fn update_trust_penalties_skips_stake_less_nodes() {
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0x55u8; 32]);
+        let counterparty = NodeId([0x66u8; 32]);
+        let now = now_millis();
+
+        // No stake created — apply_slash returns 0. The method must
+        // skip writing an audit-trail entry (keeps the log signal-rich).
+        let mut staking = StakingPool::new();
+        inject_tight_cluster(&mut ledger, subject, counterparty, 20, now);
+        let events = ledger.update_trust_penalties(&mut staking, now);
+        assert!(events.is_empty(), "stakeless nodes must not spam audit log");
+    }
+
+    #[test]
+    fn record_slash_event_appends_in_order() {
+        let mut ledger = ComputeLedger::new();
+        let a = NodeId([1u8; 32]);
+        let b = NodeId([2u8; 32]);
+        ledger.record_slash_event(a.clone(), 0.2, 100, "audit-fail", 1_000);
+        ledger.record_slash_event(b.clone(), 0.5, 500, "collusion", 2_000);
+        assert_eq!(ledger.slash_events().len(), 2);
+        assert_eq!(ledger.slash_events()[0].node_id, a);
+        assert_eq!(ledger.slash_events()[1].node_id, b);
+        assert_eq!(ledger.slash_events()[1].timestamp_ms, 2_000);
+    }
+
+    #[test]
+    fn slash_events_persist_across_save_load() {
+        use crate::StakingPool;
+        let tmp = unique_temp_path("slash-events");
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0x77u8; 32]);
+        let counterparty = NodeId([0x88u8; 32]);
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+        staking
+            .stake(subject.clone(), 10_000, crate::StakeDuration::Days30, now)
+            .unwrap();
+        inject_tight_cluster(&mut ledger, subject, counterparty, 20, now);
+        ledger.update_trust_penalties(&mut staking, now);
+        let expected = ledger.slash_events().to_vec();
+        assert!(!expected.is_empty());
+
+        ledger.save_to_path(&tmp).unwrap();
+        let reloaded = ComputeLedger::load_from_path(&tmp).unwrap();
+        assert_eq!(reloaded.slash_events(), expected.as_slice());
     }
 
     #[test]
