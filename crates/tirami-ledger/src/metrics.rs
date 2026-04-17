@@ -453,6 +453,7 @@ mod tests {
             tokens_processed: cu / 10,
             timestamp: ts,
             model_id: "test".into(),
+            flops_estimated: 0,
         }
     }
 

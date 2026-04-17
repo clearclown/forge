@@ -81,6 +81,70 @@ pub struct ModelManifest {
     pub quantization: String, // e.g., "Q4_0", "Q4_K_M"
 }
 
+impl ModelManifest {
+    /// Estimate FLOP per token for this model (Phase 15 Step 3).
+    ///
+    /// Formula (approximate transformer forward pass):
+    ///   2 × hidden_dim² × total_layers × 3
+    ///
+    /// Factor 2 = multiply + add per matmul element.
+    /// Factor 3 = Q + K + V projections per attention layer (FFN folded in).
+    ///
+    /// This is the foundational metric for Tirami's core principle:
+    /// **1 TRM = 10⁹ FLOP of verified useful computation.**
+    /// Used by `record_api_trade` to populate `TradeRecord::flops_estimated`.
+    pub fn flops_per_token(&self) -> u64 {
+        2u64.saturating_mul(self.hidden_dim as u64)
+            .saturating_mul(self.hidden_dim as u64)
+            .saturating_mul(self.total_layers as u64)
+            .saturating_mul(3)
+    }
+}
+
+/// Computation meter reading (Phase 15 Step 3).
+///
+/// Records computational cost of an inference execution. Used to:
+/// - Verify the "1 TRM = 10⁹ FLOP" principle in trade records
+/// - Feed provider performance tracking (wall_time_ms → latency EMA)
+/// - Support audit verdicts (hash of deterministic output)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeterReading {
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub flops_estimated: u64,
+    pub wall_time_ms: u64,
+    pub model_id: ModelId,
+}
+
+/// Authorization token for a single inference execution (Phase 15 Step 4).
+///
+/// Created atomically by `ComputeLedger::begin_inference()` (which performs
+/// provider selection + CU reservation in a single locked section).
+/// Consumed by `settle_inference()` which executes the trade and releases
+/// any excess reservation.
+///
+/// This pattern prevents races where the same TRM could be spent twice on
+/// parallel inference requests.
+#[derive(Debug, Clone)]
+pub struct InferenceTicket {
+    /// Monotonic id assigned by the ledger.
+    pub request_id: u64,
+    /// Consumer that requested the inference.
+    pub consumer: NodeId,
+    /// Provider selected by `select_provider`.
+    pub provider: NodeId,
+    /// Model identifier (matches the provider's price signal).
+    pub model_id: ModelId,
+    /// TRM reserved on the consumer's balance. Excess is released at settle.
+    pub reserved_trm: u64,
+    /// Maximum tokens allowed for this request.
+    pub max_tokens: u64,
+    /// True if the ticket triggers a Phase 14.3 audit challenge.
+    pub audit_required: bool,
+    /// Unix ms when the ticket was issued.
+    pub created_at: u64,
+}
+
 /// A node's hardware and network capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerCapability {
@@ -157,6 +221,114 @@ impl NodeBalance {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 14.1 — PriceSignal (gossip-distributed per-node market quote)
+// ---------------------------------------------------------------------------
+
+/// A node's advertised price and capacity, broadcast via gossip.
+///
+/// Each provider emits a PriceSignal periodically (default 30s) stating
+/// its current price multiplier, available capacity, and served models.
+/// Consumers read these from their local PeerRegistry to select providers.
+///
+/// `price_multiplier` is a float relative to base tier pricing:
+///   0.5 = half price (offering discount to attract load)
+///   1.0 = standard price
+///   2.0 = premium (node is busy, raising price to shed load)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PriceSignal {
+    /// Provider node announcing the price.
+    pub node_id: NodeId,
+    /// Multiplier applied to base tier price. Must be finite and > 0.
+    pub price_multiplier: f64,
+    /// Available compute capacity in TRM-equivalent units.
+    pub available_cu: u64,
+    /// Model IDs this node can currently serve.
+    pub model_capabilities: Vec<ModelId>,
+    /// Self-reported latency hint in milliseconds (p50).
+    pub latency_hint_ms: u32,
+    /// Unix timestamp (ms) when this signal was created.
+    pub timestamp: u64,
+}
+
+impl PriceSignal {
+    /// Minimum valid multiplier (prevents zero or negative).
+    pub const MIN_MULTIPLIER: f64 = 0.01;
+    /// Maximum valid multiplier (prevents absurd prices).
+    pub const MAX_MULTIPLIER: f64 = 100.0;
+
+    pub fn is_valid(&self) -> bool {
+        self.price_multiplier.is_finite()
+            && self.price_multiplier >= Self::MIN_MULTIPLIER
+            && self.price_multiplier <= Self::MAX_MULTIPLIER
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 14.3 — AuditTier (implementation lives in tirami-ledger, type here)
+// ---------------------------------------------------------------------------
+
+/// Audit frequency tier — determines how often a node gets verified.
+///
+/// Nodes progress Unverified → Probationary → Established → Trusted → Staked
+/// as they accumulate verified trades and reputation. Failed audits cause
+/// regression. The `audit_probability()` return value is the probability
+/// that a single inference from this provider will be audited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuditTier {
+    /// New node, no verified history. Every request audited.
+    Unverified,
+    /// < 10 verified trades. 50% of requests audited.
+    Probationary,
+    /// 10-100 trades + reputation > 0.6. 10% audited.
+    Established,
+    /// 100+ trades + reputation > 0.8. 1% audited.
+    Trusted,
+    /// Active stake + Trusted reputation. 0.1% audited.
+    Staked,
+}
+
+impl AuditTier {
+    /// Probability that this tier triggers an audit on a single trade (0.0 - 1.0).
+    pub fn audit_probability(self) -> f64 {
+        match self {
+            AuditTier::Unverified => 1.0,
+            AuditTier::Probationary => 0.5,
+            AuditTier::Established => 0.1,
+            AuditTier::Trusted => 0.01,
+            AuditTier::Staked => 0.001,
+        }
+    }
+
+    /// Promote to the next tier. Returns self if already at top.
+    pub fn promote(self) -> Self {
+        match self {
+            AuditTier::Unverified => AuditTier::Probationary,
+            AuditTier::Probationary => AuditTier::Established,
+            AuditTier::Established => AuditTier::Trusted,
+            AuditTier::Trusted => AuditTier::Staked,
+            AuditTier::Staked => AuditTier::Staked,
+        }
+    }
+
+    /// Demote to the previous tier. Returns self if already Unverified.
+    pub fn demote(self) -> Self {
+        match self {
+            AuditTier::Unverified => AuditTier::Unverified,
+            AuditTier::Probationary => AuditTier::Unverified,
+            AuditTier::Established => AuditTier::Probationary,
+            AuditTier::Trusted => AuditTier::Established,
+            AuditTier::Staked => AuditTier::Trusted,
+        }
+    }
+}
+
+impl Default for AuditTier {
+    fn default() -> Self {
+        AuditTier::Unverified
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::NodeId;
@@ -166,5 +338,163 @@ mod tests {
         let original = NodeId([7u8; 32]);
         let parsed = original.to_hex().parse::<NodeId>().unwrap();
         assert_eq!(parsed, original);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 14.1 tests — PriceSignal validation
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn price_signal_rejects_nan_multiplier() {
+        let sig = super::PriceSignal {
+            node_id: NodeId([0u8; 32]),
+            price_multiplier: f64::NAN,
+            available_cu: 100,
+            model_capabilities: vec![],
+            latency_hint_ms: 50,
+            timestamp: 0,
+        };
+        assert!(!sig.is_valid());
+    }
+
+    #[test]
+    fn price_signal_rejects_zero_multiplier() {
+        let sig = super::PriceSignal {
+            node_id: NodeId([0u8; 32]),
+            price_multiplier: 0.0,
+            available_cu: 100,
+            model_capabilities: vec![],
+            latency_hint_ms: 50,
+            timestamp: 0,
+        };
+        assert!(!sig.is_valid());
+    }
+
+    #[test]
+    fn price_signal_rejects_infinite_multiplier() {
+        let sig = super::PriceSignal {
+            node_id: NodeId([0u8; 32]),
+            price_multiplier: f64::INFINITY,
+            available_cu: 100,
+            model_capabilities: vec![],
+            latency_hint_ms: 50,
+            timestamp: 0,
+        };
+        assert!(!sig.is_valid());
+    }
+
+    #[test]
+    fn price_signal_rejects_negative_multiplier() {
+        let sig = super::PriceSignal {
+            node_id: NodeId([0u8; 32]),
+            price_multiplier: -1.0,
+            available_cu: 100,
+            model_capabilities: vec![],
+            latency_hint_ms: 50,
+            timestamp: 0,
+        };
+        assert!(!sig.is_valid());
+    }
+
+    #[test]
+    fn price_signal_rejects_absurd_multiplier() {
+        let sig = super::PriceSignal {
+            node_id: NodeId([0u8; 32]),
+            price_multiplier: 1000.0,
+            available_cu: 100,
+            model_capabilities: vec![],
+            latency_hint_ms: 50,
+            timestamp: 0,
+        };
+        assert!(!sig.is_valid());
+    }
+
+    #[test]
+    fn price_signal_accepts_normal_multiplier() {
+        let sig = super::PriceSignal {
+            node_id: NodeId([0u8; 32]),
+            price_multiplier: 1.0,
+            available_cu: 100,
+            model_capabilities: vec![],
+            latency_hint_ms: 50,
+            timestamp: 0,
+        };
+        assert!(sig.is_valid());
+    }
+
+    #[test]
+    fn price_signal_accepts_discount() {
+        let sig = super::PriceSignal {
+            node_id: NodeId([0u8; 32]),
+            price_multiplier: 0.5,
+            available_cu: 100,
+            model_capabilities: vec![],
+            latency_hint_ms: 50,
+            timestamp: 0,
+        };
+        assert!(sig.is_valid());
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 14.1 tests — AuditTier progression
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn audit_tier_default_is_unverified() {
+        assert_eq!(super::AuditTier::default(), super::AuditTier::Unverified);
+    }
+
+    #[test]
+    fn audit_tier_probabilities_decrease_monotonically() {
+        let tiers = [
+            super::AuditTier::Unverified,
+            super::AuditTier::Probationary,
+            super::AuditTier::Established,
+            super::AuditTier::Trusted,
+            super::AuditTier::Staked,
+        ];
+        for pair in tiers.windows(2) {
+            assert!(pair[0].audit_probability() > pair[1].audit_probability());
+        }
+    }
+
+    #[test]
+    fn audit_tier_unverified_audits_always() {
+        assert_eq!(super::AuditTier::Unverified.audit_probability(), 1.0);
+    }
+
+    #[test]
+    fn audit_tier_staked_audits_rarely() {
+        assert!(super::AuditTier::Staked.audit_probability() < 0.01);
+    }
+
+    #[test]
+    fn audit_tier_promote_chain() {
+        let mut tier = super::AuditTier::Unverified;
+        tier = tier.promote();
+        assert_eq!(tier, super::AuditTier::Probationary);
+        tier = tier.promote();
+        assert_eq!(tier, super::AuditTier::Established);
+        tier = tier.promote();
+        assert_eq!(tier, super::AuditTier::Trusted);
+        tier = tier.promote();
+        assert_eq!(tier, super::AuditTier::Staked);
+        // Top of chain — no further promotion.
+        assert_eq!(tier.promote(), super::AuditTier::Staked);
+    }
+
+    #[test]
+    fn audit_tier_demote_chain() {
+        let mut tier = super::AuditTier::Staked;
+        tier = tier.demote();
+        assert_eq!(tier, super::AuditTier::Trusted);
+        tier = tier.demote();
+        assert_eq!(tier, super::AuditTier::Established);
+        tier = tier.demote();
+        assert_eq!(tier, super::AuditTier::Probationary);
+        tier = tier.demote();
+        assert_eq!(tier, super::AuditTier::Unverified);
+        // Bottom — no further demotion.
+        assert_eq!(tier.demote(), super::AuditTier::Unverified);
     }
 }

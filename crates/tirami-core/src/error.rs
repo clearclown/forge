@@ -29,6 +29,14 @@ pub enum TiramiError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 
+    /// Phase 14.2 — no suitable provider in PeerRegistry, or other scheduling failure.
+    #[error("scheduling error: {0}")]
+    SchedulingError(String),
+
+    /// Phase 14.2 — consumer does not have enough TRM to reserve for an inference.
+    #[error("insufficient balance: need {need} TRM, have {have} TRM")]
+    InsufficientBalance { need: u64, have: u64 },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

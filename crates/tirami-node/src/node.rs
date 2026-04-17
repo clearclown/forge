@@ -267,6 +267,11 @@ impl TiramiNode {
         // API server in background
         self.spawn_api();
 
+        // Phase 14.1 — self-register in the PeerRegistry and spawn the
+        // periodic PriceSignal broadcast loop.
+        self.self_register_price_signal().await;
+        self.spawn_price_signal_loop(transport.clone());
+
         // Run pipeline coordinator with ledger
         let coordinator = PipelineCoordinator::new(transport);
         coordinator
@@ -284,6 +289,101 @@ impl TiramiNode {
             .map_err(|e| tirami_core::TiramiError::NetworkError(format!("seed: {e}")))?;
 
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 14.1 — PriceSignal broadcast
+    // -----------------------------------------------------------------------
+
+    /// Build the current PriceSignal from local state.
+    async fn build_price_signal(&self, node_id: tirami_core::NodeId) -> tirami_core::PriceSignal {
+        let model_capabilities = {
+            let manifest = self.model_manifest.lock().await;
+            manifest.as_ref().map(|m| vec![m.id.clone()]).unwrap_or_default()
+        };
+
+        let available_cu = {
+            let ledger = self.ledger.lock().await;
+            let bal = ledger.effective_balance(&node_id);
+            bal.max(0) as u64
+        };
+
+        tirami_core::PriceSignal {
+            node_id,
+            // Phase 14.1: static 1.0 multiplier. Dynamic pricing policy
+            // (based on load, energy cost, market EMA) lands in Phase 14.5.
+            price_multiplier: 1.0,
+            available_cu,
+            model_capabilities,
+            // Conservative default; updated as latency EMA collects data.
+            latency_hint_ms: 100,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        }
+    }
+
+    /// Immediately register our own PriceSignal into the PeerRegistry so
+    /// select_provider (Phase 14.2) can find us before the first gossip tick.
+    async fn self_register_price_signal(&self) {
+        let Some(transport) = self.transport.as_ref() else { return };
+        let node_id = transport.tirami_node_id();
+        let signal = self.build_price_signal(node_id).await;
+        let mut ledger = self.ledger.lock().await;
+        ledger.ingest_price_signal(&signal);
+    }
+
+    /// Spawn the periodic price signal broadcast task (30s default).
+    fn spawn_price_signal_loop(&self, transport: Arc<ForgeTransport>) {
+        let ledger = self.ledger.clone();
+        let gossip = self.gossip.clone();
+        let model_manifest = self.model_manifest.clone();
+        // Build a lightweight closure that re-creates the signal each tick.
+        let node_id = transport.tirami_node_id();
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            // First tick fires immediately; skip it (we already self-registered).
+            ticker.tick().await;
+
+            loop {
+                ticker.tick().await;
+
+                // Build fresh signal.
+                let model_capabilities = {
+                    let manifest = model_manifest.lock().await;
+                    manifest
+                        .as_ref()
+                        .map(|m| vec![m.id.clone()])
+                        .unwrap_or_default()
+                };
+                let available_cu = {
+                    let l = ledger.lock().await;
+                    l.effective_balance(&node_id).max(0) as u64
+                };
+                let signal = tirami_core::PriceSignal {
+                    node_id: node_id.clone(),
+                    price_multiplier: 1.0,
+                    available_cu,
+                    model_capabilities,
+                    latency_hint_ms: 100,
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                };
+
+                // Update own PeerRegistry entry.
+                {
+                    let mut l = ledger.lock().await;
+                    l.ingest_price_signal(&signal);
+                }
+
+                // Gossip to peers.
+                tirami_net::gossip::broadcast_price_signal(&transport, &gossip, &signal).await;
+            }
+        });
     }
 
     /// Connect to a seed node as a worker.

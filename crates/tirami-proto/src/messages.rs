@@ -54,6 +54,52 @@ pub enum Payload {
     LoanGossip(LoanGossip),
     /// Gossip: broadcast a reputation observation to the mesh.
     ReputationGossip(ReputationObservation),
+    /// Phase 14.1 — Gossip: broadcast a provider's current price/capacity.
+    /// Unsigned (gossip, not economic commitment) — sender identity from Envelope.
+    PriceSignalGossip(tirami_core::PriceSignal),
+    /// Phase 14.3 — Challenger asks a target provider to run a deterministic
+    /// inference and return a hash of the output. Challenger has pre-computed
+    /// the expected hash on their own engine.
+    AuditChallenge(AuditChallengeMsg),
+    /// Phase 14.3 — Target's response with their computed output hash.
+    /// Verdict is formed by comparing expected vs response hash.
+    AuditResponse(AuditResponseMsg),
+}
+
+/// Phase 14.3 — Audit challenge. Unsigned over wire; sender identity comes
+/// from Envelope. Challenger pre-commits `expected_output_hash` by issuing
+/// the challenge — mismatching responses implicate the target.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditChallengeMsg {
+    /// Monotonic id chosen by challenger (used to match response).
+    pub challenge_id: u64,
+    /// Challenger's node id (duplicated from Envelope for easy access).
+    pub challenger: NodeId,
+    /// Target provider that must respond.
+    pub target: NodeId,
+    /// Model identifier that both sides run.
+    pub model_id: ModelId,
+    /// Deterministic input tokens (temperature=0, fixed sampler path).
+    pub input_tokens: Vec<u32>,
+    /// Challenger's pre-computed SHA-256 of the expected output logits.
+    pub expected_output_hash: [u8; 32],
+    /// Unix ms when the challenge was issued.
+    pub timestamp: u64,
+}
+
+/// Phase 14.3 — Target's response to an AuditChallenge.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditResponseMsg {
+    /// The challenge this responds to.
+    pub challenge_id: u64,
+    /// Target provider (the one who just computed).
+    pub target: NodeId,
+    /// SHA-256 of the target's computed output logits.
+    pub output_hash: [u8; 32],
+    /// Wall-clock time the computation took (for bandwidth + honesty check).
+    pub computation_time_ms: u64,
+    /// Unix ms when the response was sent.
+    pub timestamp: u64,
 }
 
 // --- Discovery & Handshake ---
@@ -703,6 +749,76 @@ impl Payload {
                 }
                 Ok(())
             }
+            Payload::PriceSignalGossip(signal) => {
+                // The signal's node_id must match the envelope sender — a
+                // node may only advertise its own prices.
+                if signal.node_id != *sender {
+                    return Err(ProtocolValidationError::SenderMismatch {
+                        expected: sender.to_hex(),
+                        actual: signal.node_id.to_hex(),
+                    });
+                }
+                // Multiplier must be within the allowed band.
+                if !signal.is_valid() {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "price_multiplier".into(),
+                        reason: format!(
+                            "must be finite and within [{}, {}]",
+                            tirami_core::PriceSignal::MIN_MULTIPLIER,
+                            tirami_core::PriceSignal::MAX_MULTIPLIER
+                        ),
+                    });
+                }
+                // Cap the model capabilities list to prevent gossip amplification.
+                if signal.model_capabilities.len() > 64 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "model_capabilities".into(),
+                        reason: "must advertise ≤ 64 models".into(),
+                    });
+                }
+                Ok(())
+            }
+            Payload::AuditChallenge(c) => {
+                // Challenger field must match envelope sender.
+                if c.challenger != *sender {
+                    return Err(ProtocolValidationError::SenderMismatch {
+                        expected: sender.to_hex(),
+                        actual: c.challenger.to_hex(),
+                    });
+                }
+                // Target must differ from challenger (self-audit pointless).
+                if c.target == c.challenger {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "target".into(),
+                        reason: "challenger and target must differ".into(),
+                    });
+                }
+                // Input token budget cap — prevents amplification attacks.
+                if c.input_tokens.is_empty() || c.input_tokens.len() > 1024 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "input_tokens".into(),
+                        reason: "must be 1..=1024 tokens".into(),
+                    });
+                }
+                Ok(())
+            }
+            Payload::AuditResponse(r) => {
+                // Target (responder) must match envelope sender.
+                if r.target != *sender {
+                    return Err(ProtocolValidationError::SenderMismatch {
+                        expected: sender.to_hex(),
+                        actual: r.target.to_hex(),
+                    });
+                }
+                // Simple sanity bound.
+                if r.computation_time_ms > 5 * 60 * 1000 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "computation_time_ms".into(),
+                        reason: "audit responses must settle within 5 minutes".into(),
+                    });
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -1123,5 +1239,166 @@ mod tests {
         };
         let err = Payload::LoanProposal(p).validate_with_sender(&NodeId([2u8; 32]));
         assert!(err.is_err(), "lender/sender mismatch must be rejected");
+    }
+
+    // ==========================================================================
+    // Phase 14.1 tests — PriceSignalGossip validation
+    // ==========================================================================
+
+    fn sample_price_signal(sender: NodeId) -> tirami_core::PriceSignal {
+        tirami_core::PriceSignal {
+            node_id: sender,
+            price_multiplier: 1.0,
+            available_cu: 1000,
+            model_capabilities: vec![ModelId("qwen2.5-0.5b".into())],
+            latency_hint_ms: 50,
+            timestamp: 1_000,
+        }
+    }
+
+    #[test]
+    fn price_signal_gossip_rejects_sender_mismatch() {
+        let sender = NodeId([1u8; 32]);
+        let signal_author = NodeId([2u8; 32]);
+        let msg = Payload::PriceSignalGossip(sample_price_signal(signal_author));
+        assert!(
+            msg.validate_with_sender(&sender).is_err(),
+            "signal claiming different node_id than envelope sender must be rejected"
+        );
+    }
+
+    #[test]
+    fn price_signal_gossip_rejects_nan_multiplier() {
+        let sender = NodeId([1u8; 32]);
+        let mut signal = sample_price_signal(sender.clone());
+        signal.price_multiplier = f64::NAN;
+        let msg = Payload::PriceSignalGossip(signal);
+        assert!(
+            msg.validate_with_sender(&sender).is_err(),
+            "NaN multiplier must be rejected"
+        );
+    }
+
+    #[test]
+    fn price_signal_gossip_rejects_excessive_model_list() {
+        let sender = NodeId([1u8; 32]);
+        let mut signal = sample_price_signal(sender.clone());
+        signal.model_capabilities = (0..70)
+            .map(|i| ModelId(format!("m{i}")))
+            .collect();
+        let msg = Payload::PriceSignalGossip(signal);
+        assert!(
+            msg.validate_with_sender(&sender).is_err(),
+            "model list > 64 must be rejected to prevent amplification"
+        );
+    }
+
+    #[test]
+    fn price_signal_gossip_accepts_valid() {
+        let sender = NodeId([1u8; 32]);
+        let msg = Payload::PriceSignalGossip(sample_price_signal(sender.clone()));
+        assert!(msg.validate_with_sender(&sender).is_ok());
+    }
+
+    #[test]
+    fn price_signal_gossip_roundtrips_bincode() {
+        let sender = NodeId([1u8; 32]);
+        let signal = sample_price_signal(sender);
+        let bytes = bincode::serialize(&signal).unwrap();
+        let back: tirami_core::PriceSignal = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back.price_multiplier, 1.0);
+        assert_eq!(back.available_cu, 1000);
+    }
+
+    // ==========================================================================
+    // Phase 14.3 tests — AuditChallenge / AuditResponse validation
+    // ==========================================================================
+
+    fn sample_challenge(challenger: NodeId, target: NodeId) -> AuditChallengeMsg {
+        AuditChallengeMsg {
+            challenge_id: 42,
+            challenger,
+            target,
+            model_id: ModelId("qwen2.5-0.5b".into()),
+            input_tokens: vec![1, 2, 3, 4, 5],
+            expected_output_hash: [0xaa; 32],
+            timestamp: 1_000,
+        }
+    }
+
+    #[test]
+    fn audit_challenge_rejects_sender_mismatch() {
+        let sender = NodeId([1u8; 32]);
+        let challenger = NodeId([9u8; 32]); // different from sender
+        let target = NodeId([2u8; 32]);
+        let msg = Payload::AuditChallenge(sample_challenge(challenger, target));
+        assert!(msg.validate_with_sender(&sender).is_err());
+    }
+
+    #[test]
+    fn audit_challenge_rejects_self_target() {
+        let me = NodeId([1u8; 32]);
+        let msg = Payload::AuditChallenge(sample_challenge(me.clone(), me.clone()));
+        assert!(msg.validate_with_sender(&me).is_err());
+    }
+
+    #[test]
+    fn audit_challenge_rejects_empty_tokens() {
+        let challenger = NodeId([1u8; 32]);
+        let target = NodeId([2u8; 32]);
+        let mut c = sample_challenge(challenger.clone(), target);
+        c.input_tokens.clear();
+        let msg = Payload::AuditChallenge(c);
+        assert!(msg.validate_with_sender(&challenger).is_err());
+    }
+
+    #[test]
+    fn audit_challenge_accepts_valid() {
+        let challenger = NodeId([1u8; 32]);
+        let target = NodeId([2u8; 32]);
+        let msg = Payload::AuditChallenge(sample_challenge(challenger.clone(), target));
+        assert!(msg.validate_with_sender(&challenger).is_ok());
+    }
+
+    #[test]
+    fn audit_response_rejects_sender_mismatch() {
+        let target = NodeId([2u8; 32]);
+        let imposter = NodeId([9u8; 32]);
+        let msg = Payload::AuditResponse(AuditResponseMsg {
+            challenge_id: 1,
+            target,
+            output_hash: [0xaa; 32],
+            computation_time_ms: 50,
+            timestamp: 2_000,
+        });
+        assert!(msg.validate_with_sender(&imposter).is_err());
+    }
+
+    #[test]
+    fn audit_response_rejects_absurd_compute_time() {
+        let target = NodeId([2u8; 32]);
+        let msg = Payload::AuditResponse(AuditResponseMsg {
+            challenge_id: 1,
+            target: target.clone(),
+            output_hash: [0xaa; 32],
+            computation_time_ms: 10 * 60 * 1000, // 10 min — too long
+            timestamp: 2_000,
+        });
+        assert!(msg.validate_with_sender(&target).is_err());
+    }
+
+    #[test]
+    fn audit_response_roundtrips_bincode() {
+        let target = NodeId([2u8; 32]);
+        let r = AuditResponseMsg {
+            challenge_id: 1,
+            target,
+            output_hash: [0xaa; 32],
+            computation_time_ms: 50,
+            timestamp: 2_000,
+        };
+        let bytes = bincode::serialize(&r).unwrap();
+        let back: AuditResponseMsg = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back, r);
     }
 }

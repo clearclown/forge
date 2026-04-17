@@ -56,6 +56,15 @@ pub struct ComputeLedger {
     /// Monotonically increasing; never exceeds `tokenomics::TOTAL_TRM_SUPPLY`.
     #[serde(default)]
     pub total_minted: u64,
+    /// Phase 14.1 — peer registry for price signals and audit tier tracking.
+    /// Populated via `ingest_price_signal` (gossip) and `update_latency`.
+    /// Read by `select_provider` (Phase 14.2) when scheduling inference.
+    #[serde(default)]
+    pub peer_registry: crate::peer_registry::PeerRegistry,
+    /// Phase 14.2 — monotonic request ID counter for InferenceTicket.
+    /// Not persisted (regenerated on restart, safe because tickets are short-lived).
+    #[serde(default, skip_serializing)]
+    pub next_request_id: u64,
 }
 
 /// Dynamic pricing based on supply/demand and network scale.
@@ -132,6 +141,16 @@ pub struct TradeRecord {
     pub tokens_processed: u64,
     pub timestamp: u64,
     pub model_id: String,
+    /// Phase 15 Step 3 — estimated FLOP for this inference.
+    ///
+    /// Populated from `ModelManifest::flops_per_token() × tokens_processed`.
+    /// Anchors the core principle "1 TRM = 10⁹ FLOP": callers can verify
+    /// `flops_estimated ≈ trm_amount × 10⁹` as a sanity check.
+    ///
+    /// `serde(default)` preserves compatibility with pre-Phase-15 snapshots
+    /// and signed trades (not included in `canonical_bytes` for the same reason).
+    #[serde(default)]
+    pub flops_estimated: u64,
 }
 
 impl TradeRecord {
@@ -381,7 +400,238 @@ impl ComputeLedger {
             loan_pool_total: 0,
             remote_reputation: HashMap::new(),
             total_minted: 0,
+            peer_registry: crate::peer_registry::PeerRegistry::new(),
+            next_request_id: 0,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 14.1 — PeerRegistry access
+    // -----------------------------------------------------------------------
+
+    /// Ingest a price signal received via gossip.
+    ///
+    /// Returns true if the signal was accepted, false if rejected (invalid
+    /// format or stale timestamp).
+    pub fn ingest_price_signal(&mut self, signal: &tirami_core::PriceSignal) -> bool {
+        self.peer_registry.ingest_price_signal(signal)
+    }
+
+    /// Update the latency EMA for a peer based on an observed RTT sample.
+    /// Called by the pipeline coordinator when an inference round trip
+    /// completes. Samples that are non-finite or negative are ignored.
+    pub fn update_peer_latency(&mut self, node_id: &NodeId, observed_ms: f64) {
+        self.peer_registry.update_latency(node_id, observed_ms);
+    }
+
+    /// Number of peers currently in the registry.
+    pub fn peer_count(&self) -> usize {
+        self.peer_registry.len()
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 14.2 — Ledger-as-Brain: unified scheduling + economic decisions
+    //
+    // The v1 pipeline historically separated "pick a provider" from "record
+    // a trade" across different files (pipeline.rs + api.rs + ledger.rs).
+    // These three methods consolidate both into the ledger so that
+    // scheduling, reservation, and settlement happen under a single lock.
+    // -----------------------------------------------------------------------
+
+    /// Select the best provider for a model request from the PeerRegistry.
+    ///
+    /// Score formula (ported from v2 reference implementation):
+    ///   score = effective_reputation
+    ///         × (1 / price_multiplier)
+    ///         × (1 / (1 + latency_ema_ms / 1000))
+    ///         × capacity_ratio
+    ///
+    /// Filters out: nodes that cannot serve the model, have no capacity,
+    /// or are the consumer itself. Returns `(provider, estimated_trm_cost)`
+    /// or `None` when no provider is available.
+    ///
+    /// The cost is computed from the current market price — the same value
+    /// that will be charged at settlement, modulo token-count truing-up.
+    pub fn select_provider(
+        &self,
+        model_id: &tirami_core::ModelId,
+        estimated_tokens: u64,
+        consumer: &NodeId,
+    ) -> Option<(NodeId, u64)> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let candidates = self.peer_registry.providers_for_model(model_id);
+        let mut best: Option<(NodeId, f64, u64)> = None;
+
+        for (node_id, state) in &candidates {
+            if *node_id == consumer {
+                continue; // no self-selection
+            }
+
+            let reputation = self.effective_reputation(node_id, now);
+            let price_mult = state
+                .price_signal
+                .as_ref()
+                .map(|s| s.price_multiplier)
+                .unwrap_or(1.0)
+                .max(0.01);
+            let latency = state.latency_ema_ms;
+            let available = state.available_cu();
+
+            // Cost estimate: tokens × market price × price_multiplier.
+            let base_cost = self.estimate_cost(estimated_tokens, 1, 1);
+            let estimated_cost = ((base_cost as f64) * price_mult).ceil() as u64;
+
+            let capacity_ratio = if estimated_cost == 0 {
+                1.0
+            } else {
+                (available as f64 / estimated_cost as f64).min(1.0)
+            };
+
+            let score = reputation
+                * (1.0 / price_mult)
+                * (1.0 / (1.0 + latency / 1000.0))
+                * capacity_ratio;
+
+            match &best {
+                None => best = Some(((*node_id).clone(), score, estimated_cost)),
+                Some((_, best_score, _)) if score > *best_score => {
+                    best = Some(((*node_id).clone(), score, estimated_cost));
+                }
+                _ => {}
+            }
+        }
+
+        best.map(|(id, _, cost)| (id, cost))
+    }
+
+    /// Atomically select a provider and reserve CU for an inference request.
+    ///
+    /// Returns an `InferenceTicket` that authorizes execution. The ticket is
+    /// the ONLY way to authorize `settle_inference`: there is no way to spend
+    /// reserved TRM without holding a valid ticket.
+    ///
+    /// Errors:
+    /// - `SchedulingError` if no provider can serve the model
+    /// - `InsufficientBalance` if the consumer cannot afford the estimated cost
+    pub fn begin_inference(
+        &mut self,
+        consumer: &NodeId,
+        model_id: &tirami_core::ModelId,
+        max_tokens: u64,
+    ) -> Result<tirami_core::InferenceTicket, tirami_core::TiramiError> {
+        let (provider, estimated_cost) = self
+            .select_provider(model_id, max_tokens, consumer)
+            .ok_or_else(|| {
+                tirami_core::TiramiError::SchedulingError(
+                    "no provider available for this model".to_string(),
+                )
+            })?;
+
+        if !self.reserve_cu(consumer, estimated_cost) {
+            let have = self.effective_balance(consumer).max(0) as u64;
+            return Err(tirami_core::TiramiError::InsufficientBalance {
+                need: estimated_cost,
+                have,
+            });
+        }
+
+        // Determine whether to audit (Phase 14.3 consumption of AuditTier).
+        let audit_required = {
+            let tier = self
+                .peer_registry
+                .get(&provider)
+                .map(|s| s.audit_tier)
+                .unwrap_or(tirami_core::AuditTier::Unverified);
+            rand::random::<f64>() < tier.audit_probability()
+        };
+
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+
+        Ok(tirami_core::InferenceTicket {
+            request_id,
+            consumer: consumer.clone(),
+            provider,
+            model_id: model_id.clone(),
+            reserved_trm: estimated_cost,
+            max_tokens,
+            audit_required,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        })
+    }
+
+    /// Settle a completed inference: compute actual cost, release excess
+    /// reservation, execute the trade, update latency EMA, and (if an
+    /// audit was performed) adjust reputation.
+    ///
+    /// `actual_tokens` is the verified token count from the meter. If it's
+    /// less than `ticket.max_tokens`, the difference is released back to
+    /// the consumer's balance.
+    pub fn settle_inference(
+        &mut self,
+        ticket: &tirami_core::InferenceTicket,
+        actual_tokens: u64,
+        latency_ms: u64,
+        audit_passed: Option<bool>,
+        flops_estimated: u64,
+    ) -> Result<TradeRecord, tirami_core::TiramiError> {
+        // Compute actual cost prorated against max_tokens reserved.
+        let actual_cost = if ticket.max_tokens == 0 {
+            ticket.reserved_trm
+        } else {
+            let ratio = (actual_tokens as f64 / ticket.max_tokens as f64).min(1.0);
+            ((ticket.reserved_trm as f64) * ratio).ceil() as u64
+        }
+        .max(1); // minimum 1 TRM
+
+        // Release the overcharge back to the consumer.
+        let excess = ticket.reserved_trm.saturating_sub(actual_cost);
+        if excess > 0 {
+            self.release_reserve(&ticket.consumer, excess);
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let trade = TradeRecord {
+            provider: ticket.provider.clone(),
+            consumer: ticket.consumer.clone(),
+            trm_amount: actual_cost,
+            tokens_processed: actual_tokens,
+            timestamp: now,
+            model_id: ticket.model_id.0.clone(),
+            flops_estimated,
+        };
+        self.execute_trade(&trade);
+
+        // Feedback: latency EMA for future scheduling.
+        self.peer_registry
+            .update_latency(&ticket.provider, latency_ms as f64);
+
+        // Phase 14.3 — audit outcomes feed reputation.
+        match audit_passed {
+            Some(true) => {
+                self.peer_registry.record_verified_trade(&ticket.provider);
+            }
+            Some(false) => {
+                // Penalty: -0.1 reputation per failed audit (floor at 0).
+                if let Some(balance) = self.balances.get_mut(&ticket.provider) {
+                    balance.reputation = (balance.reputation - 0.1).max(0.0);
+                }
+            }
+            None => { /* no audit this round */ }
+        }
+
+        Ok(trade)
     }
 
     /// Get the current market price.
@@ -482,6 +732,8 @@ impl ComputeLedger {
             loan_pool_total: snapshot.loan_pool_total,
             remote_reputation: HashMap::new(), // ephemeral; re-built from peers on startup
             total_minted: 0,
+            peer_registry: crate::peer_registry::PeerRegistry::new(), // ephemeral; rebuilt from gossip
+            next_request_id: 0,
         }
     }
 
@@ -1514,6 +1766,7 @@ mod tests {
             tokens_processed: 256,
             timestamp: 1000,
             model_id: "llama-7b".to_string(),
+            flops_estimated: 0,
         };
 
         ledger.execute_trade(&trade);
@@ -1597,6 +1850,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: 1,
             model_id: "small".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider,
@@ -1605,6 +1859,7 @@ mod tests {
             tokens_processed: 20,
             timestamp: 2,
             model_id: "large".to_string(),
+            flops_estimated: 0,
         });
 
         let trades = ledger.recent_trades(2);
@@ -1625,6 +1880,7 @@ mod tests {
             tokens_processed: 12,
             timestamp: 42,
             model_id: "persisted".to_string(),
+            flops_estimated: 0,
         });
 
         ledger.save_to_path(&path).unwrap();
@@ -1648,6 +1904,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: 100,
             model_id: "m1".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider: NodeId([2u8; 32]),
@@ -1656,6 +1913,7 @@ mod tests {
             tokens_processed: 4,
             timestamp: 200,
             model_id: "m2".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider: NodeId([9u8; 32]),
@@ -1664,6 +1922,7 @@ mod tests {
             tokens_processed: 99,
             timestamp: 999,
             model_id: "ignored".to_string(),
+            flops_estimated: 0,
         });
 
         let statement = ledger.export_settlement_statement(50, 250, Some(0.5));
@@ -1723,6 +1982,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: 1000,
             model_id: "m1".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider,
@@ -1731,6 +1991,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: 2000,
             model_id: "m2".to_string(),
+            flops_estimated: 0,
         });
 
         let root1 = ledger.compute_trade_merkle_root();
@@ -1749,6 +2010,7 @@ mod tests {
             tokens_processed: 25,
             timestamp: 500,
             model_id: "test".to_string(),
+            flops_estimated: 0,
         });
 
         let statement = ledger.export_settlement_statement(0, 10000, None);
@@ -1786,6 +2048,7 @@ mod tests {
             tokens_processed: 256,
             timestamp: 1000,
             model_id: "llama-7b".to_string(),
+            flops_estimated: 0,
         };
 
         let bytes1 = trade.canonical_bytes();
@@ -1804,6 +2067,7 @@ mod tests {
             tokens_processed: 256,
             timestamp: 1000,
             model_id: "model-a".to_string(),
+            flops_estimated: 0,
         };
         let trade2 = TradeRecord {
             provider: NodeId([1u8; 32]),
@@ -1812,6 +2076,7 @@ mod tests {
             tokens_processed: 256,
             timestamp: 1000,
             model_id: "model-a".to_string(),
+            flops_estimated: 0,
         };
         assert_ne!(trade1.canonical_bytes(), trade2.canonical_bytes());
     }
@@ -1861,6 +2126,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: 1000,
             model_id: "test".to_string(),
+            flops_estimated: 0,
         };
         ledger.execute_trade(&trade);
 
@@ -1888,6 +2154,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "test-model".to_string(),
+            flops_estimated: 0,
         };
 
         let canonical = trade.canonical_bytes();
@@ -1923,6 +2190,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         };
 
         let canonical = trade.canonical_bytes();
@@ -1962,6 +2230,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         };
 
         let canonical = trade.canonical_bytes();
@@ -2033,6 +2302,7 @@ mod tests {
             tokens_processed: 25,
             timestamp: now_millis(),
             model_id: "m1".to_string(),
+            flops_estimated: 0,
         });
         let root1 = ledger.compute_trade_merkle_root();
 
@@ -2043,6 +2313,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "m2".to_string(),
+            flops_estimated: 0,
         });
         let root2 = ledger.compute_trade_merkle_root();
 
@@ -2104,6 +2375,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         });
         let data = ledger.prepare_anchor_data();
         assert_eq!(data.len(), 80);
@@ -2121,6 +2393,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         });
         // Self-trade should not be recorded
         assert!(ledger.get_balance(&node).is_none());
@@ -2204,6 +2477,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "seed".into(),
+            flops_estimated: 0,
         });
         ledger.update_reputation(borrower, 1.0);
         // Give borrower headroom so collateral reservation succeeds.
@@ -2410,6 +2684,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "m".into(),
+            flops_estimated: 0,
         });
         ledger.update_reputation(&node, 1.0);
         let after = ledger.compute_credit_score(&node);
@@ -2466,6 +2741,7 @@ mod tests {
             tokens_processed: 0,
             timestamp: now_millis(),
             model_id: "test".to_string(),
+            flops_estimated: 0,
         });
         assert_eq!(ledger.recent_trades(10).len(), 0);
     }
@@ -2619,6 +2895,7 @@ mod tests {
                 tokens_processed: 10,
                 timestamp: now_millis().saturating_sub(i * 60_000),
                 model_id: "test".into(),
+                flops_estimated: 0,
             });
         }
         let raw = ledger.consensus_reputation(&subject);
@@ -2656,6 +2933,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "attack".into(),
+            flops_estimated: 0,
         });
         // No trade should have been recorded and balance must not exist.
         assert_eq!(
@@ -2684,6 +2962,7 @@ mod tests {
             tokens_processed: 0,
             timestamp: now_millis(),
             model_id: "spam".into(),
+            flops_estimated: 0,
         });
         assert_eq!(
             ledger.trade_log.len(),
@@ -2717,6 +2996,7 @@ mod tests {
             tokens_processed: 1,
             timestamp: now_millis(),
             model_id: "huge".into(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider: provider.clone(),
@@ -2725,6 +3005,7 @@ mod tests {
             tokens_processed: 1,
             timestamp: now_millis(),
             model_id: "huge2".into(),
+            flops_estimated: 0,
         });
         let bal = ledger.get_balance(&provider).unwrap();
         // Contributed must NOT have wrapped around to a small value.
@@ -3000,6 +3281,7 @@ mod tests {
                 tokens_processed: 10,
                 timestamp: now.saturating_sub(i * 60_000),
                 model_id: "spam".into(),
+                flops_estimated: 0,
             });
         }
 
@@ -3043,6 +3325,7 @@ mod tests {
                 tokens_processed: 10,
                 timestamp: now.saturating_sub(i * 60_000),
                 model_id: "wash".into(),
+                flops_estimated: 0,
             });
         }
 
@@ -3213,6 +3496,7 @@ mod tests {
             tokens_processed: 50,
             timestamp: now_millis(),
             model_id: "test".into(),
+            flops_estimated: 0,
         });
         ledger.save_to_path(&path).unwrap();
 
@@ -3402,6 +3686,7 @@ mod tests {
             tokens_processed: 7,
             timestamp: 9_999,
             model_id: "hmac-roundtrip".to_string(),
+            flops_estimated: 0,
         });
         ledger.save_to_path(&path).unwrap();
         let loaded = ComputeLedger::load_from_path(&path).unwrap();
@@ -3424,6 +3709,7 @@ mod tests {
                 tokens_processed: i,
                 timestamp: i * 100,
                 model_id: format!("m{i}"),
+                flops_estimated: 0,
             });
         }
         ledger.save_to_path(&path).unwrap();
@@ -3462,6 +3748,7 @@ mod tests {
             tokens_processed: 11,
             timestamp: 1_000,
             model_id: "first".to_string(),
+            flops_estimated: 0,
         });
         ledger.execute_trade(&TradeRecord {
             provider: NodeId([3u8; 32]),
@@ -3470,6 +3757,7 @@ mod tests {
             tokens_processed: 22,
             timestamp: 2_000,
             model_id: "second".to_string(),
+            flops_estimated: 0,
         });
         ledger.save_to_path(&path).unwrap();
 
@@ -3530,6 +3818,7 @@ mod tests {
             tokens_processed: 5,
             timestamp: 100,
             model_id: "a".to_string(),
+            flops_estimated: 0,
         };
         let trade_b = TradeRecord {
             provider: NodeId([3u8; 32]),
@@ -3538,6 +3827,7 @@ mod tests {
             tokens_processed: 7,
             timestamp: 200,
             model_id: "b".to_string(),
+            flops_estimated: 0,
         };
         let mut l1 = ComputeLedger::new();
         l1.execute_trade(&trade_a);
@@ -3561,6 +3851,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: 1_000,
             model_id: "m".to_string(),
+            flops_estimated: 0,
         };
         let mut l1 = ComputeLedger::new();
         l1.execute_trade(&base);
@@ -3589,6 +3880,7 @@ mod tests {
             tokens_processed: 5,
             timestamp: now_millis(),
             model_id: "t".to_string(),
+            flops_estimated: 0,
         };
         let canonical = trade.canonical_bytes();
         let provider_sig = pk.sign(&canonical).to_bytes().to_vec();
@@ -3612,6 +3904,7 @@ mod tests {
             tokens_processed: 5,
             timestamp: now_millis(),
             model_id: "t".to_string(),
+            flops_estimated: 0,
         };
         let canonical = trade.canonical_bytes();
         let consumer_sig = ck.sign(&canonical).to_bytes().to_vec();
@@ -3639,6 +3932,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: now_millis(),
             model_id: "t".to_string(),
+            flops_estimated: 0,
         };
         let canonical = trade.canonical_bytes();
         let provider_sig = pk.sign(&canonical).to_bytes().to_vec();
@@ -3868,6 +4162,7 @@ mod tests {
             tokens_processed: 10,
             timestamp: now_millis(),
             model_id: "m".into(),
+            flops_estimated: 0,
         }];
         let report = crate::collusion::CollusionDetector::analyze_node(&trades, &subject, now_millis());
         assert_eq!(report.trust_penalty, 0.0, "single trade below MIN_TRADES threshold must yield 0 penalty");
@@ -4067,6 +4362,7 @@ mod tests {
             tokens_processed: 100,
             timestamp: now_millis(),
             model_id: "m".into(),
+            flops_estimated: 0,
         };
         let len_before = ledger.recent_trades(100).len();
         ledger.execute_trade(&self_trade);
@@ -4085,6 +4381,7 @@ mod tests {
             tokens_processed: 0,
             timestamp: now_millis(),
             model_id: "m".into(),
+            flops_estimated: 0,
         };
         ledger.execute_trade(&zero_trade);
         assert_eq!(ledger.recent_trades(10).len(), 0, "zero-CU trade must not be recorded");
@@ -4139,5 +4436,138 @@ mod tests {
         ledger.apply_yield(&node, -100.0);
         let contributed_after = ledger.get_balance(&node).map(|b| b.contributed).unwrap_or(0);
         assert_eq!(contributed_before, contributed_after, "negative uptime must not corrupt balance");
+    }
+
+    // =======================================================================
+    // Phase 14.2 tests — select_provider / begin_inference / settle_inference
+    // =======================================================================
+
+    fn price_signal_for(node: NodeId, model: &str, multiplier: f64, available: u64) -> tirami_core::PriceSignal {
+        tirami_core::PriceSignal {
+            node_id: node,
+            price_multiplier: multiplier,
+            available_cu: available,
+            model_capabilities: vec![ModelId(model.to_string())],
+            latency_hint_ms: 50,
+            timestamp: now_millis(),
+        }
+    }
+
+    #[test]
+    fn select_provider_returns_none_when_empty() {
+        let ledger = ComputeLedger::new();
+        let selected = ledger.select_provider(
+            &ModelId("qwen".to_string()),
+            100,
+            &NodeId([0u8; 32]),
+        );
+        assert!(selected.is_none());
+    }
+
+    #[test]
+    fn select_provider_picks_best_scored_candidate() {
+        let mut ledger = ComputeLedger::new();
+        let cheap = NodeId([1u8; 32]);
+        let expensive = NodeId([2u8; 32]);
+        let consumer = NodeId([3u8; 32]);
+
+        // Both have the same model; cheap is half price.
+        ledger.ingest_price_signal(&price_signal_for(cheap.clone(), "qwen", 0.5, 10_000));
+        ledger.ingest_price_signal(&price_signal_for(expensive.clone(), "qwen", 2.0, 10_000));
+
+        let (provider, _cost) = ledger
+            .select_provider(&ModelId("qwen".to_string()), 100, &consumer)
+            .expect("should select a provider");
+        assert_eq!(provider, cheap, "cheaper node should win");
+    }
+
+    #[test]
+    fn select_provider_excludes_self() {
+        let mut ledger = ComputeLedger::new();
+        let me = NodeId([7u8; 32]);
+        ledger.ingest_price_signal(&price_signal_for(me.clone(), "qwen", 1.0, 10_000));
+        assert!(ledger
+            .select_provider(&ModelId("qwen".to_string()), 100, &me)
+            .is_none());
+    }
+
+    #[test]
+    fn begin_inference_errors_when_no_provider() {
+        let mut ledger = ComputeLedger::new();
+        let consumer = NodeId([9u8; 32]);
+        let err = ledger.begin_inference(&consumer, &ModelId("nope".to_string()), 100);
+        assert!(matches!(err, Err(tirami_core::TiramiError::SchedulingError(_))));
+    }
+
+    #[test]
+    fn begin_inference_errors_on_insufficient_balance() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+        ledger.ingest_price_signal(&price_signal_for(provider, "qwen", 1.0, 10_000));
+        // Request way more than the 1000 TRM free-tier credit.
+        let err = ledger.begin_inference(&consumer, &ModelId("qwen".to_string()), 100_000);
+        assert!(
+            matches!(err, Err(tirami_core::TiramiError::InsufficientBalance { .. })),
+            "expected InsufficientBalance, got: {err:?}",
+        );
+    }
+
+    #[test]
+    fn begin_and_settle_inference_roundtrip() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+
+        // Fund consumer.
+        ledger.record_contribution(make_work([2u8; 32], 10_000_000_000));
+        ledger.ingest_price_signal(&price_signal_for(provider.clone(), "qwen", 1.0, 10_000));
+
+        let ticket = ledger
+            .begin_inference(&consumer, &ModelId("qwen".to_string()), 100)
+            .expect("ticket");
+        assert_eq!(ticket.provider, provider);
+        assert_eq!(ticket.consumer, consumer);
+        assert!(ticket.reserved_trm > 0);
+
+        // Settle with half the tokens used.
+        let trade = ledger
+            .settle_inference(&ticket, 50, 120, Some(true), 123_456_789)
+            .expect("settle");
+
+        assert_eq!(trade.provider, provider);
+        assert_eq!(trade.consumer, consumer);
+        assert_eq!(trade.tokens_processed, 50);
+        assert_eq!(trade.flops_estimated, 123_456_789);
+        // Half the reservation should have been released.
+        assert!(trade.trm_amount <= ticket.reserved_trm);
+    }
+
+    #[test]
+    fn settle_inference_failed_audit_reduces_reputation() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+
+        ledger.record_contribution(make_work([2u8; 32], 10_000_000_000));
+        ledger.ingest_price_signal(&price_signal_for(provider.clone(), "qwen", 1.0, 10_000));
+
+        let ticket = ledger
+            .begin_inference(&consumer, &ModelId("qwen".to_string()), 100)
+            .unwrap();
+        let rep_before = ledger
+            .get_balance(&provider)
+            .map(|b| b.reputation)
+            .unwrap_or(DEFAULT_REPUTATION);
+
+        let _ = ledger
+            .settle_inference(&ticket, 50, 120, Some(false), 0)
+            .unwrap();
+
+        let rep_after = ledger
+            .get_balance(&provider)
+            .map(|b| b.reputation)
+            .unwrap_or(DEFAULT_REPUTATION);
+        assert!(rep_after < rep_before, "failed audit should decrease reputation");
     }
 }

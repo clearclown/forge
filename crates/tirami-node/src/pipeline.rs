@@ -412,6 +412,44 @@ impl PipelineCoordinator {
                             ).await;
                         });
                     }
+                    // Phase 14.1 — price signal gossip.
+                    Payload::PriceSignalGossip(signal) => {
+                        let ledger = ledger.clone();
+                        let gossip = gossip.clone();
+                        let transport = self.transport.clone();
+                        tokio::spawn(async move {
+                            tirami_net::gossip::handle_price_signal_gossip(
+                                signal,
+                                &ledger,
+                                &gossip,
+                                Some(&transport),
+                            ).await;
+                        });
+                    }
+                    // Phase 14.3 — audit challenge: run deterministic
+                    // inference, reply with output hash. (Scaffolded:
+                    // current default impl uses the trait's generate_audit
+                    // which is a stub. Full deterministic path lands later.)
+                    Payload::AuditChallenge(_challenge) => {
+                        tracing::debug!(
+                            peer = %peer_id,
+                            "received audit challenge (handler scaffold — not yet responding)"
+                        );
+                        // TODO(phase-14.3 full): run generate_audit on challenge.input_tokens
+                        // and send AuditResponse. Currently a no-op to keep the protocol
+                        // variant reachable without requiring deterministic inference.
+                    }
+                    // Phase 14.3 — audit response: compare against our expected hash
+                    // and update peer's audit tier.
+                    Payload::AuditResponse(resp) => {
+                        tracing::debug!(
+                            peer = %peer_id,
+                            challenge_id = resp.challenge_id,
+                            "received audit response (handler scaffold)"
+                        );
+                        // TODO(phase-14.3 full): look up pending challenge, compare
+                        // hashes, call ledger.peer_registry.record_audit_result.
+                    }
                     _ => {}
                 },
                 None => {
@@ -481,6 +519,7 @@ impl PipelineCoordinator {
                                 tokens_processed: proposal.tokens_processed,
                                 timestamp: proposal.timestamp,
                                 model_id: proposal.model_id,
+                                flops_estimated: 0,
                             };
                             let canonical = trade.canonical_bytes();
                             let consumer_sig = transport.sign(&canonical).to_vec();
@@ -680,6 +719,7 @@ async fn handle_inference(
         tokens_processed: total_tokens,
         timestamp: now_millis(),
         model_id: "active".to_string(),
+        flops_estimated: 0,
     };
 
     let canonical = trade.canonical_bytes();
