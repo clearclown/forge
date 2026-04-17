@@ -56,6 +56,9 @@ pub(crate) struct AppState {
     pub referral_tracker: Arc<Mutex<tirami_ledger::ReferralTracker>>,
     /// Phase 13 — governance state for stake-weighted voting.
     pub governance: Arc<Mutex<tirami_ledger::GovernanceState>>,
+    /// Phase 16 — on-chain anchor client. Exposes submitted-batch history
+    /// via `/v1/tirami/anchors`. MockChainClient by default.
+    pub chain_client: Arc<tirami_anchor::MockChainClient>,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -151,6 +154,7 @@ pub fn create_router(
         Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
         Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
         Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
+        Arc::new(tirami_anchor::MockChainClient::new()),
     )
 }
 
@@ -171,6 +175,7 @@ pub fn create_router_with_services(
     staking_pool: Arc<Mutex<tirami_ledger::StakingPool>>,
     referral_tracker: Arc<Mutex<tirami_ledger::ReferralTracker>>,
     governance: Arc<Mutex<tirami_ledger::GovernanceState>>,
+    chain_client: Arc<tirami_anchor::MockChainClient>,
 ) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
@@ -198,6 +203,7 @@ pub fn create_router_with_services(
         staking_pool,
         referral_tracker,
         governance,
+        chain_client,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -219,6 +225,7 @@ pub fn create_router_with_services(
         .route("/v1/tirami/providers", get(forge_providers))
         .route("/v1/tirami/peers", get(forge_peers))
         .route("/v1/tirami/schedule", post(forge_schedule))
+        .route("/v1/tirami/anchors", get(forge_anchors))
         .route("/v1/tirami/safety", get(forge_safety_status))
         .route("/v1/tirami/kill", post(forge_kill_switch))
         .route("/v1/tirami/policy", post(forge_set_policy))
@@ -1634,6 +1641,24 @@ pub struct ScheduleRequest {
     pub consumer: Option<String>,
 }
 
+/// GET /v1/tirami/anchors — Phase 16 on-chain batch history.
+///
+/// Returns every batch this node has submitted to the configured
+/// ChainClient (default MockChainClient). Each entry: `batch_id`,
+/// `tx_hash`, `merkle_root_hex`, `submitted_at_ms`, `node_count`,
+/// `flops_total`.
+async fn forge_anchors(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    use tirami_anchor::ChainClient;
+    check_forge_rate_limit(&state).await?;
+    let subs = state.chain_client.list_submissions().await;
+    Ok(Json(serde_json::json!({
+        "count": subs.len(),
+        "anchors": subs,
+    })))
+}
+
 /// GET /v1/tirami/safety — safety status for this node.
 async fn forge_safety_status(
     State(state): State<AppState>,
@@ -2693,6 +2718,7 @@ pub(crate) fn test_router_default(config: Config) -> Router {
         Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
         Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
         Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
+        Arc::new(tirami_anchor::MockChainClient::new()),
     )
 }
 

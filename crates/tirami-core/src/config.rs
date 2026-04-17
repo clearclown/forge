@@ -54,6 +54,16 @@ pub struct Config {
 
     /// Settlement window duration in hours (Issue #19). 0 = manual only.
     pub settlement_window_hours: u64,
+
+    /// Phase 16 — interval between on-chain anchor batches (seconds).
+    /// Default 3600 (60 min). §20 spec recommends 10 min for production
+    /// (600), but dev/test defaults err on the longer side.
+    #[serde(default = "default_anchor_interval_secs")]
+    pub anchor_interval_secs: u64,
+}
+
+fn default_anchor_interval_secs() -> u64 {
+    3600
 }
 
 impl Config {
@@ -128,6 +138,7 @@ impl Default for Config {
             max_generate_tokens: 1_024,
             max_concurrent_remote_inference_requests: 4,
             settlement_window_hours: 24,
+            anchor_interval_secs: 3600,
         }
     }
 }

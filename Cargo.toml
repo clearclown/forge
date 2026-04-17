@@ -44,6 +44,7 @@ tirami-mind = { path = "crates/tirami-mind", version = "0.3.0" }
 tirami-agora = { path = "crates/tirami-agora", version = "0.3.0" }
 tirami-sdk = { path = "crates/tirami-sdk", version = "0.3.0" }
 tirami-mcp = { path = "crates/tirami-mcp", version = "0.3.0" }
+tirami-anchor = { path = "crates/tirami-anchor", version = "0.3.0" }
 
 # MCP SDK
 rmcp = { version = "1.2.0", features = ["server", "transport-io"] }
