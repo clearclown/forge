@@ -36,6 +36,9 @@ pub struct TiramiNode {
     pub referral_tracker: Arc<Mutex<tirami_ledger::ReferralTracker>>,
     /// Phase 13 — governance state for stake-weighted voting.
     pub governance: Arc<Mutex<tirami_ledger::GovernanceState>>,
+    /// Phase 16 — on-chain anchor client. Defaults to MockChainClient; real
+    /// Base L2 client swaps in via future `with_chain_client` builder method.
+    pub chain_client: Arc<tirami_anchor::MockChainClient>,
 }
 
 impl TiramiNode {
@@ -124,6 +127,7 @@ impl TiramiNode {
             staking_pool: Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
             referral_tracker: Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
             governance: Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
+            chain_client: Arc::new(tirami_anchor::MockChainClient::new()),
         }
     }
 
@@ -174,6 +178,7 @@ impl TiramiNode {
             self.staking_pool.clone(),
             self.referral_tracker.clone(),
             self.governance.clone(),
+            self.chain_client.clone(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -204,6 +209,7 @@ impl TiramiNode {
         let staking_pool_api = self.staking_pool.clone();
         let referral_tracker_api = self.referral_tracker.clone();
         let governance_api = self.governance.clone();
+        let chain_client_api = self.chain_client.clone();
         let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router_with_services(
@@ -221,6 +227,7 @@ impl TiramiNode {
                 staking_pool_api,
                 referral_tracker_api,
                 governance_api,
+                chain_client_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
@@ -271,6 +278,10 @@ impl TiramiNode {
         // periodic PriceSignal broadcast loop.
         self.self_register_price_signal().await;
         self.spawn_price_signal_loop(transport.clone());
+
+        // Phase 16 — spawn the periodic on-chain anchor loop (MockChainClient
+        // by default; real Base L2 wiring lands once tirami-contracts ships).
+        self.spawn_anchor_loop();
 
         // Run pipeline coordinator with ledger
         let coordinator = PipelineCoordinator::new(transport);
@@ -335,6 +346,39 @@ impl TiramiNode {
     }
 
     /// Spawn the periodic price signal broadcast task (30s default).
+    /// Phase 16 — spawn the periodic on-chain anchor loop.
+    ///
+    /// Default uses `MockChainClient` (in-memory). The anchor interval comes
+    /// from `config.anchor_interval_secs` (default 3600 — 60 min); operators
+    /// can shorten for local dev. Runs forever, logs errors but never panics.
+    fn spawn_anchor_loop(&self) {
+        let ledger = self.ledger.clone();
+        let chain = self.chain_client.clone();
+        let node_id = match self.transport.as_ref() {
+            Some(t) => t.tirami_node_id(),
+            None => {
+                // Fallback: synthesize a deterministic node id from model manifest
+                // hash if there's no transport (local-only `tirami node` mode).
+                tirami_core::NodeId([0u8; 32])
+            }
+        };
+        let interval_secs = self.config.anchor_interval_secs.max(10);
+
+        tokio::spawn(async move {
+            let config = tirami_anchor::AnchorerConfig {
+                interval: std::time::Duration::from_secs(interval_secs),
+                max_trades_per_batch: 10_000,
+                node_id,
+            };
+            let anchorer = std::sync::Arc::new(tirami_anchor::Anchorer::new(
+                config,
+                ledger,
+                chain,
+            ));
+            anchorer.run().await;
+        });
+    }
+
     fn spawn_price_signal_loop(&self, transport: Arc<ForgeTransport>) {
         let ledger = self.ledger.clone();
         let gossip = self.gossip.clone();
