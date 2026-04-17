@@ -763,6 +763,7 @@ async fn record_api_trade(
         timestamp: now_millis(),
         model_id: model_id.to_string(),
         flops_estimated,
+            nonce: [0u8; 16],
     };
     ledger.execute_trade(&trade);
     trm_cost

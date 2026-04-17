@@ -218,6 +218,7 @@ pub async fn handle_trade_gossip(
         timestamp: msg.timestamp,
         model_id: msg.model_id.clone(),
         flops_estimated: 0,
+            nonce: [0u8; 16],
     };
 
     let signed = SignedTradeRecord {
@@ -628,6 +629,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "test".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
 
         let canonical = trade.canonical_bytes();
@@ -864,6 +866,7 @@ mod tests {
                 timestamp: now_millis(),
                 model_id: "test".to_string(),
                 flops_estimated: 0,
+                            nonce: [0u8; 16],
             };
             let canonical = trade.canonical_bytes();
             let signed = SignedTradeRecord {
@@ -1015,6 +1018,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "sec2".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         let canonical = trade.canonical_bytes();
         let provider_sig = provider_key.sign(&canonical).to_bytes().to_vec();

@@ -583,6 +583,7 @@ impl PipelineCoordinator {
                                 timestamp: proposal.timestamp,
                                 model_id: proposal.model_id,
                                 flops_estimated: 0,
+                                                            nonce: [0u8; 16],
                             };
                             let canonical = trade.canonical_bytes();
                             let consumer_sig = transport.sign(&canonical).to_vec();
@@ -783,6 +784,7 @@ async fn handle_inference(
         timestamp: now_millis(),
         model_id: "active".to_string(),
         flops_estimated: 0,
+            nonce: [0u8; 16],
     };
 
     let canonical = trade.canonical_bytes();

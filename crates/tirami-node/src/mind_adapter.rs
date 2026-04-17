@@ -43,6 +43,7 @@ pub async fn record_frontier_consumption(
         timestamp: crate::api::now_millis_pub(),
         model_id: model_id.to_string(),
         flops_estimated: 0,
+            nonce: [0u8; 16],
     };
     let mut l = ledger.lock().await;
     l.execute_trade(&trade);
