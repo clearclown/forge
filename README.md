@@ -6,9 +6,9 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-877_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-891_passing-brightgreen)]()
 [![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
-[![Phase](https://img.shields.io/badge/phase-14--16_unified_scheduler-blue)]()
+[![Phase](https://img.shields.io/badge/phase-16_hybrid_chain-blue)]()
 
 ---
 
@@ -117,7 +117,26 @@ Tirami:   electricity  →  useful LLM inference →  TRM
 
 Bitcoin proved `electricity → computation → money`. But Bitcoin's computation is purposeless. Tirami inverts it: every TRM represents real intelligence that solved someone's real problem.
 
-**Four things no other project does:**
+**Phase 15 restated the whole thing in one line**:
+
+> GPU の Airbnb × AI Agent Economy. 余っている GPU が家賃 (TRM) を生み、AI エージェントが借主になる。
+
+```
+You have a Mac sitting idle          An AI agent needs to think
+        │                                         │
+        ▼                                         ▼
+   [ tirami start ]      ←  TRM  ←        [ agent.balance() ]
+   provides inference                     pays for inference
+        │                                         │
+        ▼                                         ▼
+   Earns TRM (= Airbnb rent)              Gets answer, keeps working
+```
+
+Every inference is measured in **FLOPs**, not just tokens:
+`1 TRM = 10⁹ FLOP of verified useful computation` (Phase 15.3 anchors this
+principle with measured data on every trade record).
+
+**Five things no other project does:**
 
 ### 1. Compute = Currency (21B Supply Cap)
 
@@ -143,9 +162,48 @@ Agent (1.5B on phone)
 
 Nodes can lend idle TRM to other nodes at interest. A small node borrows TRM, accesses a larger model, earns more TRM, repays with interest. This is the engine that makes the self-improvement loop economically viable for everyone, not just those who already own powerful hardware.
 
+### 5. Ledger-as-Brain: scheduling IS economic decision (Phase 14+)
+
+The ledger doesn't just track trades — it *decides* them. A single call
+`begin_inference(model, tokens)` picks the best provider from the gossip-synced
+PeerRegistry, reserves TRM, executes the inference, and settles — all atomically.
+
+```
+                   ┌─────────────────────────────────────────┐
+                   │   ComputeLedger (Ledger-as-Brain)        │
+                   │                                          │
+                   │   PeerRegistry  ⇄  select_provider()     │
+                   │     │                     │               │
+                   │     │          begin_inference()         │
+                   │     │                     │               │
+                   │     │                     ▼               │
+                   │     │            InferenceTicket          │
+                   │     │                     │               │
+                   │     │            settle_inference()       │
+                   │     │                     │               │
+                   │     └─── record_audit_result() ◄──────┐   │
+                   │              (Phase 14.3 audit tier)  │   │
+                   └───────────────────────┬───────────────┼───┘
+                                           │               │
+                ┌──────── gossip ──────────┤               │
+                │  PriceSignalGossip       │               │
+                │  TradeGossip             │               │
+                │  AuditChallenge/Response─┼───────────────┘
+                │  ReputationGossip        │
+                └──────────────────────────┘
+```
+
+Every node's ledger sees the same economic reality within seconds. The
+scheduler's decisions feed back into reputation, which feeds back into future
+scheduling. Price discovery, capacity balancing, trust all emerge from this
+single loop.
+
 ## Architecture
 
 ```
+                          Humans & AI agents
+                                 │
+                                 ▼
 ┌─────────────────────────────────────────────────┐
 │  L4: Discovery (tirami-agora) ✅                 │
 │  Agent marketplace, reputation, Nostr NIP-90,   │
@@ -153,24 +211,37 @@ Nodes can lend idle TRM to other nodes at interest. A small node borrows TRM, ac
 ├─────────────────────────────────────────────────┤
 │  L3: Intelligence (tirami-mind) ✅               │
 │  AutoAgent self-improvement loops paid in TRM,  │
-│  harness marketplace, meta-optimization,        │
-│  federated training scaffold                    │
+│  harness marketplace, meta-optimization         │
 ├─────────────────────────────────────────────────┤
 │  L2: Finance (tirami-bank) ✅                    │
 │  Strategies, portfolios, futures, insurance,    │
 │  risk model, yield optimizer, staking           │
 ├─────────────────────────────────────────────────┤
-│  L1: Economy (tirami — this repo) ✅ Phase 1-13 │
-│  TRM ledger, dual-signed trades, dynamic pricing,│
-│  lending, tokenomics (21B cap, halving),        │
-│  safety controls, Prometheus, Bitcoin anchoring  │
+│  L1: Economy (tirami — this repo) ✅ Phase 1-16 │
+│  TRM ledger with Ledger-as-Brain scheduling,   │
+│  dual-signed trades, dynamic pricing, lending,  │
+│  tokenomics (21B cap, halving), safety,         │
+│  Prometheus, FLOP measurement, audit tiers,     │
+│  gossip PriceSignal, on-chain anchor loop       │
 ├─────────────────────────────────────────────────┤
 │  L0: Inference (forge-mesh / mesh-llm) ✅       │
-│  Pipeline parallelism, MoE sharding,            │
-│  iroh mesh, Nostr discovery, MLX/llama.cpp      │
+│  Pipeline parallelism, MoE sharding, iroh mesh, │
+│  Nostr discovery, MLX/llama.cpp                 │
+└─────────────────────────────────────────────────┘
+                                 │
+         ┌───────────────────────┘
+         │  periodic 10-min batches (Phase 16)
+         ▼
+┌─────────────────────────────────────────────────┐
+│  On-chain: tirami-contracts (Base L2, skeleton) │
+│  TRM ERC-20 (21B cap) + TiramiBridge            │
+│  storeBatch / mintForProvider / withdraw        │
+│  Not deployed yet — in-memory MockChainClient   │
 └─────────────────────────────────────────────────┘
 
-All 5 layers are Rust. 785 tests passing. 123/123 verify-impl GREEN.
+All 5 layers are Rust. 891 tests passing. 123/123 verify-impl GREEN.
+Phase 14-16 added unified Ledger-as-Brain scheduling, FLOP measurement,
+audit challenge-response, and the on-chain anchor layer (tirami-anchor + tirami-contracts).
 ```
 
 ## Quick Start
@@ -335,34 +406,41 @@ A room full of Mac Minis running Tirami is an apartment building — generating 
 ## Project Structure
 
 ```
-tirami/  (this repo — all 5 layers, 14 Rust crates)
+tirami/  (this repo — all 5 layers, 15 Rust crates)
 ├── crates/
-│   ├── tirami-ledger/      # TRM accounting, lending, tokenomics, staking, governance, collusion
-│   ├── tirami-node/        # Node daemon, HTTP API (54+ endpoints), pipeline
-│   ├── tirami-cli/         # CLI: chat, seed, worker, settle, wallet, su
-│   ├── tirami-sdk/         # Rust async HTTP client (54 methods)
-│   ├── tirami-mcp/         # Rust MCP server (40 tools for Claude/Cursor)
+│   ├── tirami-ledger/      # TRM accounting, lending, tokenomics, staking,
+│   │                       # governance, collusion, PeerRegistry (Phase 14.1),
+│   │                       # select_provider (Phase 14.2), audit (Phase 14.3)
+│   ├── tirami-node/        # Node daemon, HTTP API (60+ endpoints), pipeline,
+│   │                       # anchor/audit/price-signal background loops
+│   ├── tirami-cli/         # CLI: chat, seed, worker, start, settle, wallet, su
+│   ├── tirami-sdk/         # Rust async HTTP client (60+ methods incl. peers/schedule/anchors)
+│   ├── tirami-mcp/         # Rust MCP server (44 tools for Claude/Cursor)
 │   ├── tirami-bank/        # L2: Strategies, portfolios, futures, insurance, risk
 │   ├── tirami-mind/        # L3: AutoAgent self-improvement, federated training
 │   ├── tirami-agora/       # L4: Agent marketplace, reputation, NIP-90
+│   ├── tirami-anchor/      # Phase 16: periodic Merkle-root anchor to on-chain
 │   ├── tirami-lightning/   # TRM <-> Bitcoin Lightning bridge (bidirectional)
-│   ├── tirami-net/         # P2P: iroh QUIC + Noise + gossip (trades + loans + reputation)
-│   ├── tirami-proto/       # Wire protocol: 27+ message types incl. signed reputation
-│   ├── tirami-infer/       # Inference: llama.cpp, GGUF, Metal/CPU
-│   ├── tirami-core/        # Types: NodeId, TRM, Config
+│   ├── tirami-net/         # P2P: iroh QUIC + Noise + gossip (trades/loans/reputation/price)
+│   ├── tirami-proto/       # Wire protocol: 30+ message types incl. audit challenge/response
+│   ├── tirami-infer/       # Inference: llama.cpp, GGUF, Metal/CPU, generate_metered/audit
+│   ├── tirami-core/        # Types: NodeId, TRM, Config, PriceSignal, AuditTier, InferenceTicket
 │   └── tirami-shard/       # Topology: layer assignment
 ├── scripts/verify-impl.sh  # TDD conformance (123 assertions)
-└── docs/                   # Specs, strategy, threat model, roadmap
+└── docs/                   # Specs, strategy, threat model, roadmap, Phase 14-16 designs
+
+Companion: clearclown/tirami-contracts — Solidity/Foundry TRM ERC-20 + Bridge
 ```
 
-~20,000 lines of Rust. **785 tests passing.** Phase 1-13 complete.
+~22,000 lines of Rust. **891 tests passing.** Phase 1-16 complete.
 
 ## Ecosystem
 
 | Repo | Layer | Tests | Status |
 |------|-------|-------|--------|
-| [clearclown/tirami](https://github.com/clearclown/tirami) (this) | L1-L4 | 785 | Phase 1-13 ✅ |
-| [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | Theory | 16/16 GREEN | Spec + papers ✅ |
+| [clearclown/tirami](https://github.com/clearclown/tirami) (this) | L1-L4 | 891 | Phase 1-16 ✅ |
+| [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | Theory | 16/16 GREEN | Spec + papers (v0.5 with §20-§21) ✅ |
+| clearclown/tirami-contracts | On-chain | Foundry skeleton | TRM ERC-20 + Bridge (Phase 16), not deployed |
 | [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 646 | forge-economy port ✅ |
 | clearclown/tirami-bank | L2 Finance | archived | Superseded by `crates/tirami-bank/` |
 | clearclown/tirami-mind | L3 Intelligence | archived | Superseded by `crates/tirami-mind/` |
