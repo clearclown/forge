@@ -67,6 +67,12 @@ pub const MUTABLE_GOVERNANCE_PARAMETERS: &[&str] = &[
     "CHECKPOINT_INTERVAL_SECS",
     "CHECKPOINT_RETAIN_SECS",
     "SLASHING_INTERVAL_SECS",
+    // Phase 18.2 — stake-required mining tuning.
+    // MIN_PROVIDER_STAKE_TRM is mutable ABOVE the constitutional
+    // floor (MIN_PROVIDER_STAKE_CONSTITUTIONAL_FLOOR). Governance
+    // can raise but not lower below the floor.
+    "MIN_PROVIDER_STAKE_TRM",
+    "STAKELESS_EARN_CAP_TRM",
 ];
 
 /// Phase 18.1 — parameters explicitly called out as immutable.
@@ -101,6 +107,10 @@ pub const IMMUTABLE_CONSTITUTIONAL_PARAMETERS: &[&str] = &[
     "GOVERNANCE_MIN_REPUTATION",       // 0.7 threshold
     "GOVERNANCE_MIN_STAKE",            // 1000 TRM
     "GOVERNANCE_WHITELIST_CONTENTS",   // this very list
+    // --- Phase 18.2: Stake-required mining invariants ---
+    "WELCOME_LOAN_SUNSET_EPOCH",                    // one-way closure
+    "MIN_PROVIDER_STAKE_CONSTITUTIONAL_FLOOR",      // 10 TRM floor
+    "STAKELESS_EARN_CAP_MAXIMUM",                   // absolute ceiling on faucet
 ];
 
 /// True iff `name` is a parameter governance is allowed to change.

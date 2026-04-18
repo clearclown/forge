@@ -219,6 +219,77 @@ asserts:
 Any commit that weakens these checks is a Constitutional
 violation and must be rejected at code review.
 
+## Article XI — Stake-required Mining (Phase 18.2)
+
+Filecoin-path commitment: earning TRM requires **skin in the game**.
+Three rules:
+
+### §1 Provider stake floor
+
+A provider MUST hold at least `MIN_PROVIDER_STAKE_TRM` of active
+stake to receive paid inference requests. The floor itself
+(`MIN_PROVIDER_STAKE_CONSTITUTIONAL_FLOOR = 10 TRM`) is
+Constitutional — governance may *raise* the effective minimum
+via `MIN_PROVIDER_STAKE_TRM` on the mutable whitelist, but NEVER
+lower it below the floor. Setting the floor to zero would revert
+to the pre-Phase-18 "anyone earns without accountability" state.
+
+### §2 Stakeless earn cap (bootstrap faucet)
+
+New nodes may earn up to `STAKELESS_EARN_CAP_TRM = 10 TRM` without
+any stake. Beyond that cap, they MUST stake. This matches Bitcoin's
+early CPU-mining window: enough to onboard, bounded enough to
+prevent Sybil farming. The absolute ceiling on this cap
+(`STAKELESS_EARN_CAP_MAXIMUM`) is Constitutional; governance can
+lower the effective cap (even to zero, closing the faucet
+entirely) but cannot raise it above the ceiling.
+
+### §3 Slash history is forfeiture of the stakeless path
+
+A node that has EVER been slashed cannot use the stakeless faucet
+afterward — they must come back with real stake. This closes the
+"slash, regenerate identity, refill from faucet" cycle.
+
+### §4 Welcome loan sunset
+
+`WELCOME_LOAN_SUNSET_EPOCH = 2` is Constitutional. Once the network
+reaches halving epoch 2 (≥ 87.5 % of TRM supply minted), welcome
+loans close permanently. Re-opening them would re-introduce the
+Sybil vector that Phase 2.8 + 4.1 + 18.2 closed. This is
+one-way-door by design — amending the sunset requires a full
+protocol fork (software no longer "Tirami").
+
+### §5 Enforcement
+
+`ComputeLedger::can_provide_inference(&NodeId, &StakingPool,
+now_ms) -> bool` is the runtime gate. Called from the pipeline
+coordinator BEFORE settling any trade in favor of the provider.
+Regression tests in `ledger.rs` tests module enforce:
+
+- Un-staked new node allowed up to the cap (bootstrap).
+- Un-staked node over cap refused.
+- Previously-slashed node cannot use the stakeless path.
+- Stake path works even for previously-slashed nodes (rehabilitation).
+- Welcome loan denied once epoch ≥ sunset.
+- Welcome loan granted in epoch 0 (pre-sunset).
+
+### Why Filecoin-path needs this
+
+Filecoin ($1-10 B market cap, independent protocol) required
+miners to put up collateral before sealing sectors. Without
+stake-required participation:
+- Every earned TRM is "free" — there's no penalty for bad behavior
+  beyond losing future earnings.
+- Sybil attacks against the welcome loan are economically rational
+  (cost: spin up an identity; reward: 1 000 free TRM).
+- Slashing has no teeth against un-staked attackers.
+
+With stake-required mining:
+- Every provider has real TRM at risk, scaled to their activity.
+- Slashing on audit failure actually hurts.
+- The "turn electricity into TRM" path requires first acquiring
+  TRM, which prevents bootstrap cheating.
+
 ## Amendment log
 
 *(No amendments yet. When the first amendment ratifies, it
