@@ -266,6 +266,78 @@ invariants invisible to the regular build (cfg-gated).
 Waves 1+2+3, spanning 20 primitives). `verify-impl.sh` GREEN
 (123 / 123) throughout.
 
+### Phase 17 Wave 4 — Production Wire-up (2026-04-18)
+
+Wave 4 closes the "primitive shipped but not actually running"
+gaps that Waves 2-3 created by deliberately separating primitives
+from integration. With Wave 4 every buildable defense is on the
+hot path; what remains is genuinely external (iroh upstream,
+external auditor engagement, Sepolia live deploy).
+
+**4.1 — WelcomeLoanLimiter wired into ComputeLedger**
+- `ComputeLedger.sybil_limiter: WelcomeLoanLimiter` field
+  (ephemeral).
+- New `can_issue_welcome_loan_limited(node_id, bucket,
+  stake_proven, now_ms) -> bool` — layers per-bucket cap on top
+  of the global Sybil ceiling.
+- `record_welcome_loan_grant(bucket, now_ms)` for callers.
+- +5 tests covering per-bucket / cross-bucket / global ceiling
+  short-circuit / grant recording / stake-proven 10× multiplier.
+
+**4.2 — max_concurrent_connections enforced in transport**
+- `ForgeTransport.max_connections: usize` + `dropped_over_cap:
+  Arc<AtomicU64>`.
+- `new_with_max_connections(n)` constructor.
+- Accept loop refuses past-cap handshakes BEFORE paying
+  `connecting.await` — cheap rejection for a flood attacker.
+- `TiramiNode::init_transport` now threads
+  `config.max_concurrent_connections` (default 1000) to the
+  transport. The Wave 3.4 config field is finally enforced.
+
+**4.3 — spawn_checkpoint_loop in daemon**
+- New config: `checkpoint_interval_secs` (default 3600),
+  `checkpoint_retain_secs` (default 86 400 = 24 h),
+  `archive_path: Option<PathBuf>`.
+- `TiramiNode::spawn_checkpoint_loop` periodically calls
+  `seal_and_archive` with `cutoff = now - retain_ms`, logging
+  sealed count + Merkle root, persisting the ledger on nonempty
+  seals.
+- Effect: `trade_log` in-memory footprint bounded by retain
+  window × trade rate, not the node's total lifetime. The Wave
+  2.4 primitive now runs.
+
+**4.4 — AsnRateLimiter in transport — BLOCKED UPSTREAM**
+- Attempted: `PeerConnection::remote_ip()` accessor compiled
+  against `iroh::endpoint::Connection::remote_address()`.
+- Discovery: iroh 0.97's public API does NOT expose this;
+  connections abstract over direct QUIC + relays.
+- Action: reverted code change, updated K-004 in
+  `docs/security/known-issues.md` to document the blocker
+  (Medium severity). Mainnet checklist captures this as a hard
+  gate.
+
+**4.5 — API self-sign path — architecturally not needed**
+- Reviewed `api::record_api_trade` and
+  `mind_adapter::record_frontier_consumption`.
+- Finding: these are locally-originated bookkeeping trades,
+  never gossiped (no `broadcast_trade` call in either file).
+  The dual-sig requirement defends against peer-originated
+  replay; a compromised local host can bypass any in-memory
+  sig check by editing the ledger file directly.
+- Action: added explicit comments at both call sites explaining
+  the architectural reasoning so future readers don't reopen
+  this. Cleaned up stray indentation from the Wave 1.1 bulk
+  rewrite. No behavior change.
+
+**Wave 4 test coverage:** 1 066 → 1 071 passing (+5 new in
+Wave 4.1; Waves 4.2-4.5 are integration-only). `cargo build
+--workspace` clean. `verify-impl.sh` 123/123 GREEN.
+
+**Phase 17 total (final):** 891 → 1 071 passing (+180 new
+tests). 23 primitives landed. 4 follow-ups explicitly documented
+as external-blocked (iroh upstream, ml-dsa dep, Sepolia deploy,
+external audit engagement).
+
 ### Phase 14 — Unified Scheduler (2026-04-14 → 2026-04-17)
 
 Brings the v2 reference implementation's "Ledger-as-Brain" architecture
