@@ -70,6 +70,13 @@ clap = { version = "4", features = ["derive"] }
 
 # Crypto
 ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+# Phase 17 Wave 1.6 — ML-DSA (FIPS-204 / ex-Dilithium) post-quantum signatures
+# are scaffolded via a pluggable verifier trait in tirami-core::crypto, NOT
+# directly depended on here yet: the current rustcrypto `ml-dsa` 0.1.0-rc.x
+# pulls `digest 0.11.0` (non-RC) which conflicts with iroh 0.97's locked
+# `digest 0.11.0-rc.10`. When ml-dsa reaches stable the binding flips on
+# via a single feature flag. The HybridSignature type + all wire/plumbing
+# are already present and tested with a mock verifier.
 rand = "0.8"
 hex = "0.4"
 hmac = "0.12"

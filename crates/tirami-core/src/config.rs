@@ -67,6 +67,20 @@ pub struct Config {
     /// via config; production should leave at the default.
     #[serde(default = "default_slashing_interval_secs")]
     pub slashing_interval_secs: u64,
+
+    /// Phase 17 Wave 1.6 — opt-in to post-quantum hybrid signatures
+    /// (Ed25519 + ML-DSA). When `true`, the node signs outbound trades
+    /// with both halves and rejects inbound trades whose PQ half fails.
+    /// When `false` (current default), the PQ machinery stays dormant
+    /// and every signature is pure Ed25519, preserving interop with
+    /// pre-Phase-17 peers.
+    ///
+    /// The default stays `false` until the ML-DSA dep can be pulled in
+    /// without dependency conflicts (currently blocked on
+    /// `digest 0.11.0-rc.10` via iroh 0.97). The scaffold + mock
+    /// verifier are in tirami-core::crypto.
+    #[serde(default)]
+    pub pq_signatures: bool,
 }
 
 fn default_anchor_interval_secs() -> u64 {
@@ -151,6 +165,7 @@ impl Default for Config {
             settlement_window_hours: 24,
             anchor_interval_secs: 3600,
             slashing_interval_secs: 300,
+            pq_signatures: false,
         }
     }
 }

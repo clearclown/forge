@@ -61,13 +61,33 @@ on the auth middleware.
   accepted for non-admin endpoints. `require_admin_scope` helper gates
   privileged handlers.
 
-**Test coverage (workspace):** 891 → 912 passing (+21 new across
-Waves 1.1 – 1.5). `bash scripts/verify-impl.sh` remains GREEN
+**1.6 — Post-quantum hybrid signature scaffold**
+- New `crates/tirami-core/src/crypto.rs`:
+  - `HybridSignature { ed25519_sig, pq_sig: Option<Vec<u8>>, pq_vk }`
+    — Serde-friendly; degrades to pure Ed25519 when `pq_sig` is `None`
+    so pre-Phase-17 peers interop cleanly.
+  - `HybridKey::sign(msg)` + `HybridSignature::verify(vk, msg, pq_verifier)`
+    with both-or-fail semantics when the PQ half is present.
+  - `PqSigner` / `PqVerifier` traits to keep the underlying scheme
+    pluggable (ML-DSA, Falcon, future).
+  - `MockPqSigner` / `MockPqVerifier` (deterministic SHA-256 based)
+    for scaffold-era tests.
+- New `Config::pq_signatures: bool` (defaults to `false`) — flips the
+  daemon between pure Ed25519 and full hybrid signing once the real
+  ML-DSA backend lands.
+- Why scaffold-only: the `ml-dsa` 0.1.0-rc.8 crate pulls a
+  conflicting `digest 0.11` against iroh 0.97's locked
+  `digest 0.11.0-rc.10`. Full type lattice + 12 verify-matrix tests
+  are already in place so the swap to a real PQ backend is one file.
+
+**Test coverage (workspace):** 891 → 940 passing (+49 new across
+Waves 1.1 – 1.6). `bash scripts/verify-impl.sh` remains GREEN
 (123 / 123).
 
-Next up in Phase 17: Wave 1.6 (Ed25519 + ML-DSA hybrid signatures),
-then Wave 2 (scale hardening) and Wave 3 (hostile-environment
-readiness) per `.claude/plans/humble-cooking-thimble.md`.
+Next up in Phase 17: Wave 2 (scale hardening — SPoRA + probabilistic
+SNARK audits, per-ASN rate limiting, fork reconciliation, Base
+Sepolia deploy) and Wave 3 (hostile-environment readiness) per
+`.claude/plans/humble-cooking-thimble.md`.
 
 ### Phase 14 — Unified Scheduler (2026-04-14 → 2026-04-17)
 

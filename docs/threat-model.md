@@ -315,10 +315,27 @@ The legacy bearer remains honored as implicit Admin for migration.
 A leaked ReadOnly token no longer compromises economic endpoints;
 revocation is instant and per-token, not cluster-wide.
 
+### New T20 — Cryptographically-Relevant Quantum Computers
+Ed25519 is expected to fall to a CRQC in the mid-2030s (NIST
+modeling). Tirami's trade log is append-only, so any signature that
+is breakable at rollout time retroactively invalidates history.
+A ratchet after the break is too late.
+
+**Wave 1.6 (scaffold)**: `tirami_core::crypto::HybridSignature`
+carries an Ed25519 signature plus an optional ML-DSA (FIPS-204)
+signature, with both-or-fail verification when the PQ half is
+present. A pluggable `PqSigner` / `PqVerifier` trait pair keeps the
+underlying scheme swappable. `Config::pq_signatures` is the opt-in.
+Full type lattice + 12 verify-matrix tests ship in this wave;
+the real ML-DSA binding waits on the `digest 0.11` version conflict
+to resolve (iroh 0.97 pins `digest 0.11.0-rc.10`, ml-dsa 0.1.0-rc.8
+pulls `digest 0.11.0` final). When unblocked, the production swap
+is one file.
+
 ### Residual (tracked for Wave 2 / 3)
 - Per-ASN rate limiting and subnet-level Sybil defense (Wave 2.3 / 2.8).
 - Probabilistic SPoRA + SNARK audits for lazy-provider detection
   (Wave 2.1 / 2.2).
-- PQ-hybrid signatures (Ed25519 + ML-DSA) — Wave 1.6 scheduled next.
+- Real ML-DSA backend swap (blocked on dep version pin).
 - TEE attestation as an optional premium tier (Wave 3.1).
 - External security audit before mainnet — gate, not optional.
