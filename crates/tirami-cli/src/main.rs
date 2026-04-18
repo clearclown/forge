@@ -339,7 +339,7 @@ enum WalletAction {
         /// Amount in satoshis
         amount_sats: u64,
         /// Description
-        #[arg(short, long, default_value = "Forge inference")]
+        #[arg(short, long, default_value = "Tirami inference")]
         description: String,
     },
     /// Pay a Lightning invoice
@@ -431,7 +431,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", response);
                 eprintln!("\n---\nGenerated in {:.2}s", elapsed.as_secs_f64());
             } else {
-                println!("Forge Chat (type 'quit' to exit)");
+                println!("Tirami Chat (type 'quit' to exit)");
                 println!("Model: {}", model);
                 println!("---");
 
@@ -668,7 +668,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let llama_cli = tirami_infer::distributed::find_llama_cli().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "llama-cli not found. Set FORGE_LLAMA_CLI_PATH or install llama.cpp"
+                    "llama-cli not found. Set TIRAMI_LLAMA_CLI_PATH or install llama.cpp"
                 )
             })?;
 
@@ -784,7 +784,7 @@ async fn main() -> anyhow::Result<()> {
             let status: tirami_node::api::StatusResponse =
                 request.send().await?.error_for_status()?.json().await?;
 
-            println!("Forge status: {}", status.status);
+            println!("Tirami status: {}", status.status);
             println!("Model loaded: {}", status.model_loaded);
             println!(
                 "Market price: {:.2} CU/token (demand {:.2} / supply {:.2})",
@@ -843,7 +843,7 @@ async fn main() -> anyhow::Result<()> {
             let topology: tirami_node::api::TopologyResponse =
                 request.send().await?.error_for_status()?.json().await?;
 
-            println!("Forge topology: {}", topology.status);
+            println!("Tirami topology: {}", topology.status);
             if let Some(model) = topology.model {
                 println!(
                     "Model: {} (layers={}, hidden={}, quant={})",
@@ -1253,7 +1253,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn resolve_api_token(flag: Option<String>) -> Option<String> {
-    flag.or_else(|| std::env::var("FORGE_API_TOKEN").ok())
+    // `TIRAMI_API_TOKEN` is the primary env var; `FORGE_API_TOKEN` is
+    // accepted as a legacy alias so older operator scripts still work
+    // (fix #77).
+    flag.or_else(|| std::env::var("TIRAMI_API_TOKEN").ok())
+        .or_else(|| std::env::var("FORGE_API_TOKEN").ok())
         .filter(|token| !token.is_empty())
 }
 

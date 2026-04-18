@@ -35,12 +35,16 @@ pub struct DistributedConfig {
 
 /// Find the llama-cli binary from trusted locations.
 pub fn find_llama_cli() -> Option<PathBuf> {
-    // Check env var first
-    if let Ok(path) = std::env::var("FORGE_LLAMA_CLI_PATH") {
-        let p = PathBuf::from(&path);
-        if let Ok(canonical) = p.canonicalize() {
-            if canonical.is_file() {
-                return Some(canonical);
+    // Check env vars first. `TIRAMI_LLAMA_CLI_PATH` is the current
+    // name; `FORGE_LLAMA_CLI_PATH` is accepted as a legacy alias so
+    // operators with older setups still work (fix #77).
+    for env_name in ["TIRAMI_LLAMA_CLI_PATH", "FORGE_LLAMA_CLI_PATH"] {
+        if let Ok(path) = std::env::var(env_name) {
+            let p = PathBuf::from(&path);
+            if let Ok(canonical) = p.canonicalize() {
+                if canonical.is_file() {
+                    return Some(canonical);
+                }
             }
         }
     }

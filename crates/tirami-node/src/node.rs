@@ -332,11 +332,11 @@ impl TiramiNode {
 
         let addr = transport.endpoint_addr();
         let id = transport.endpoint_id();
-        tracing::info!("=== FORGE SEED NODE ===");
+        tracing::info!("=== TIRAMI SEED NODE ===");
         tracing::info!("Public key: {}", id);
         tracing::info!("Node ID: {}", transport.tirami_node_id());
         tracing::info!("Full address: {:?}", addr);
-        tracing::info!("Workers connect with: forge worker --seed {}", id);
+        tracing::info!("Workers connect with: tirami worker --seed {}", id);
 
         // Accept connections
         let _accept_handle = transport.start_accepting();
@@ -951,7 +951,7 @@ impl TiramiNode {
 
     /// Graceful shutdown: announce leaving, persist ledger, close transport.
     pub async fn shutdown(&self) {
-        tracing::info!("Shutting down Forge node...");
+        tracing::info!("Shutting down Tirami node...");
 
         // Announce leaving to all peers
         if let Some(cluster) = self.cluster.as_ref() {

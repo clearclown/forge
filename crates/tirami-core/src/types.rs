@@ -15,7 +15,12 @@ impl NodeId {
     }
 
     pub fn from_hex(value: &str) -> Result<Self, String> {
-        let value = value.strip_prefix("forge_").unwrap_or(value);
+        // Accept both the current `tirami_` prefix and the legacy
+        // `forge_` prefix (pre-rename snapshots / config files).
+        let value = value
+            .strip_prefix("tirami_")
+            .or_else(|| value.strip_prefix("forge_"))
+            .unwrap_or(value);
         let bytes = hex::decode(value).map_err(|e| format!("decode node id: {e}"))?;
         if bytes.len() != 32 {
             return Err(format!("expected 32 bytes, got {}", bytes.len()));
@@ -29,7 +34,7 @@ impl NodeId {
 
 impl std::fmt::Display for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "forge_{}", hex::encode(&self.0[..8]))
+        write!(f, "tirami_{}", hex::encode(&self.0[..8]))
     }
 }
 
@@ -338,6 +343,39 @@ mod tests {
         let original = NodeId([7u8; 32]);
         let parsed = original.to_hex().parse::<NodeId>().unwrap();
         assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn node_id_display_uses_tirami_prefix() {
+        let id = NodeId([0xABu8; 32]);
+        let shown = format!("{}", id);
+        assert!(
+            shown.starts_with("tirami_"),
+            "expected tirami_ prefix, got {shown}"
+        );
+    }
+
+    #[test]
+    fn node_id_parser_accepts_tirami_prefix() {
+        let raw = format!("tirami_{}", hex::encode([0x12u8; 32]));
+        let parsed = NodeId::from_hex(&raw).unwrap();
+        assert_eq!(parsed, NodeId([0x12u8; 32]));
+    }
+
+    #[test]
+    fn node_id_parser_accepts_legacy_forge_prefix() {
+        // Backward compat (fix #77): saved snapshots / config files
+        // from the pre-rename era must still parse.
+        let raw = format!("forge_{}", hex::encode([0x34u8; 32]));
+        let parsed = NodeId::from_hex(&raw).unwrap();
+        assert_eq!(parsed, NodeId([0x34u8; 32]));
+    }
+
+    #[test]
+    fn node_id_parser_accepts_bare_hex() {
+        let raw = hex::encode([0x56u8; 32]);
+        let parsed = NodeId::from_hex(&raw).unwrap();
+        assert_eq!(parsed, NodeId([0x56u8; 32]));
     }
 
     // ------------------------------------------------------------------
