@@ -243,9 +243,14 @@ impl TiramiNode {
             return Ok(transport.clone());
         }
 
-        let transport = ForgeTransport::new()
-            .await
-            .map_err(|e| tirami_core::TiramiError::NetworkError(format!("transport: {e}")))?;
+        // Phase 17 Wave 4.2 — pick up the operator's DDoS cap from
+        // Config. `0` disables the cap entirely (dangerous on public
+        // nodes; documented in docs/operator-guide.md).
+        let transport = ForgeTransport::new_with_max_connections(
+            self.config.max_concurrent_connections as usize,
+        )
+        .await
+        .map_err(|e| tirami_core::TiramiError::NetworkError(format!("transport: {e}")))?;
         let transport = Arc::new(transport);
         let local_capability = build_local_capability(&self.config, transport.tirami_node_id());
         self.cluster = Some(Arc::new(ClusterManager::new(
