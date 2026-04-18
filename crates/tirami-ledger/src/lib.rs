@@ -10,6 +10,7 @@ pub mod lending;
 pub mod audit;
 pub mod audit_snark;
 pub mod checkpoint;
+pub mod fork;
 pub mod metrics;
 pub mod peer_registry;
 pub mod referral;
@@ -55,4 +56,7 @@ pub use audit_snark::{
 pub use checkpoint::{
     append_archive, read_archive, trades_merkle_root, ArchiveError, ArchivePath,
     LedgerCheckpoint,
+};
+pub use fork::{
+    detect_nonce_conflict, ForkDetector, ForkVerdict, NonceFraudProof, NonceFraudProofError,
 };
