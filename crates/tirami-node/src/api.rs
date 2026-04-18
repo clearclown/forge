@@ -332,6 +332,11 @@ pub fn create_router_with_services(
         // Phase 10 P5 — Prometheus /metrics endpoint (no auth — Prometheus scrapes without tokens)
         .route("/metrics", get(crate::handlers::metrics::metrics_handler))
         .merge(protected)
+        // Phase 18.5-part-3e (fix #74) — normalise every non-JSON
+        // error body into a consistent `{ "error": { code, message } }`
+        // envelope. Applied as the outermost layer so it runs AFTER
+        // all other middleware and handler responses.
+        .layer(middleware::from_fn(json_error_envelope))
         .layer(DefaultBodyLimit::max(api_max_request_body_bytes))
         .with_state(state)
 }
@@ -581,6 +586,87 @@ pub struct TiramiPricingResponse {
 // ---------------------------------------------------------------------------
 // Auth middleware
 // ---------------------------------------------------------------------------
+
+/// Phase 18.5-part-3e (fix #74) — normalise non-JSON error bodies
+/// into a consistent envelope.
+///
+/// The axum router currently emits:
+///   - plain-text bodies from handlers returning `(StatusCode, String)`,
+///   - plain-text bodies from Axum's default `JsonRejection` for
+///     malformed request bodies,
+///   - JSON bodies from handlers that explicitly serialize one.
+///
+/// Clients can't reliably parse that mix. This middleware inspects
+/// every response; if its status is 4xx/5xx AND its `Content-Type`
+/// is not `application/json`, it rewrites the body into
+/// `{ "error": { "code": <u16>, "message": <body-as-string> } }`
+/// and flips the header to `application/json`. Success responses
+/// pass through untouched.
+async fn json_error_envelope(
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let response = next.run(request).await;
+    let status = response.status();
+    if !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+    let is_json = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("application/json"))
+        .unwrap_or(false);
+    if is_json {
+        return response;
+    }
+
+    let (mut parts, body) = response.into_parts();
+    let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
+        Ok(b) => b,
+        Err(_) => {
+            // Body read failed — synthesise a generic envelope so
+            // the client still gets JSON instead of a stalled stream.
+            let payload = serde_json::json!({
+                "error": {
+                    "code": status.as_u16(),
+                    "message": status.canonical_reason().unwrap_or("error"),
+                }
+            });
+            let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+            parts
+                .headers
+                .insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("application/json"),
+                );
+            parts
+                .headers
+                .insert(
+                    axum::http::header::CONTENT_LENGTH,
+                    axum::http::HeaderValue::from(body_bytes.len()),
+                );
+            return Response::from_parts(parts, axum::body::Body::from(body_bytes));
+        }
+    };
+    let message = String::from_utf8_lossy(&bytes).to_string();
+    let payload = serde_json::json!({
+        "error": {
+            "code": status.as_u16(),
+            "message": message,
+        }
+    });
+    let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    parts.headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    parts.headers.insert(
+        axum::http::header::CONTENT_LENGTH,
+        axum::http::HeaderValue::from(body_bytes.len()),
+    );
+    Response::from_parts(parts, axum::body::Body::from(body_bytes))
+}
 
 async fn require_bearer_auth(
     State(state): State<AppState>,
@@ -4177,12 +4263,79 @@ mod tests {
     #[tokio::test]
     async fn agent_task_412_when_no_agent_configured() {
         let app = test_router_with_agent(Config::default(), None);
-        let (status, _body) = post_agent_task(
+        let (status, body) = post_agent_task(
             app,
             serde_json::json!({ "prompt": "hello", "max_tokens": 10 }),
         )
         .await;
         assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+        // Fix #74 — now wrapped in the JSON error envelope.
+        assert_eq!(body["error"]["code"], 412);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("no personal agent"));
+    }
+
+    // ------------------------------------------------------------------
+    // Fix #74 — JSON error envelope middleware
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn malformed_json_body_returns_json_error_envelope() {
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/task")
+                    .header("content-type", "application/json")
+                    .body(Body::from("not json at all"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert!(response.status().is_client_error());
+        let ct = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            ct.starts_with("application/json"),
+            "expected application/json, got {ct}"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert!(json["error"]["code"].is_number());
+        assert!(json["error"]["message"].is_string());
+    }
+
+    #[tokio::test]
+    async fn success_json_response_is_not_rewritten() {
+        // The middleware must only touch 4xx / 5xx — verify /health
+        // (2xx) still returns the original JSON body untouched.
+        let app = test_router_with_agent(Config::default(), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(json["status"], "ok");
+        assert!(json.get("error").is_none());
     }
 
     #[tokio::test]
