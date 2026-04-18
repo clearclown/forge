@@ -6,6 +6,69 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Phase 17 — Large-Scale Security Hardening (Wave 1 in progress, 2026-04-18)
+
+Prepares the protocol for adversarial public deployment. Wave 1 closes
+the P0 integrity gaps identified by the Phase 17 security audit
+(see `docs/threat-model.md`). All changes are backward-compatible via
+`#[serde(default)]` on wire/snapshot types and a legacy-bearer fallback
+on the auth middleware.
+
+**1.1 — TradeRecord v2 (nonce + canonical bytes)**
+- `TradeRecord` gains a 128-bit `nonce`; zero-nonce trades keep the v1
+  byte layout, non-zero nonces use a version-prefixed v2 layout so
+  signatures never collide across versions.
+- `TradeRecord::fresh_nonce()` helper (OsRng).
+
+**1.2 — execute_signed_trade enforces replay protection**
+- `ComputeLedger::seen_nonces` + bounded `NonceCache` (10 K/provider).
+- `SignatureError::ReplayedNonce` on v2 nonce reuse; consumer is not
+  double-debited. Rebuilt from `trade_log` on restart.
+- `TradeProposal` / `TradeGossip` wire types carry the nonce.
+- Gossip receive + post-accept paths route through
+  `execute_signed_trade` (the main wire-level replay attack surface).
+
+**1.3 — Slashing wired into production**
+- New `SlashEvent` type + persisted `slash_events` audit trail.
+- `ComputeLedger::update_trust_penalties(&mut StakingPool, now_ms)`
+  runs the collusion detector and burns stake via `apply_slash` when
+  the trust penalty ≥ 0.1. 5-minute per-node cooldown.
+- `TiramiNode::spawn_slashing_loop` — runs every
+  `config.slashing_interval_secs` (default 300 s, clamped ≥ 60 s).
+- `GET /v1/tirami/slash-events` exposes the audit trail.
+
+**1.4 — AuditVerdict → slashing bridge**
+- `ComputeLedger::record_audit_failure_slash` ties
+  `AuditVerdict::Failed` to a 30 % ("major") stake burn plus an
+  `"audit-fail"` SlashEvent.
+- Pipeline `Payload::AuditResponse` handler now calls it, so a failed
+  audit both demotes the tier AND burns stake (previously only the
+  former, per the Phase 14.3 scaffold).
+
+**1.5 — Per-node scoped API tokens**
+- New `crates/tirami-node/src/api_tokens.rs`: `ApiScope`
+  (ReadOnly / Inference / Economy / Admin), `ApiToken`, `TokenStore`.
+- Raw tokens are 32 random bytes (hex-encoded); only the SHA-256 hash
+  is persisted.
+- Admin endpoints:
+  - `POST /v1/tirami/tokens/issue` (Admin) — mint a scoped token with
+    a human-readable label and TTL. Raw token shown exactly once.
+  - `POST /v1/tirami/tokens/revoke` (Admin) — idempotent revocation
+    by hash-hex.
+  - `GET /v1/tirami/tokens` (Admin) — list metadata for active tokens.
+- Middleware: the legacy `config.api_bearer_token` still works (treated
+  as implicit Admin); alternatively a scoped token from the store is
+  accepted for non-admin endpoints. `require_admin_scope` helper gates
+  privileged handlers.
+
+**Test coverage (workspace):** 891 → 912 passing (+21 new across
+Waves 1.1 – 1.5). `bash scripts/verify-impl.sh` remains GREEN
+(123 / 123).
+
+Next up in Phase 17: Wave 1.6 (Ed25519 + ML-DSA hybrid signatures),
+then Wave 2 (scale hardening) and Wave 3 (hostile-environment
+readiness) per `.claude/plans/humble-cooking-thimble.md`.
+
 ### Phase 14 — Unified Scheduler (2026-04-14 → 2026-04-17)
 
 Brings the v2 reference implementation's "Ledger-as-Brain" architecture
