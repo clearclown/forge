@@ -9,6 +9,7 @@ pub mod ledger;
 pub mod lending;
 pub mod audit;
 pub mod audit_snark;
+pub mod checkpoint;
 pub mod metrics;
 pub mod peer_registry;
 pub mod referral;
@@ -50,4 +51,8 @@ pub use peer_registry::{PeerRegistry, PeerState};
 pub use audit::{AuditTracker, AuditVerdict, PendingChallenge, AUDIT_TIMEOUT_MS};
 pub use audit_snark::{
     AuditSeverity, HeavyAuditConfig, ProbabilisticSampler, QuorumVerdict, ValidatorQuorum,
+};
+pub use checkpoint::{
+    append_archive, read_archive, trades_merkle_root, ArchiveError, ArchivePath,
+    LedgerCheckpoint,
 };
