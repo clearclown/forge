@@ -37,7 +37,7 @@
 //!     token_count: 128,
 //!     flops: 128 * 1_000_000_000, // 128 tokens × 1 GFLOP each
 //! };
-//! let result = run_bench(&MockBackend, &spec, 10);
+//! let result = run_bench(&MockBackend, &spec, 10).expect("bench succeeded");
 //! println!("prove_p50_ms = {}", result.prove_ms_p50);
 //! println!("verify_p50_ms = {}", result.verify_ms_p50);
 //! println!("proof_bytes = {}", result.proof_bytes);
