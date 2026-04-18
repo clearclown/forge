@@ -320,6 +320,8 @@ pub fn create_router_with_services(
         .route("/v1/tirami/tokens", get(forge_tokens_list))
         // Phase 18.5 — personal agent status (user-facing)
         .route("/v1/tirami/agent/status", get(forge_agent_status))
+        // Phase 18.5-part-3b — synchronous agent task dispatch.
+        .route("/v1/tirami/agent/task", post(forge_agent_task))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -909,6 +911,35 @@ async fn record_api_trade(
     trm_cost
 }
 
+/// Phase 18.5-part-3a — auto-earn hook.
+///
+/// Call after [`record_api_trade`] whenever this node just served an
+/// inference request. If a [`PersonalAgent`] is configured AND the
+/// trade's `provider` matches the agent's wallet AND there was a
+/// real external consumer (not a self-originated call), credit the
+/// agent's daily tally. Other combinations are no-ops by design:
+/// self-originated calls are not earnings, and a trade where the
+/// provider is a peer rather than the local agent belongs to
+/// someone else's wallet.
+pub(crate) async fn maybe_record_agent_earn(
+    personal_agent: &Arc<Mutex<Option<tirami_mind::PersonalAgent>>>,
+    provider: &NodeId,
+    consumer: &Option<NodeId>,
+    trm_amount: u64,
+) {
+    if consumer.is_none() || trm_amount == 0 {
+        return;
+    }
+    let mut guard = personal_agent.lock().await;
+    let Some(agent) = guard.as_mut() else {
+        return;
+    };
+    if &agent.wallet != provider {
+        return;
+    }
+    agent.record_earn(trm_amount);
+}
+
 /// Load flops_per_token from the current model manifest (0 if none loaded).
 async fn flops_per_token_from_manifest(state: &AppState) -> u64 {
     state
@@ -1218,6 +1249,7 @@ async fn openai_sync_response(
 
     // Record trade in ledger (Phase 15: with FLOP measurement)
     let flops_per_token = flops_per_token_from_manifest(&state).await;
+    let consumer_for_agent = consumer_id.clone();
     let trm_cost = record_api_trade(
         &state.ledger,
         &state.local_node_id,
@@ -1225,6 +1257,14 @@ async fn openai_sync_response(
         completion_tokens,
         &model,
         flops_per_token,
+    )
+    .await;
+    // Phase 18.5-part-3a — credit the PersonalAgent if it owns this wallet.
+    maybe_record_agent_earn(
+        &state.personal_agent,
+        &state.local_node_id,
+        &consumer_for_agent,
+        trm_cost,
     )
     .await;
     let effective_balance = state.ledger.lock().await.effective_balance(&state.local_node_id);
@@ -1357,6 +1397,7 @@ async fn openai_stream_response(
     // Clone state handles needed inside the blocking task.
     let engine_arc = state.engine.clone();
     let ledger_arc = state.ledger.clone();
+    let personal_agent_arc = state.personal_agent.clone();
     let provider_id = state.local_node_id.clone();
     let tx_content = tx.clone();
     let req_id_clone = request_id.clone();
@@ -1466,13 +1507,21 @@ async fn openai_stream_response(
 
         // Record trade in ledger asynchronously after streaming finishes.
         rt.spawn(async move {
-            record_api_trade(
+            let consumer_for_agent = consumer_id.clone();
+            let trm_cost = record_api_trade(
                 &ledger_arc,
                 &provider_id,
                 consumer_id,
                 count,
                 &model_for_trade,
                 flops_per_token_for_trade,
+            )
+            .await;
+            maybe_record_agent_earn(
+                &personal_agent_arc,
+                &provider_id,
+                &consumer_for_agent,
+                trm_cost,
             )
             .await;
         });
@@ -2973,6 +3022,207 @@ async fn forge_agent_status(
     })))
 }
 
+/// Phase 18.5-part-3b — POST /v1/tirami/agent/task
+///
+/// Synchronous dispatch: the user (or a local tool) submits a task
+/// to the PersonalAgent, and the handler:
+///   1. Classifies size (`local` if `max_tokens ≤ local_cap`, else
+///      `remote`; caller can override via `size`).
+///   2. Builds a [`tirami_mind::TickContext`] with `pending_task`
+///      populated and calls [`PersonalAgent::tick`].
+///   3. Dispatches the returned action:
+///      * `RunLocal` — runs on the local engine, records the cost
+///        against the agent's spend tally, returns the text.
+///      * `RunRemote` — **scaffold**: real peer dispatch ships in
+///        a follow-up. Returns the decision with `status="pending"`.
+///      * `AskUser` — returns the reason, `status="ask_user"`.
+///      * anything else — returns the decision with `status="refused"`.
+///
+/// Unlike `/v1/chat/completions`, this endpoint is agent-aware: it
+/// consults the agent's preferences BEFORE touching the engine, so
+/// an over-budget task is rejected without spending the FLOPs.
+#[derive(serde::Deserialize)]
+struct AgentTaskRequest {
+    prompt: String,
+    #[serde(default = "default_agent_task_max_tokens")]
+    max_tokens: u32,
+    #[serde(default)]
+    model: Option<String>,
+    /// Optional classification override: `"local"`, `"remote"`, or
+    /// `"hybrid"`. When `None`, the handler derives it from
+    /// `max_tokens`.
+    #[serde(default)]
+    size: Option<String>,
+    /// Defaults to 0 (cheap tasks). Gives the agent an explicit
+    /// estimate so `needs_user_approval` can veto.
+    #[serde(default)]
+    estimated_trm: Option<u64>,
+}
+
+fn default_agent_task_max_tokens() -> u32 {
+    256
+}
+
+/// Local tasks are anything the node can comfortably serve on its
+/// own hardware; `max_tokens` at or below this threshold routes to
+/// `RunLocal` unless the caller overrides. Chosen to match the
+/// default chat completion ceiling for quick replies.
+const AGENT_TASK_LOCAL_MAX_TOKENS: u32 = 256;
+
+async fn forge_agent_task(
+    State(state): State<AppState>,
+    Json(req): Json<AgentTaskRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+
+    if req.prompt.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "prompt must not be empty".into()));
+    }
+    if req.max_tokens == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "max_tokens must be greater than zero".into(),
+        ));
+    }
+
+    // 1. Classify size.
+    let size = match req.size.as_deref() {
+        Some("local") => tirami_mind::TaskSize::Local,
+        Some("remote") => tirami_mind::TaskSize::Remote,
+        Some("hybrid") => tirami_mind::TaskSize::Hybrid,
+        Some(other) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("unknown size '{other}': expected local|remote|hybrid"),
+            ));
+        }
+        None => {
+            if req.max_tokens <= AGENT_TASK_LOCAL_MAX_TOKENS {
+                tirami_mind::TaskSize::Local
+            } else {
+                tirami_mind::TaskSize::Remote
+            }
+        }
+    };
+
+    // 2. Build the estimate. `estimated_trm=None` → cheap (1 TRM per
+    // 100 tokens rough placeholder) so the agent's budget checks
+    // still engage without requiring the caller to guess.
+    let estimated_trm = req
+        .estimated_trm
+        .unwrap_or_else(|| ((req.max_tokens as u64).saturating_add(99) / 100).max(1));
+    let estimate = tirami_mind::TaskCostEstimate {
+        size,
+        estimated_trm,
+        estimated_seconds: (req.max_tokens as u64 / 20).max(1),
+        preferred_provider: None,
+    };
+
+    // 3. Build task_id. The agent ignores it; the response echoes it.
+    let task_id = format!("agent-task-{}", now_millis());
+
+    // 4. Call tick.
+    let (action, wallet) = {
+        let guard = state.personal_agent.lock().await;
+        let Some(agent) = guard.as_ref() else {
+            return Err((
+                StatusCode::PRECONDITION_FAILED,
+                "no personal agent configured on this node".into(),
+            ));
+        };
+        let wallet = agent.wallet.clone();
+        let balance = {
+            let ledger = state.ledger.lock().await;
+            ledger.effective_balance(&wallet)
+        };
+        let ctx = tirami_mind::TickContext {
+            now_ms: now_millis(),
+            local_utilization: 0.0,
+            seconds_idle: 0,
+            pending_task: Some(estimate.clone()),
+            pending_task_id: Some(task_id.clone()),
+            current_balance_trm: balance.max(0) as u64,
+            incoming_serving_request: None,
+        };
+        (agent.tick(&ctx), wallet)
+    };
+
+    // 5. Dispatch.
+    match action {
+        tirami_mind::TickAction::RunLocal { task_id } => {
+            use tirami_infer::InferenceEngine;
+            let mut engine_guard = state.engine.lock().await;
+            if !engine_guard.is_loaded() {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "model not loaded — cannot run task locally".into(),
+                ));
+            }
+            let tokens = engine_guard
+                .generate(&req.prompt, req.max_tokens, 0.7, None, None)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            drop(engine_guard);
+            let output = tokens.join("");
+            let flops_per_token = flops_per_token_from_manifest(&state).await;
+            let model_id = req.model.as_deref().unwrap_or("active");
+            let trm_cost = record_api_trade(
+                &state.ledger,
+                &wallet,
+                None,
+                tokens.len() as u32,
+                model_id,
+                flops_per_token,
+            )
+            .await;
+            // Self-originated by the local user: record as a spend
+            // on the agent (compute consumed, not earned).
+            {
+                let mut guard = state.personal_agent.lock().await;
+                if let Some(agent) = guard.as_mut() {
+                    if agent.wallet == wallet {
+                        agent.record_spend(trm_cost);
+                    }
+                }
+            }
+            Ok(Json(serde_json::json!({
+                "task_id": task_id,
+                "status": "run_local",
+                "output": output,
+                "tokens": tokens.len(),
+                "cost_trm": trm_cost,
+            })))
+        }
+        tirami_mind::TickAction::RunRemote {
+            task_id,
+            provider,
+            cost_trm,
+        } => Ok(Json(serde_json::json!({
+            "task_id": task_id,
+            "status": "pending",
+            "reason": "remote dispatch scaffold — peer HTTP call ships in Phase 18.5-part-3c",
+            "would_route_to": provider.to_hex(),
+            "estimated_cost_trm": cost_trm,
+        }))),
+        tirami_mind::TickAction::AskUser {
+            task_id,
+            reason,
+            cost,
+        } => Ok(Json(serde_json::json!({
+            "task_id": task_id,
+            "status": "ask_user",
+            "reason": reason,
+            "estimated_cost_trm": cost.estimated_trm,
+            "size": format!("{:?}", cost.size).to_lowercase(),
+        }))),
+        other => Ok(Json(serde_json::json!({
+            "task_id": task_id,
+            "status": "refused",
+            "action": format!("{:?}", other).split(' ').next().unwrap_or("unknown").to_string(),
+            "reason": "unexpected tick action for a pending-task dispatch",
+        }))),
+    }
+}
+
 async fn admin_save_state(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
@@ -3662,6 +3912,248 @@ mod tests {
         let trades = ledger.lock().await.recent_trades(1);
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].consumer, NodeId([255u8; 32]));
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 18.5-part-3a — auto-earn hook
+    // ------------------------------------------------------------------
+
+    fn agent_at(wallet: NodeId) -> tirami_mind::PersonalAgent {
+        tirami_mind::PersonalAgent::new(wallet, Default::default(), now_millis())
+    }
+
+    #[tokio::test]
+    async fn agent_earn_hook_credits_matching_wallet() {
+        let wallet = NodeId([0xAAu8; 32]);
+        let slot = Arc::new(Mutex::new(Some(agent_at(wallet.clone()))));
+        let consumer = Some(NodeId([0x11u8; 32]));
+        maybe_record_agent_earn(&slot, &wallet, &consumer, 7).await;
+        let guard = slot.lock().await;
+        assert_eq!(guard.as_ref().unwrap().earned_today_trm, 7);
+    }
+
+    #[tokio::test]
+    async fn agent_earn_hook_ignores_foreign_provider() {
+        let wallet = NodeId([0xAAu8; 32]);
+        let other_provider = NodeId([0xBBu8; 32]);
+        let slot = Arc::new(Mutex::new(Some(agent_at(wallet))));
+        maybe_record_agent_earn(&slot, &other_provider, &Some(NodeId([1u8; 32])), 100).await;
+        let guard = slot.lock().await;
+        assert_eq!(guard.as_ref().unwrap().earned_today_trm, 0);
+    }
+
+    #[tokio::test]
+    async fn agent_earn_hook_skips_self_originated_calls() {
+        // consumer = None means the local user called us, not a peer —
+        // no earning should register.
+        let wallet = NodeId([0xAAu8; 32]);
+        let slot = Arc::new(Mutex::new(Some(agent_at(wallet.clone()))));
+        maybe_record_agent_earn(&slot, &wallet, &None, 5).await;
+        let guard = slot.lock().await;
+        assert_eq!(guard.as_ref().unwrap().earned_today_trm, 0);
+    }
+
+    #[tokio::test]
+    async fn agent_earn_hook_is_noop_without_agent() {
+        let slot: Arc<Mutex<Option<tirami_mind::PersonalAgent>>> = Arc::new(Mutex::new(None));
+        // Should simply return without panicking.
+        maybe_record_agent_earn(
+            &slot,
+            &NodeId([0xAAu8; 32]),
+            &Some(NodeId([0x11u8; 32])),
+            10,
+        )
+        .await;
+        assert!(slot.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_earn_hook_skips_zero_amount() {
+        let wallet = NodeId([0xAAu8; 32]);
+        let slot = Arc::new(Mutex::new(Some(agent_at(wallet.clone()))));
+        maybe_record_agent_earn(&slot, &wallet, &Some(NodeId([0x11u8; 32])), 0).await;
+        let guard = slot.lock().await;
+        assert_eq!(guard.as_ref().unwrap().earned_today_trm, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 18.5-part-3b — POST /v1/tirami/agent/task
+    // ------------------------------------------------------------------
+
+    /// Test-helper: build a router with a pre-populated PersonalAgent.
+    fn test_router_with_agent(
+        config: Config,
+        agent: Option<tirami_mind::PersonalAgent>,
+    ) -> Router {
+        use crate::bank_adapter::BankServices;
+        create_router_with_services(
+            config,
+            Arc::new(Mutex::new(CandleEngine::new())),
+            Arc::new(Mutex::new(ComputeLedger::new())),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            None,
+            Arc::new(Mutex::new(GossipState::new())),
+            Arc::new(Mutex::new(BankServices::new_default())),
+            Arc::new(Mutex::new(Marketplace::new())),
+            Arc::new(Mutex::new(0usize)),
+            Arc::new(Mutex::new(None::<tirami_mind::TiramiMindAgent>)),
+            Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
+            Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
+            Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
+            Arc::new(tirami_anchor::MockChainClient::new()),
+            Arc::new(Mutex::new(agent)),
+            Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
+        )
+    }
+
+    async fn post_agent_task(
+        app: Router,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/task")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn agent_task_412_when_no_agent_configured() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (status, _body) = post_agent_task(
+            app,
+            serde_json::json!({ "prompt": "hello", "max_tokens": 10 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    }
+
+    #[tokio::test]
+    async fn agent_task_400_on_empty_prompt() {
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (status, _body) = post_agent_task(
+            app,
+            serde_json::json!({ "prompt": "   ", "max_tokens": 10 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn agent_task_400_on_zero_max_tokens() {
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (status, _body) = post_agent_task(
+            app,
+            serde_json::json!({ "prompt": "hi", "max_tokens": 0 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn agent_task_ask_user_when_over_per_task_budget() {
+        // Local tasks skip budget checks (they cost no TRM), so use
+        // `size=remote` to force the TRM-spending path where
+        // `needs_user_approval` kicks in. Default per-task budget is
+        // 15 TRM; 999 TRM estimate exceeds.
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (status, body) = post_agent_task(
+            app,
+            serde_json::json!({
+                "prompt": "draft a novel",
+                "max_tokens": 50,
+                "size": "remote",
+                "estimated_trm": 999,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ask_user");
+        assert!(body["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("per-task"));
+    }
+
+    #[tokio::test]
+    async fn agent_task_remote_without_provider_routes_to_ask_user() {
+        // size=remote with no preferred_provider → tick returns AskUser
+        // ("no preferred provider resolved yet").
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (status, body) = post_agent_task(
+            app,
+            serde_json::json!({
+                "prompt": "analyse this corpus",
+                "max_tokens": 100,
+                "size": "remote",
+                "estimated_trm": 1,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ask_user");
+    }
+
+    #[tokio::test]
+    async fn agent_task_bad_size_override() {
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (status, _body) = post_agent_task(
+            app,
+            serde_json::json!({
+                "prompt": "hi",
+                "max_tokens": 10,
+                "size": "XL",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn agent_task_run_local_503_when_no_model_loaded() {
+        // Local task within budget but no model loaded → 503.
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (status, _body) = post_agent_task(
+            app,
+            serde_json::json!({
+                "prompt": "hi",
+                "max_tokens": 10,
+                "estimated_trm": 1,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
