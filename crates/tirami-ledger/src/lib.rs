@@ -8,6 +8,7 @@ pub mod governance;
 pub mod ledger;
 pub mod lending;
 pub mod audit;
+pub mod audit_snark;
 pub mod metrics;
 pub mod peer_registry;
 pub mod referral;
@@ -47,3 +48,6 @@ pub use tokenomics::{
 pub use zk::{MockVerifier, ProofOfInference, ProofVerifier, VerifierRegistry, ZkError};
 pub use peer_registry::{PeerRegistry, PeerState};
 pub use audit::{AuditTracker, AuditVerdict, PendingChallenge, AUDIT_TIMEOUT_MS};
+pub use audit_snark::{
+    AuditSeverity, HeavyAuditConfig, ProbabilisticSampler, QuorumVerdict, ValidatorQuorum,
+};
