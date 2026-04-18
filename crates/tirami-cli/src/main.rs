@@ -57,6 +57,14 @@ enum Commands {
         /// Use 0.0.0.0 to accept remote requests.
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
+
+        /// Run in pure-server mode without auto-configuring a
+        /// PersonalAgent. Default is OFF (agent auto-configured);
+        /// pass --no-agent to opt out. Useful for hosting nodes
+        /// that serve the mesh but don't need a user-facing agent
+        /// state on that machine.
+        #[arg(long, default_value_t = false)]
+        no_agent: bool,
     },
 
     /// Start as a seed node (holds model, serves inference)
@@ -331,7 +339,7 @@ enum WalletAction {
         /// Amount in satoshis
         amount_sats: u64,
         /// Description
-        #[arg(short, long, default_value = "Forge inference")]
+        #[arg(short, long, default_value = "Tirami inference")]
         description: String,
     },
     /// Pay a Lightning invoice
@@ -341,20 +349,28 @@ enum WalletAction {
     },
 }
 
+/// Default tracing filter when `RUST_LOG` is unset.
+///
+/// `"info"` for Tirami internals, `error` for iroh's multicast / IPv6
+/// relay probes which spam WARN on Tailscale or IPv4-only hosts
+/// (fix #75). Operators who want the raw firehose: `RUST_LOG=info`.
+const DEFAULT_TRACING_FILTER: &str =
+    "info,swarm_discovery=error,iroh::socket::transports::relay=error,iroh_relay=error,noq_udp=error";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TRACING_FILTER)),
         )
         .init();
 
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start { model, port, bind } => {
-            run_start_command(model, port, bind).await?;
+        Commands::Start { model, port, bind, no_agent } => {
+            run_start_command(model, port, bind, no_agent).await?;
         }
         Commands::Models => {
             tirami_infer::model_registry::list_models();
@@ -415,7 +431,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", response);
                 eprintln!("\n---\nGenerated in {:.2}s", elapsed.as_secs_f64());
             } else {
-                println!("Forge Chat (type 'quit' to exit)");
+                println!("Tirami Chat (type 'quit' to exit)");
                 println!("Model: {}", model);
                 println!("---");
 
@@ -652,7 +668,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let llama_cli = tirami_infer::distributed::find_llama_cli().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "llama-cli not found. Set FORGE_LLAMA_CLI_PATH or install llama.cpp"
+                    "llama-cli not found. Set TIRAMI_LLAMA_CLI_PATH or install llama.cpp"
                 )
             })?;
 
@@ -768,7 +784,7 @@ async fn main() -> anyhow::Result<()> {
             let status: tirami_node::api::StatusResponse =
                 request.send().await?.error_for_status()?.json().await?;
 
-            println!("Forge status: {}", status.status);
+            println!("Tirami status: {}", status.status);
             println!("Model loaded: {}", status.model_loaded);
             println!(
                 "Market price: {:.2} CU/token (demand {:.2} / supply {:.2})",
@@ -827,7 +843,7 @@ async fn main() -> anyhow::Result<()> {
             let topology: tirami_node::api::TopologyResponse =
                 request.send().await?.error_for_status()?.json().await?;
 
-            println!("Forge topology: {}", topology.status);
+            println!("Tirami topology: {}", topology.status);
             if let Some(model) = topology.model {
                 println!(
                     "Model: {} (layers={}, hidden={}, quant={})",
@@ -1237,7 +1253,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn resolve_api_token(flag: Option<String>) -> Option<String> {
-    flag.or_else(|| std::env::var("FORGE_API_TOKEN").ok())
+    // `TIRAMI_API_TOKEN` is the primary env var; `FORGE_API_TOKEN` is
+    // accepted as a legacy alias so older operator scripts still work
+    // (fix #77).
+    flag.or_else(|| std::env::var("TIRAMI_API_TOKEN").ok())
+        .or_else(|| std::env::var("FORGE_API_TOKEN").ok())
         .filter(|token| !token.is_empty())
 }
 
@@ -1253,6 +1273,7 @@ async fn run_start_command(
     model: String,
     port: u16,
     bind: String,
+    no_agent: bool,
 ) -> anyhow::Result<()> {
     use std::fs;
 
@@ -1330,6 +1351,10 @@ async fn run_start_command(
         api_bearer_token: None, // localhost by default, no token needed
         ledger_path: Some(ledger_path.clone()),
         share_compute: true,
+        // Phase 18.5-part-3e — killer-app ergonomics: `tirami start`
+        // yields a configured PersonalAgent by default. --no-agent
+        // flips this off for operators running pure-server nodes.
+        personal_agent_enabled: !no_agent,
         ..Config::default()
     };
     let mut node = tirami_node::TiramiNode::new(config);
