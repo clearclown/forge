@@ -39,6 +39,10 @@ impl PipelineCoordinator {
         config: Config,
         ledger_path: Option<std::path::PathBuf>,
         gossip: Arc<Mutex<GossipState>>,
+        // Phase 17 Wave 1.4 — staking pool is now plumbed into the audit
+        // handler so an AuditVerdict::Failed burns the target's stake
+        // and records a SlashEvent, not just a peer-registry demotion.
+        staking_pool: Arc<Mutex<tirami_ledger::StakingPool>>,
     ) -> anyhow::Result<()> {
         let node_id = self.transport.tirami_node_id();
         tracing::info!("Pipeline seed running, waiting for requests...");
@@ -495,8 +499,17 @@ impl PipelineCoordinator {
                     // Phase 14.3 — audit response: compare against our
                     // expected hash stored in ledger.audit_tracker, then
                     // update the responder's AuditTier.
+                    //
+                    // Phase 17 Wave 1.4 — a Failed verdict now also burns
+                    // 30% of the target's stake and records a SlashEvent
+                    // with reason "audit-fail". This closes the
+                    // "detection without consequence" finding from the
+                    // security audit: previously, a repeatedly failing
+                    // auditee only saw their AuditTier drop, which is
+                    // recoverable with time; slashing is not.
                     Payload::AuditResponse(resp) => {
                         let ledger = ledger.clone();
+                        let staking = staking_pool.clone();
                         tokio::spawn(async move {
                             let mut guard = ledger.lock().await;
                             let verdict = guard.audit_tracker.resolve(
@@ -515,9 +528,24 @@ impl PipelineCoordinator {
                                 }
                                 tirami_ledger::AuditVerdict::Failed => {
                                     guard.peer_registry.record_audit_result(&resp.target, false);
+                                    // Hold the ledger lock, grab the
+                                    // staking lock under it, call the
+                                    // combined helper. Lock order
+                                    // (ledger → staking) matches the
+                                    // periodic slashing loop, preventing
+                                    // any deadlock from lock inversion.
+                                    let burned = {
+                                        let mut staking_guard = staking.lock().await;
+                                        guard.record_audit_failure_slash(
+                                            &mut staking_guard,
+                                            &resp.target,
+                                            now_millis(),
+                                        )
+                                    };
                                     tracing::warn!(
                                         target = %resp.target.to_hex(),
-                                        "audit failed — tier demoted"
+                                        burned_trm = burned,
+                                        "audit failed — tier demoted and stake slashed"
                                     );
                                 }
                                 tirami_ledger::AuditVerdict::Unknown => {
@@ -1082,6 +1110,7 @@ mod tests {
                         },
                         None,
                         Arc::new(Mutex::new(GossipState::new())),
+                        Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
                     )
                     .await
                     .expect("seed loop");

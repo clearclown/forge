@@ -1119,6 +1119,33 @@ impl ComputeLedger {
         &self.slash_events
     }
 
+    /// Phase 17 Wave 1.4 — penalty applied to a node whose audit response
+    /// disagreed with the challenger's expected hash. Sized as "major"
+    /// (0.3 = 20 % of stake under [`crate::staking::compute_slash`]),
+    /// reflecting the plan's deliberate choice to punish provable
+    /// dishonesty more than passive inactivity.
+    pub const AUDIT_FAIL_TRUST_PENALTY: f64 = 0.3;
+
+    /// Slash a node for a failed audit verdict and record the event.
+    /// Returns the burned amount (0 if the node had no stake to slash).
+    /// Both side effects happen under the caller's lock discipline.
+    pub fn record_audit_failure_slash(
+        &mut self,
+        staking: &mut crate::StakingPool,
+        target: &NodeId,
+        now_ms: u64,
+    ) -> u64 {
+        let burned = staking.apply_slash(target, Self::AUDIT_FAIL_TRUST_PENALTY);
+        self.record_slash_event(
+            target.clone(),
+            Self::AUDIT_FAIL_TRUST_PENALTY,
+            burned,
+            "audit-fail",
+            now_ms,
+        );
+        burned
+    }
+
     /// Scan the ledger for collusion and apply stake slashing to offending
     /// nodes. Returns the events that were recorded this cycle so the
     /// caller can log / export them.
@@ -2490,6 +2517,87 @@ mod tests {
         ledger.save_to_path(&tmp).unwrap();
         let reloaded = ComputeLedger::load_from_path(&tmp).unwrap();
         assert_eq!(reloaded.slash_events(), expected.as_slice());
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 17 Wave 1.4 — AuditVerdict ↔ slashing bridge tests.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn record_audit_failure_slash_burns_stake_and_logs_event() {
+        use crate::{StakeDuration, StakingPool};
+        let mut ledger = ComputeLedger::new();
+        let target = NodeId([0xCDu8; 32]);
+        let now = 1_700_000_000_000;
+        let mut staking = StakingPool::new();
+        staking
+            .stake(target.clone(), 10_000, StakeDuration::Days30, now)
+            .unwrap();
+
+        let burned = ledger.record_audit_failure_slash(&mut staking, &target, now);
+
+        assert!(burned > 0, "must burn actual TRM");
+        assert_eq!(ledger.slash_events().len(), 1);
+        let evt = &ledger.slash_events()[0];
+        assert_eq!(evt.reason, "audit-fail");
+        assert_eq!(evt.trust_penalty, ComputeLedger::AUDIT_FAIL_TRUST_PENALTY);
+        assert_eq!(evt.burned_trm, burned);
+        assert_eq!(evt.node_id, target);
+        assert_eq!(staking.total_staked(), 10_000 - burned);
+    }
+
+    #[test]
+    fn record_audit_failure_slash_on_unstaked_target_logs_zero_burn() {
+        // A target without a stake slot is still "punished" in the
+        // audit trail for transparency. burned == 0 because there's
+        // nothing to burn; this documents the attempt.
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let target = NodeId([0xEFu8; 32]);
+        let mut staking = StakingPool::new();
+        let burned = ledger.record_audit_failure_slash(&mut staking, &target, 1_000);
+        assert_eq!(burned, 0);
+        assert_eq!(ledger.slash_events().len(), 1);
+        assert_eq!(ledger.slash_events()[0].burned_trm, 0);
+        assert_eq!(ledger.slash_events()[0].reason, "audit-fail");
+    }
+
+    #[test]
+    fn audit_verdict_failed_path_end_to_end() {
+        // Walk the exact sequence the pipeline handler performs:
+        //   1. issue_challenge(expected=H)
+        //   2. resolve(response=H') where H' != H → Failed
+        //   3. record_audit_failure_slash → SlashEvent "audit-fail"
+        use crate::{StakeDuration, StakingPool};
+        use tirami_core::ModelId;
+        let mut ledger = ComputeLedger::new();
+        let target = NodeId([0x12u8; 32]);
+        let now = 2_000_000;
+
+        let pending = ledger.audit_tracker.issue_challenge(
+            target.clone(),
+            ModelId("m".into()),
+            [0xAAu8; 32],
+            now,
+        );
+        let verdict = ledger.audit_tracker.resolve(
+            pending.challenge_id,
+            &target,
+            &[0xBBu8; 32], // ≠ expected → Failed
+            now + 100,
+        );
+        assert_eq!(verdict, crate::AuditVerdict::Failed);
+
+        let mut staking = StakingPool::new();
+        staking
+            .stake(target.clone(), 5_000, StakeDuration::Days30, now)
+            .unwrap();
+        let burned = ledger.record_audit_failure_slash(&mut staking, &target, now + 200);
+        assert!(burned > 0);
+
+        let evt = ledger.slash_events().last().unwrap();
+        assert_eq!(evt.reason, "audit-fail");
+        assert_eq!(evt.timestamp_ms, now + 200);
     }
 
     #[test]

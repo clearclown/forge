@@ -305,6 +305,7 @@ impl TiramiNode {
                 self.config.clone(),
                 self.config.ledger_path.clone(),
                 self.gossip.clone(),
+                self.staking_pool.clone(),
             )
             .await
             .map_err(|e| tirami_core::TiramiError::NetworkError(format!("seed: {e}")))?;
