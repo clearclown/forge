@@ -884,6 +884,10 @@ impl ComputeLedger {
         };
         // Phase 17 Wave 1.2 — replay defense must survive a restart.
         ledger.rebuild_nonce_cache();
+        // Phase 17 Wave 2.6 — if a pre-Wave-2.6 snapshot populates the
+        // peer map without an access order, synthesize one so the LRU
+        // bound is enforced from the first insert after load.
+        ledger.peer_registry.restore_access_order();
         ledger
     }
 
