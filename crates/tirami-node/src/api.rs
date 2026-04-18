@@ -66,6 +66,12 @@ pub(crate) struct AppState {
     /// via `POST /v1/tirami/tokens/issue` so that a leaked low-privilege
     /// token (e.g. a ReadOnly bot) no longer compromises the whole node.
     pub api_tokens: Arc<Mutex<crate::api_tokens::TokenStore>>,
+    /// Phase 18.5 — the user's personal Tirami agent. `None` when
+    /// the daemon is running in "pure node" mode (no user-facing
+    /// agent, just serving the mesh). `Some` when the operator
+    /// explicitly wants an agent (via `tirami start --agent` or
+    /// the default for interactive sessions).
+    pub personal_agent: Arc<Mutex<Option<tirami_mind::PersonalAgent>>>,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -212,6 +218,7 @@ pub fn create_router_with_services(
         governance,
         chain_client,
         api_tokens: Arc::new(Mutex::new(crate::api_tokens::TokenStore::new())),
+        personal_agent: Arc::new(Mutex::new(None)),
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -302,6 +309,8 @@ pub fn create_router_with_services(
         .route("/v1/tirami/tokens/issue", post(forge_tokens_issue))
         .route("/v1/tirami/tokens/revoke", post(forge_tokens_revoke))
         .route("/v1/tirami/tokens", get(forge_tokens_list))
+        // Phase 18.5 — personal agent status (user-facing)
+        .route("/v1/tirami/agent/status", get(forge_agent_status))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -2895,6 +2904,53 @@ async fn forge_tokens_list(
     Ok(Json(serde_json::json!({
         "total": entries.len(),
         "tokens": entries,
+    })))
+}
+
+/// Phase 18.5 — GET /v1/tirami/agent/status
+///
+/// Single endpoint the user's CLI (`tirami agent status`) and
+/// future web UI call to get the personal agent's state at a
+/// glance. Returns:
+/// - `wallet` (hex NodeId) or `null` if no agent is configured
+/// - `spent_today_trm`, `earned_today_trm`, `net_today_trm`
+/// - `preferences` (daily cap, per-task cap, auto-earn/spend
+///   flags, content filter)
+/// - `summary` (human-readable status line)
+///
+/// If no personal agent is configured on this node, returns
+/// `{ "configured": false }` with HTTP 200 so the client can
+/// show "no personal agent running".
+async fn forge_agent_status(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let guard = state.personal_agent.lock().await;
+    let Some(agent) = guard.as_ref() else {
+        return Ok(Json(serde_json::json!({
+            "configured": false,
+            "summary": "no personal agent configured on this node",
+        })));
+    };
+    Ok(Json(serde_json::json!({
+        "configured": true,
+        "wallet": agent.wallet.to_hex(),
+        "spent_today_trm": agent.spent_today_trm,
+        "earned_today_trm": agent.earned_today_trm,
+        "net_today_trm": agent.net_today_trm(),
+        "day_started_at_ms": agent.day_started_at_ms,
+        "preferences": {
+            "daily_spend_limit_trm": agent.preferences.daily_spend_limit_trm,
+            "per_task_budget_trm": agent.preferences.per_task_budget_trm,
+            "auto_earn_enabled": agent.preferences.auto_earn_enabled,
+            "auto_spend_enabled": agent.preferences.auto_spend_enabled,
+            "auto_stake_fraction": agent.preferences.auto_stake_fraction,
+            "idle_utilization_threshold": agent.preferences.idle_utilization_threshold,
+            "idle_grace_seconds": agent.preferences.idle_grace_seconds,
+            "min_peer_reputation": agent.preferences.min_peer_reputation,
+            "content_filter": agent.preferences.content_filter,
+        },
+        "summary": agent.status_summary(),
     })))
 }
 
