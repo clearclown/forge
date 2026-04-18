@@ -306,15 +306,19 @@ external auditor engagement, Sepolia live deploy).
   window × trade rate, not the node's total lifetime. The Wave
   2.4 primitive now runs.
 
-**4.4 — AsnRateLimiter in transport — BLOCKED UPSTREAM**
-- Attempted: `PeerConnection::remote_ip()` accessor compiled
-  against `iroh::endpoint::Connection::remote_address()`.
-- Discovery: iroh 0.97's public API does NOT expose this;
-  connections abstract over direct QUIC + relays.
-- Action: reverted code change, updated K-004 in
-  `docs/security/known-issues.md` to document the blocker
-  (Medium severity). Mainnet checklist captures this as a hard
-  gate.
+**4.4 — AsnRateLimiter in transport — RESOLVED (initially thought blocked)**
+- First attempt: `PeerConnection::remote_ip()` against
+  `iroh::endpoint::Connection::remote_address()` — method
+  doesn't exist on 0.97.
+- Deeper investigation: iroh 0.97 DOES expose peer IPs via
+  `Connection::paths()` → `PathWatcher::into_iter()` →
+  `PathInfo::remote_addr()` → `TransportAddr::Ip(SocketAddr)`.
+- Wired: `PeerConnection::remote_ip() -> Option<IpAddr>`.
+- `ForgeTransport.asn_limiter: Option<Arc<Mutex<AsnRateLimiter>>>`
+  + `install_asn_limiter()` operator hook + `dropped_asn_over_cap`
+  counter. Accept loop consults limiter after handshake (when the
+  IP is known), drops the connection on over-cap.
+- K-004 in `docs/security/known-issues.md` moved to "Resolved".
 
 **4.5 — API self-sign path — architecturally not needed**
 - Reviewed `api::record_api_trade` and
@@ -333,10 +337,39 @@ external auditor engagement, Sepolia live deploy).
 Wave 4.1; Waves 4.2-4.5 are integration-only). `cargo build
 --workspace` clean. `verify-impl.sh` 123/123 GREEN.
 
+**4.6 — CI + contracts polish**
+- New `.github/workflows/kani.yml` for Wave 3.2 invariants —
+  triggers on PRs touching `tirami-ledger/**`, 30-minute budget,
+  cargo cache, reports proof count vs ≥ 30 Wave-3.3 target.
+- New `repos/tirami-contracts/.github/workflows/foundry.yml` —
+  `forge build --sizes` + `forge test -vv` on push/PR.
+- `repos/tirami-contracts/src/TiramiBridge.sol`: fixed first-mint
+  deadlock (`block.timestamp >= 0 + MINT_COOLDOWN` was false under
+  Foundry's `block.timestamp = 1`). Added `lastMint == 0 ||`
+  short-circuit.
+- `forge test` now 15 / 15 passing (was 11 / 15 with 4 cooldown
+  failures).
+- `docs/security/pgp-key-setup.md` — operator-owned PGP key
+  generation procedure (Ed25519 quick-generate, keyserver
+  publication, 2-year rotation policy, revocation flow). The
+  key material stays with the operator, not this session.
+
 **Phase 17 total (final):** 891 → 1 071 passing (+180 new
-tests). 23 primitives landed. 4 follow-ups explicitly documented
-as external-blocked (iroh upstream, ml-dsa dep, Sepolia deploy,
-external audit engagement).
+tests). Workspace: all GREEN. `forge test`: 15 / 15.
+`verify-impl.sh`: 123 / 123 GREEN. 24 primitives landed.
+
+Remaining external gates (require operator action, cannot be
+closed from code alone):
+1. External security audit engagement (Wave 3.3 scope prepared).
+2. Base Sepolia live deploy (Wave 2.7 runbook ready, Foundry
+   verified locally, contracts forge-test green).
+3. 30-day Sepolia stability observation (post-deploy).
+4. Multi-sig custody configuration (pre-deploy).
+5. Bug bounty program launch (`SECURITY.md` framework ready;
+   PGP key generation guide at
+   `docs/security/pgp-key-setup.md`).
+6. Real ML-DSA backend swap (Wave 1.6 scaffold) — unblocks when
+   `ml-dsa` and iroh's `digest` dep pins reconcile.
 
 ### Phase 14 — Unified Scheduler (2026-04-14 → 2026-04-17)
 
