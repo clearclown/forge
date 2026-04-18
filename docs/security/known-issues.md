@@ -83,21 +83,39 @@ code writes via `BaseClient` today.
 
 ### K-004: Per-ASN rate limiter not yet wired into transport
 
-**Severity:** Low.
+**Severity:** Medium (Sybil defense gap).
 
 **Description:** Wave 2.3 ships `AsnRateLimiter` as a tested
-primitive but doesn't wire it into `transport::read_peer_messages`.
-The integration needs peer-IP extraction from the iroh connection
-object, which touches a hot path and needs benchmarking before it
-lands.
+primitive but the integration with `transport::read_peer_messages`
+is blocked on a genuinely external dependency: iroh 0.97's public
+`Connection` API does NOT expose the underlying socket's remote
+IP address (iroh 0.97 routes via relays + direct QUIC and
+abstracts over both). Without the IP we cannot resolve the ASN
+and therefore cannot populate the limiter.
 
-**Why it's open:** scope-boundedness — we wanted the primitive
-under review before the hot-path integration.
+**Attempted fix (phase-17/wave-4.4):** a scaffolded
+`PeerConnection::remote_ip()` compiled against `conn.remote_address()`
+but that method is absent from `iroh::endpoint::Connection` 0.97.
+The change was reverted; the limiter remains standalone.
 
-**Mitigation:** `config.asn_rate_limit_enabled` defaults to `false`;
-no operator is currently depending on this as their defense.
+**Why it stays open:** we need iroh to expose `remote_address()`
+(or equivalent) on `Connection`. Options:
+1. Wait for upstream iroh to ship the accessor.
+2. Fork iroh locally and expose the field (significant maintenance
+   burden).
+3. Switch to a thin raw-QUIC layer below iroh where the address
+   is directly available (large refactor).
 
-**Fix tracking:** Phase 17 Wave 2.3-part-2.
+**Mitigation:** `config.asn_rate_limit_enabled` defaults to
+`false`. The per-peer 500 msg/s bucket in
+`transport::read_peer_messages` is still in place — an attacker
+must still spin a distinct `NodeId` + QUIC handshake per 500 msg/s
+worth of traffic, which is non-trivial. The cloud-Sybil multiplier
+defense this was supposed to close remains open.
+
+**Fix tracking:** blocked on iroh upstream; will revisit when
+iroh exposes the accessor. Tracked as a hard gate on the mainnet
+checklist in `docs/security/audit-scope.md` (§9).
 
 ### K-005: Welcome-loan limiter not yet wired into ledger
 
