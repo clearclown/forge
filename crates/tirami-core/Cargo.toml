@@ -14,5 +14,13 @@ description = "Core types for the Forge compute economy: NodeId, CU, Config"
 serde = { workspace = true }
 thiserror = { workspace = true }
 ed25519-dalek = { workspace = true }
+# Phase 17 Wave 1.6 — post-quantum signatures via the HybridSignature
+# scaffold in crypto.rs. The actual ML-DSA crate is NOT pulled in yet
+# (see Cargo.toml workspace comment); tests use a deterministic mock.
 rand = { workspace = true }
 hex = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+# Phase 17 Wave 1.6 — crypto.rs serde roundtrip test depends on JSON.
+serde_json = { workspace = true }

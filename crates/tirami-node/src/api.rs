@@ -59,6 +59,13 @@ pub(crate) struct AppState {
     /// Phase 16 — on-chain anchor client. Exposes submitted-batch history
     /// via `/v1/tirami/anchors`. MockChainClient by default.
     pub chain_client: Arc<tirami_anchor::MockChainClient>,
+    /// Phase 17 Wave 1.5 — per-node scoped API tokens.
+    ///
+    /// Distinct from `config.api_bearer_token` (single global credential,
+    /// treated as implicit Admin scope). Operators issue scoped tokens
+    /// via `POST /v1/tirami/tokens/issue` so that a leaked low-privilege
+    /// token (e.g. a ReadOnly bot) no longer compromises the whole node.
+    pub api_tokens: Arc<Mutex<crate::api_tokens::TokenStore>>,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -204,6 +211,7 @@ pub fn create_router_with_services(
         referral_tracker,
         governance,
         chain_client,
+        api_tokens: Arc::new(Mutex::new(crate::api_tokens::TokenStore::new())),
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -288,6 +296,12 @@ pub fn create_router_with_services(
         .route("/v1/tirami/reputation-gossip-status", get(forge_reputation_gossip_status))
         // Phase 9 A5 — Collusion resistance debug endpoint
         .route("/v1/tirami/collusion/{hex}", get(forge_collusion_report))
+        // Phase 17 Wave 1.3 — slashing audit trail
+        .route("/v1/tirami/slash-events", get(forge_slash_events))
+        // Phase 17 Wave 1.5 — per-node scoped API tokens (admin only).
+        .route("/v1/tirami/tokens/issue", post(forge_tokens_issue))
+        .route("/v1/tirami/tokens/revoke", post(forge_tokens_revoke))
+        .route("/v1/tirami/tokens", get(forge_tokens_list))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -553,14 +567,24 @@ async fn require_bearer_auth(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
-    let Some(expected) = state
+    // Two-tier auth (Phase 17 Wave 1.5):
+    //   1. If the presented bearer matches `config.api_bearer_token`
+    //      (the legacy single secret) → treat as implicit Admin and pass.
+    //   2. Else look the bearer up in `state.api_tokens` — if the store
+    //      has an unexpired entry, pass. Any scope is accepted here;
+    //      endpoint-specific scope gating is a follow-up refinement.
+    // If no legacy token is configured AND the store is empty, the
+    // router is effectively open — preserves dev ergonomics.
+    let legacy_expected = state
         .config
         .api_bearer_token
         .as_deref()
-        .filter(|token| !token.is_empty())
-    else {
+        .filter(|token| !token.is_empty());
+    let token_store_empty = state.api_tokens.lock().await.is_empty();
+
+    if legacy_expected.is_none() && token_store_empty {
         return Ok(next.run(request).await);
-    };
+    }
 
     // Check if rate-limited due to too many auth failures
     if state.auth_failures.lock().await.is_blocked() {
@@ -588,13 +612,93 @@ async fn require_bearer_auth(
         ));
     };
 
-    // Constant-time comparison to prevent timing attacks
-    if !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
-        state.auth_failures.lock().await.record_failure();
-        return Err((StatusCode::UNAUTHORIZED, "invalid bearer token".to_string()));
+    // Path 1: legacy constant-time comparison against the single global token.
+    if let Some(expected) = legacy_expected {
+        if constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+            return Ok(next.run(request).await);
+        }
     }
 
-    Ok(next.run(request).await)
+    // Path 2: scoped token store. Any non-expired entry grants access
+    // at this middleware layer; per-endpoint scope checks (e.g.
+    // `require_admin`) can narrow further.
+    //
+    // CRITICAL: the store lock must be RELEASED before calling
+    // `next.run(request).await`, otherwise the downstream handler
+    // (e.g. forge_tokens_issue → require_admin_scope) will try to
+    // re-acquire `state.api_tokens` and deadlock.
+    let scoped_ok = {
+        let now_ms = now_millis();
+        let store = state.api_tokens.lock().await;
+        !matches!(
+            store.verify(token, crate::api_tokens::ApiScope::ReadOnly, now_ms),
+            crate::api_tokens::TokenVerdict::Unknown
+                | crate::api_tokens::TokenVerdict::Expired
+        )
+    };
+    if scoped_ok {
+        return Ok(next.run(request).await);
+    }
+
+    state.auth_failures.lock().await.record_failure();
+    Err((StatusCode::UNAUTHORIZED, "invalid bearer token".to_string()))
+}
+
+/// Phase 17 Wave 1.5 — require an Admin-scope credential on a handler.
+///
+/// The outer `require_bearer_auth` middleware already accepts ANY valid
+/// bearer (legacy or any-scope token). Handlers that touch sensitive
+/// state (token issuance, governance overrides, state persistence) call
+/// this helper to additionally require `ApiScope::Admin`.
+///
+/// Semantics:
+///   * No auth configured at all → Admin (single-op dev mode).
+///   * Legacy `config.api_bearer_token` match → Admin.
+///   * Stored token with scope ≥ Admin → OK.
+///   * Anything else → 403 Forbidden.
+async fn require_admin_scope(
+    state: &AppState,
+    request_headers: &axum::http::HeaderMap,
+) -> Result<(), (StatusCode, String)> {
+    let legacy_expected = state
+        .config
+        .api_bearer_token
+        .as_deref()
+        .filter(|t| !t.is_empty());
+    let token_store_empty = state.api_tokens.lock().await.is_empty();
+    if legacy_expected.is_none() && token_store_empty {
+        return Ok(());
+    }
+
+    let value = request_headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "missing bearer token".to_string(),
+        ))?;
+
+    if let Some(expected) = legacy_expected {
+        if constant_time_eq(value.as_bytes(), expected.as_bytes()) {
+            return Ok(());
+        }
+    }
+    let now_ms = now_millis();
+    let store = state.api_tokens.lock().await;
+    match store.verify(value, crate::api_tokens::ApiScope::Admin, now_ms) {
+        crate::api_tokens::TokenVerdict::Ok(_) => Ok(()),
+        crate::api_tokens::TokenVerdict::InsufficientScope { have, need } => Err((
+            StatusCode::FORBIDDEN,
+            format!("insufficient scope: have {}, need {}", have.as_str(), need.as_str()),
+        )),
+        crate::api_tokens::TokenVerdict::Expired => {
+            Err((StatusCode::UNAUTHORIZED, "token expired".to_string()))
+        }
+        crate::api_tokens::TokenVerdict::Unknown => {
+            Err((StatusCode::FORBIDDEN, "admin scope required".to_string()))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +867,7 @@ async fn record_api_trade(
         timestamp: now_millis(),
         model_id: model_id.to_string(),
         flops_estimated,
+            nonce: [0u8; 16],
     };
     ledger.execute_trade(&trade);
     trm_cost
@@ -2623,6 +2728,158 @@ async fn forge_collusion_report(
     })))
 }
 
+/// Phase 17 Wave 1.3 — GET /v1/tirami/slash-events
+///
+/// Returns the append-only slashing audit trail: every stake burn
+/// applied by the local node, newest last. Useful for operators
+/// inspecting why a peer was penalized, and for external auditors
+/// verifying the integrity of the trust-penalty loop.
+async fn forge_slash_events(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let ledger = state.ledger.lock().await;
+    let events: Vec<serde_json::Value> = ledger
+        .slash_events()
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "node_id": e.node_id.to_hex(),
+                "trust_penalty": e.trust_penalty,
+                "burned_trm": e.burned_trm,
+                "timestamp_ms": e.timestamp_ms,
+                "reason": e.reason,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "total": events.len(),
+        "total_burned_trm": ledger.slash_events().iter().map(|e| e.burned_trm).sum::<u64>(),
+        "events": events,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Phase 17 Wave 1.5 — scoped API token admin endpoints
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct TokenIssueBody {
+    /// Hex-encoded 64-char NodeId for the token owner.
+    node_id: String,
+    /// One of "read_only" | "inference" | "economy" | "admin".
+    scope: String,
+    /// Seconds until expiry. `0` means "never expires" (infra-only).
+    #[serde(default = "default_ttl_secs")]
+    ttl_secs: u64,
+    /// Human-readable label, e.g. "ci-runner-us-east". Max 128 chars.
+    #[serde(default)]
+    label: String,
+}
+
+fn default_ttl_secs() -> u64 {
+    // Default TTL = 7 days. Balances "don't leave long-lived tokens
+    // lying around" with "don't page an operator every hour".
+    7 * 24 * 3600
+}
+
+#[derive(serde::Deserialize)]
+struct TokenRevokeBody {
+    /// Hex-encoded 32-byte SHA-256 hash of the token.
+    token_hash_hex: String,
+}
+
+/// POST /v1/tirami/tokens/issue — Admin-only.
+/// Returns the newly minted raw token in the response (the ONLY time
+/// it is ever shown). The store persists only the hash.
+async fn forge_tokens_issue(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<TokenIssueBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin_scope(&state, &headers).await?;
+    check_forge_rate_limit(&state).await?;
+
+    let node_id = NodeId::from_hex(&body.node_id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid node_id: {e}")))?;
+    let scope = crate::api_tokens::ApiScope::parse(&body.scope).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!(
+            "invalid scope '{}': expected read_only | inference | economy | admin",
+            body.scope
+        ),
+    ))?;
+    if body.label.len() > 128 {
+        return Err((StatusCode::BAD_REQUEST, "label too long (max 128)".into()));
+    }
+
+    let now_ms = now_millis();
+    let (raw, token) = {
+        let mut store = state.api_tokens.lock().await;
+        store.issue(node_id, scope, body.ttl_secs, body.label, now_ms)
+    };
+    Ok(Json(serde_json::json!({
+        "token": raw,
+        "token_hash_hex": hex::encode(token.token_hash),
+        "node_id": token.node_id.to_hex(),
+        "scope": token.scope.as_str(),
+        "expires_at_ms": token.expires_at_ms,
+        "created_at_ms": token.created_at_ms,
+        "label": token.label,
+        "warning": "Save the token NOW — it will never be shown again.",
+    })))
+}
+
+/// POST /v1/tirami/tokens/revoke — Admin-only. Idempotent.
+async fn forge_tokens_revoke(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<TokenRevokeBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin_scope(&state, &headers).await?;
+    check_forge_rate_limit(&state).await?;
+    let removed = {
+        let mut store = state.api_tokens.lock().await;
+        store.revoke_hex(&body.token_hash_hex)
+    };
+    Ok(Json(serde_json::json!({
+        "revoked": removed,
+        "token_hash_hex": body.token_hash_hex,
+    })))
+}
+
+/// GET /v1/tirami/tokens — Admin-only. Returns metadata for all
+/// currently-unexpired tokens. Does NOT include raw tokens.
+async fn forge_tokens_list(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin_scope(&state, &headers).await?;
+    check_forge_rate_limit(&state).await?;
+    let now_ms = now_millis();
+    let tokens = {
+        let store = state.api_tokens.lock().await;
+        store.list_active(now_ms)
+    };
+    let entries: Vec<serde_json::Value> = tokens
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "token_hash_hex": hex::encode(t.token_hash),
+                "node_id": t.node_id.to_hex(),
+                "scope": t.scope.as_str(),
+                "expires_at_ms": t.expires_at_ms,
+                "created_at_ms": t.created_at_ms,
+                "label": t.label,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "total": entries.len(),
+        "tokens": entries,
+    })))
+}
+
 async fn admin_save_state(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
@@ -3375,5 +3632,173 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("X-Tirami-Node-Id", "abcdef".parse().unwrap());
         assert_eq!(parse_consumer_header(&headers), None);
+    }
+
+    // ----------------------------------------------------------------------
+    // Phase 17 Wave 1.5 — scoped API token admin endpoints
+    // ----------------------------------------------------------------------
+
+    async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    #[tokio::test]
+    async fn tokens_issue_requires_admin_then_returns_raw_token() {
+        // Legacy bearer = Admin scope, so /tokens/issue must succeed
+        // with the configured bearer AND return a real token.
+        let mut config = Config::default();
+        config.api_bearer_token = Some("root".to_string());
+        let app = test_router(config);
+
+        let issue_body = serde_json::json!({
+            "node_id": NodeId([0x42u8; 32]).to_hex(),
+            "scope": "read_only",
+            "ttl_secs": 3600,
+            "label": "ci-bot",
+        })
+        .to_string();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/tokens/issue")
+                    .header(AUTHORIZATION, "Bearer root")
+                    .header("content-type", "application/json")
+                    .body(Body::from(issue_body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["scope"], "read_only");
+        assert!(json["token"].as_str().unwrap().len() == 64);
+        assert_eq!(json["label"], "ci-bot");
+    }
+
+    #[tokio::test]
+    async fn tokens_issue_rejects_non_admin_caller() {
+        // Wrong bearer → 401 from the outer middleware (never reaches
+        // require_admin_scope). This guards against accidentally
+        // exposing token issuance via a weaker credential.
+        let mut config = Config::default();
+        config.api_bearer_token = Some("root".to_string());
+        let app = test_router(config);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/tokens/issue")
+                    .header(AUTHORIZATION, "Bearer nope")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"node_id":"00","scope":"admin"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn tokens_issued_via_admin_can_then_access_read_only_endpoints() {
+        // End-to-end: admin issues a ReadOnly token, then using ONLY
+        // that token the client can hit /status. Previously this flow
+        // would have required sharing the root bearer with the bot.
+        let mut config = Config::default();
+        config.api_bearer_token = Some("root".to_string());
+        let app = test_router(config);
+
+        // Step 1 — issue a ReadOnly token as admin.
+        let body = serde_json::json!({
+            "node_id": NodeId([0x09u8; 32]).to_hex(),
+            "scope": "read_only",
+            "ttl_secs": 3600,
+            "label": "dashboard",
+        })
+        .to_string();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/tokens/issue")
+                    .header(AUTHORIZATION, "Bearer root")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let issued = body_json(response).await;
+        let scoped = issued["token"].as_str().unwrap().to_string();
+
+        // Step 2 — use the scoped token on /status. Must pass.
+        let status_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .header(AUTHORIZATION, format!("Bearer {scoped}"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(status_resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn tokens_scoped_read_only_cannot_issue_new_tokens() {
+        // Per scope rules, ReadOnly must NOT be allowed to call
+        // /tokens/issue. require_admin_scope should return 403.
+        let mut config = Config::default();
+        config.api_bearer_token = Some("root".to_string());
+        let app = test_router(config);
+
+        // Issue a ReadOnly scoped token.
+        let body = serde_json::json!({
+            "node_id": NodeId([0x11u8; 32]).to_hex(),
+            "scope": "read_only",
+            "ttl_secs": 3600,
+            "label": "limited",
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/tokens/issue")
+                    .header(AUTHORIZATION, "Bearer root")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let scoped = body_json(resp).await["token"].as_str().unwrap().to_string();
+
+        // Try to issue ANOTHER token using the read-only token → 403.
+        let reissue_body = serde_json::json!({
+            "node_id": NodeId([0x22u8; 32]).to_hex(),
+            "scope": "read_only",
+        })
+        .to_string();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/tokens/issue")
+                    .header(AUTHORIZATION, format!("Bearer {scoped}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(reissue_body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 }

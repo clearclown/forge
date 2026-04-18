@@ -207,6 +207,7 @@ mod tests {
             timestamp: 0,
             model_id: "qwen2.5-0.5b".to_string(),
             flops_estimated: flops,
+                    nonce: [0u8; 16],
         }
     }
 

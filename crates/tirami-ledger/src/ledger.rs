@@ -1,7 +1,7 @@
 use tirami_core::{NodeBalance, NodeId, WorkUnit};
 use tirami_proto::ReputationObservation;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::lending::{
     self, LoanStatus, SignedLoanRecord, COLD_START_CREDIT,
@@ -69,6 +69,83 @@ pub struct ComputeLedger {
     /// Ephemeral (5-min timeout), rebuilt from scratch on restart.
     #[serde(default, skip_serializing)]
     pub audit_tracker: crate::audit::AuditTracker,
+    /// Phase 17 Wave 1.2 — provider-scoped nonce deduplication for replay defense.
+    ///
+    /// Populated by `execute_signed_trade` on each accepted v2 trade; rebuilt
+    /// from `trade_log` on `load_from_path` / `from_snapshot`. Ephemeral
+    /// (intentionally `skip_serializing`) because `trade_log` is the durable
+    /// source of truth: on restart we re-derive which nonces have already
+    /// been spent. Legacy v1 trades (nonce == `[0; 16]`) are exempt from
+    /// dedup for backward compatibility; future Phase-18 work may phase this
+    /// exemption out.
+    #[serde(default, skip_serializing)]
+    pub(crate) seen_nonces: HashMap<NodeId, NonceCache>,
+    /// Phase 17 Wave 1.3 — append-only record of slash events applied by
+    /// the local node. Persisted to the snapshot so operators and
+    /// auditors can see the full disciplinary trail across restarts.
+    #[serde(default)]
+    pub slash_events: Vec<SlashEvent>,
+}
+
+/// Audit trail entry written each time [`ComputeLedger::update_trust_penalties`]
+/// or an audit-failure bridge decides to slash a peer's stake.
+///
+/// A SlashEvent is *not* itself a ledger-moving operation — the burn
+/// happened when [`crate::StakingPool::apply_slash`] ran and removed
+/// the TRM from the node's lock. This type just records *that* it
+/// happened, along with why, so it can be inspected / served via API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SlashEvent {
+    pub node_id: NodeId,
+    pub trust_penalty: f64,
+    pub burned_trm: u64,
+    pub timestamp_ms: u64,
+    /// Short machine-readable tag. Current values: `"collusion"`,
+    /// `"audit-fail"`. Kept as a free-form string for forward-compat.
+    pub reason: String,
+}
+
+/// Bounded per-provider nonce cache with FIFO eviction.
+///
+/// We cannot keep unbounded nonce history in RAM — a malicious provider
+/// could flood their own slot with millions of entries. Cap at
+/// [`NonceCache::CAPACITY`] per provider; when full, the oldest entry
+/// is evicted. This means the dedup window is finite, but Phase 17
+/// pairs it with the `SignedTradeRecord::MAX_TRADE_AGE_MS` timestamp
+/// check, so trades older than the bound are rejected up-front by
+/// `signed.verify()`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct NonceCache {
+    order: VecDeque<[u8; 16]>,
+    set: HashSet<[u8; 16]>,
+}
+
+impl NonceCache {
+    /// Maximum nonces remembered per provider before FIFO eviction.
+    /// Sized to comfortably exceed any real-world throughput within
+    /// the `MAX_TRADE_AGE_MS` signature validity window.
+    pub const CAPACITY: usize = 10_000;
+
+    /// True iff `nonce` has been observed before for this provider.
+    pub fn contains(&self, nonce: &[u8; 16]) -> bool {
+        self.set.contains(nonce)
+    }
+
+    /// Record `nonce` as seen. Evicts the oldest entry when full.
+    /// Returns `true` when the nonce was newly inserted, `false` if
+    /// it was already present (caller should have rejected the trade).
+    pub fn insert(&mut self, nonce: [u8; 16]) -> bool {
+        if !self.set.insert(nonce) {
+            return false;
+        }
+        self.order.push_back(nonce);
+        if self.order.len() > Self::CAPACITY {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+        true
+    }
 }
 
 /// Dynamic pricing based on supply/demand and network scale.
@@ -155,19 +232,68 @@ pub struct TradeRecord {
     /// and signed trades (not included in `canonical_bytes` for the same reason).
     #[serde(default)]
     pub flops_estimated: u64,
+    /// Phase 17 Wave 1.1 — 128-bit random nonce chosen by the provider.
+    ///
+    /// Purpose: replay protection. Without a nonce, the same (provider,
+    /// consumer, amount, timestamp, model) tuple is indistinguishable across
+    /// identical successive trades, and a malicious peer can replay an
+    /// existing signed record to double-bill the consumer.
+    ///
+    /// Versioning: `serde(default)` returns `[0u8; 16]` for pre-Phase-17
+    /// snapshots. `canonical_bytes()` emits a v1 format when the nonce is
+    /// all zeros to keep legacy signatures verifiable, and a v2 format with
+    /// the nonce appended when any byte is non-zero.
+    #[serde(default)]
+    pub nonce: [u8; 16],
 }
 
 impl TradeRecord {
+    /// Canonical version byte for the *v1* (pre-Phase-17) format: no nonce.
+    pub const CANONICAL_V1: u8 = 0x01;
+    /// Canonical version byte for the *v2* (Phase-17 onward) format: nonce appended.
+    pub const CANONICAL_V2: u8 = 0x02;
+
+    /// True if this record has a non-zero nonce (i.e. was created by a
+    /// Phase 17+ producer and must be canonicalized / signed in v2 form).
+    pub fn has_nonce(&self) -> bool {
+        self.nonce != [0u8; 16]
+    }
+
+    /// Generate a fresh cryptographic nonce for a new v2 trade.
+    ///
+    /// Uses the OS CSPRNG so the value is unpredictable to other peers.
+    /// Callers should invoke this once per `TradeRecord` they create;
+    /// reusing a nonce for the same `provider` is a replay by definition
+    /// and will be rejected by [`ComputeLedger::execute_signed_trade`].
+    pub fn fresh_nonce() -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        use rand::RngCore;
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        bytes
+    }
+
     /// Deterministic binary representation for signing.
-    /// Fixed format: provider(32) + consumer(32) + trm_amount(8) + tokens(8) + timestamp(8) + model_id(var)
+    ///
+    /// Format (legacy v1, `nonce == [0; 16]`): provider(32) + consumer(32)
+    /// + trm_amount(8) + tokens(8) + timestamp(8) + model_id(var).
+    ///
+    /// Format (v2, `nonce != [0; 16]`): 0x02 version byte + legacy payload
+    /// + nonce(16). The version byte is NOT part of the legacy layout, so
+    /// v1 and v2 hashes never collide.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(88 + self.model_id.len());
+        let mut buf = Vec::with_capacity(88 + self.model_id.len() + 17);
+        if self.has_nonce() {
+            buf.push(Self::CANONICAL_V2);
+        }
         buf.extend_from_slice(&self.provider.0);
         buf.extend_from_slice(&self.consumer.0);
         buf.extend_from_slice(&self.trm_amount.to_le_bytes());
         buf.extend_from_slice(&self.tokens_processed.to_le_bytes());
         buf.extend_from_slice(&self.timestamp.to_le_bytes());
         buf.extend_from_slice(self.model_id.as_bytes());
+        if self.has_nonce() {
+            buf.extend_from_slice(&self.nonce);
+        }
         buf
     }
 }
@@ -242,6 +368,11 @@ pub enum SignatureError {
     InvalidConsumerSignature,
     #[error("trade timestamp expired: {age_ms}ms old (max {}ms)", SignedTradeRecord::MAX_TRADE_AGE_MS)]
     TimestampExpired { age_ms: u64 },
+    /// Phase 17 Wave 1.2 — a v2 signed trade presented a nonce already
+    /// observed for this provider. Signature may be valid, but accepting
+    /// the trade would be a replay (double-bill the consumer).
+    #[error("replayed nonce for provider {provider}")]
+    ReplayedNonce { provider: String },
 }
 
 /// Errors raised when creating a new loan via [`ComputeLedger::create_loan`].
@@ -337,6 +468,10 @@ struct PersistedLedger {
     loan_pool_lent: u64,
     #[serde(default)]
     loan_pool_total: u64,
+    /// Phase 17 Wave 1.3 — persisted slashing audit trail.
+    /// `#[serde(default)]` preserves compatibility with pre-Phase-17 snapshots.
+    #[serde(default)]
+    slash_events: Vec<SlashEvent>,
 }
 
 /// Wrapper for signed/integrity-checked ledger persistence.
@@ -407,6 +542,8 @@ impl ComputeLedger {
             peer_registry: crate::peer_registry::PeerRegistry::new(),
             next_request_id: 0,
             audit_tracker: crate::audit::AuditTracker::new(),
+            seen_nonces: HashMap::new(),
+            slash_events: Vec::new(),
         }
     }
 
@@ -615,6 +752,7 @@ impl ComputeLedger {
             timestamp: now,
             model_id: ticket.model_id.0.clone(),
             flops_estimated,
+                    nonce: [0u8; 16],
         };
         self.execute_trade(&trade);
 
@@ -674,6 +812,7 @@ impl ComputeLedger {
             loan_log: self.loans.clone(),
             loan_pool_lent: self.loan_pool_lent,
             loan_pool_total: self.loan_pool_total,
+            slash_events: self.slash_events.clone(),
         };
 
         let json = serde_json::to_string_pretty(&snapshot)
@@ -727,7 +866,7 @@ impl ComputeLedger {
             .into_iter()
             .map(|balance| (balance.node_id.clone(), balance))
             .collect();
-        Self {
+        let mut ledger = Self {
             balances,
             work_log: snapshot.work_log,
             trade_log: snapshot.trade_log,
@@ -740,7 +879,12 @@ impl ComputeLedger {
             peer_registry: crate::peer_registry::PeerRegistry::new(), // ephemeral; rebuilt from gossip
             next_request_id: 0,
             audit_tracker: crate::audit::AuditTracker::new(),
-        }
+            seen_nonces: HashMap::new(),
+            slash_events: snapshot.slash_events,
+        };
+        // Phase 17 Wave 1.2 — replay defense must survive a restart.
+        ledger.rebuild_nonce_cache();
+        ledger
     }
 
     /// Export an aggregate settlement statement for a time window.
@@ -897,14 +1041,183 @@ impl ComputeLedger {
         balance.consumed += cu;
     }
 
-    /// Execute a verified signed trade: verify both signatures, then record.
+    /// Execute a verified signed trade: verify both signatures, enforce
+    /// replay protection via the provider nonce cache, then record.
+    ///
+    /// Phase 17 Wave 1.2 semantics:
+    /// * v1 records (`nonce == [0; 16]`) skip the replay check so legacy
+    ///   snapshots and pre-Phase-17 peers keep working.
+    /// * v2 records are rejected with [`SignatureError::ReplayedNonce`]
+    ///   when the provider has already spent this exact nonce.
+    /// * Accepted v2 nonces are inserted into [`Self::seen_nonces`],
+    ///   which is ephemeral but rebuilt from `trade_log` on load.
     pub fn execute_signed_trade(
         &mut self,
         signed: &SignedTradeRecord,
     ) -> Result<(), SignatureError> {
         signed.verify()?;
+        if signed.trade.has_nonce() {
+            let cache = self
+                .seen_nonces
+                .entry(signed.trade.provider.clone())
+                .or_default();
+            if cache.contains(&signed.trade.nonce) {
+                return Err(SignatureError::ReplayedNonce {
+                    provider: signed.trade.provider.to_hex(),
+                });
+            }
+            cache.insert(signed.trade.nonce);
+        }
         self.execute_trade(&signed.trade);
         Ok(())
+    }
+
+    /// Rebuild the ephemeral [`Self::seen_nonces`] cache from `trade_log`.
+    /// Called after deserialization so that a restarted node still rejects
+    /// replays of already-accepted v2 nonces.
+    pub(crate) fn rebuild_nonce_cache(&mut self) {
+        self.seen_nonces.clear();
+        for trade in &self.trade_log {
+            if trade.has_nonce() {
+                let cache = self.seen_nonces.entry(trade.provider.clone()).or_default();
+                cache.insert(trade.nonce);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 17 Wave 1.3 — Slashing wired into production
+    // -----------------------------------------------------------------------
+
+    /// Minimum trust penalty before slashing fires. Below this threshold
+    /// we treat the collusion signals as noise and do not touch the stake.
+    pub const SLASH_PENALTY_THRESHOLD: f64 = 0.1;
+
+    /// Append one entry to the persistent slash audit trail. Callers MUST
+    /// have already burned the stake via [`crate::StakingPool::apply_slash`]
+    /// — this method does not transfer or burn TRM itself.
+    pub fn record_slash_event(
+        &mut self,
+        node_id: NodeId,
+        trust_penalty: f64,
+        burned_trm: u64,
+        reason: impl Into<String>,
+        now_ms: u64,
+    ) {
+        self.slash_events.push(SlashEvent {
+            node_id,
+            trust_penalty,
+            burned_trm,
+            timestamp_ms: now_ms,
+            reason: reason.into(),
+        });
+    }
+
+    /// Full snapshot of slash events, newest last. Intended for operator
+    /// dashboards and external auditors.
+    pub fn slash_events(&self) -> &[SlashEvent] {
+        &self.slash_events
+    }
+
+    /// Phase 17 Wave 1.4 — penalty applied to a node whose audit response
+    /// disagreed with the challenger's expected hash. Sized as "major"
+    /// (0.3 = 20 % of stake under [`crate::staking::compute_slash`]),
+    /// reflecting the plan's deliberate choice to punish provable
+    /// dishonesty more than passive inactivity.
+    pub const AUDIT_FAIL_TRUST_PENALTY: f64 = 0.3;
+
+    /// Slash a node for a failed audit verdict and record the event.
+    /// Returns the burned amount (0 if the node had no stake to slash).
+    /// Both side effects happen under the caller's lock discipline.
+    pub fn record_audit_failure_slash(
+        &mut self,
+        staking: &mut crate::StakingPool,
+        target: &NodeId,
+        now_ms: u64,
+    ) -> u64 {
+        let burned = staking.apply_slash(target, Self::AUDIT_FAIL_TRUST_PENALTY);
+        self.record_slash_event(
+            target.clone(),
+            Self::AUDIT_FAIL_TRUST_PENALTY,
+            burned,
+            "audit-fail",
+            now_ms,
+        );
+        burned
+    }
+
+    /// Scan the ledger for collusion and apply stake slashing to offending
+    /// nodes. Returns the events that were recorded this cycle so the
+    /// caller can log / export them.
+    ///
+    /// Semantics:
+    /// * Runs [`crate::CollusionDetector::analyze_node`] on every node
+    ///   that appears in balances (fast) or in recent trades.
+    /// * When `trust_penalty >= SLASH_PENALTY_THRESHOLD`, calls
+    ///   [`crate::StakingPool::apply_slash`] to burn part of the stake,
+    ///   and records a [`SlashEvent`] with reason `"collusion"`.
+    /// * Nodes without a stake slot produce `burned = 0` from
+    ///   `apply_slash` — we skip them to keep the event log signal-rich.
+    /// * Nodes that have already been slashed in the last 5 minutes
+    ///   are skipped too, so repeated runs don't zero the same stake
+    ///   to dust over one bad streak.
+    pub fn update_trust_penalties(
+        &mut self,
+        staking: &mut crate::StakingPool,
+        now_ms: u64,
+    ) -> Vec<SlashEvent> {
+        let candidates: Vec<NodeId> = {
+            let mut seen: std::collections::HashSet<NodeId> =
+                self.balances.keys().cloned().collect();
+            for trade in &self.trade_log {
+                seen.insert(trade.provider.clone());
+                seen.insert(trade.consumer.clone());
+            }
+            seen.into_iter().collect()
+        };
+
+        // Build a "recently slashed" set so we don't pile multiple
+        // penalties on the same node within a single 5-minute window.
+        let recent_window_ms: u64 = 5 * 60 * 1_000;
+        let recently_slashed: std::collections::HashSet<NodeId> = self
+            .slash_events
+            .iter()
+            .filter(|e| now_ms.saturating_sub(e.timestamp_ms) < recent_window_ms)
+            .map(|e| e.node_id.clone())
+            .collect();
+
+        let mut new_events = Vec::new();
+        for node_id in candidates {
+            if recently_slashed.contains(&node_id) {
+                continue;
+            }
+            let report = crate::collusion::CollusionDetector::analyze_node(
+                &self.trade_log,
+                &node_id,
+                now_ms,
+            );
+            if report.trust_penalty < Self::SLASH_PENALTY_THRESHOLD {
+                continue;
+            }
+            let burned = staking.apply_slash(&node_id, report.trust_penalty);
+            if burned == 0 {
+                // Node has no stake to slash — still not a free pass,
+                // reputation already reflects the collusion score via
+                // effective_reputation(). Skip the event log to avoid
+                // spamming it with 0-impact entries.
+                continue;
+            }
+            let event = SlashEvent {
+                node_id: node_id.clone(),
+                trust_penalty: report.trust_penalty,
+                burned_trm: burned,
+                timestamp_ms: now_ms,
+                reason: "collusion".to_string(),
+            };
+            self.slash_events.push(event.clone());
+            new_events.push(event);
+        }
+        new_events
     }
 
     /// Execute a trade: provider earns CU, consumer spends CU.
@@ -1773,6 +2086,7 @@ mod tests {
             timestamp: 1000,
             model_id: "llama-7b".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
 
         ledger.execute_trade(&trade);
@@ -1792,6 +2106,516 @@ mod tests {
         assert!(ledger.can_afford(&new_node, 500));
         assert!(ledger.can_afford(&new_node, 1000));
         assert!(!ledger.can_afford(&new_node, 1001));
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 17 Wave 1.1 — TradeRecord v2 (nonce) tests.
+    // ------------------------------------------------------------------
+
+    fn trade_with_nonce(nonce: [u8; 16]) -> TradeRecord {
+        TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            trm_amount: 100,
+            tokens_processed: 50,
+            timestamp: 1_700_000_000_000,
+            model_id: "llama-7b".to_string(),
+            flops_estimated: 0,
+            nonce,
+        }
+    }
+
+    #[test]
+    fn trade_record_v1_canonical_bytes_unchanged_when_nonce_zero() {
+        // Legacy snapshots and pre-Phase-17 signatures rely on the exact
+        // byte-layout of the unversioned v1 format. The v1 branch must
+        // NOT introduce the 0x02 version prefix and must NOT append the
+        // nonce — otherwise every existing signature becomes invalid.
+        let trade = trade_with_nonce([0u8; 16]);
+        let bytes = trade.canonical_bytes();
+
+        // 32 + 32 + 8 + 8 + 8 + "llama-7b".len() = 96
+        assert_eq!(bytes.len(), 88 + "llama-7b".len());
+        assert_eq!(&bytes[0..32], &[1u8; 32]); // provider
+        assert_eq!(&bytes[32..64], &[2u8; 32]); // consumer
+        assert!(!trade.has_nonce());
+    }
+
+    #[test]
+    fn trade_record_v2_canonical_bytes_prefixed_and_nonce_appended() {
+        let nonce = [0x11u8; 16];
+        let trade = trade_with_nonce(nonce);
+        let bytes = trade.canonical_bytes();
+
+        // 1 (version) + 88 + 8 (model) + 16 (nonce) = 113
+        assert_eq!(bytes[0], TradeRecord::CANONICAL_V2);
+        assert_eq!(bytes.len(), 1 + 88 + "llama-7b".len() + 16);
+        // last 16 bytes MUST be the nonce verbatim
+        assert_eq!(&bytes[bytes.len() - 16..], &nonce);
+        assert!(trade.has_nonce());
+    }
+
+    #[test]
+    fn trade_record_same_payload_different_nonces_produce_distinct_canonicals() {
+        // This is the core replay-protection invariant: two trades with
+        // identical (provider, consumer, amount, timestamp, model) but
+        // different nonces MUST canonicalize (and thus sign/verify) to
+        // distinct byte strings.
+        let a = trade_with_nonce([0x01; 16]);
+        let b = trade_with_nonce([0x02; 16]);
+        assert_ne!(a.canonical_bytes(), b.canonical_bytes());
+    }
+
+    #[test]
+    fn trade_record_v1_v2_hashes_never_collide() {
+        // v1 (nonce == 0) and v2 (nonce != 0) bytes share the same
+        // provider/consumer/amount/model prefix. The v2 version byte
+        // ensures they cannot collide on a short prefix check, and
+        // they differ in length so they cannot collide end-to-end.
+        let v1 = trade_with_nonce([0u8; 16]);
+        let v2 = trade_with_nonce([0xAB; 16]);
+        let a = v1.canonical_bytes();
+        let b = v2.canonical_bytes();
+        assert_ne!(a, b);
+        assert_ne!(a[0], b[0]); // v1 starts with provider byte (0x01); v2 with 0x02.
+    }
+
+    #[test]
+    fn trade_record_v1_snapshot_deserializes_with_default_nonce() {
+        // `#[serde(default)]` on nonce guarantees forward-read on any
+        // JSON snapshot produced by pre-Phase-17 nodes. The loaded
+        // record must behave as v1 (has_nonce == false).
+        let legacy_json = serde_json::json!({
+            "provider": vec![1u8; 32],
+            "consumer": vec![2u8; 32],
+            "trm_amount": 100u64,
+            "tokens_processed": 50u64,
+            "timestamp": 1_700_000_000_000u64,
+            "model_id": "llama-7b",
+            // NOTE: no `flops_estimated`, no `nonce` — simulating a pre-Phase-15/17 snapshot.
+        });
+        let trade: TradeRecord = serde_json::from_value(legacy_json).unwrap();
+        assert_eq!(trade.nonce, [0u8; 16]);
+        assert!(!trade.has_nonce());
+        // canonical_bytes on this deserialized record must match
+        // what a v1 node would have produced.
+        let expected = trade_with_nonce([0u8; 16]).canonical_bytes();
+        assert_eq!(trade.canonical_bytes(), expected);
+    }
+
+    #[test]
+    fn trade_record_constants_have_expected_values() {
+        assert_eq!(TradeRecord::CANONICAL_V1, 0x01);
+        assert_eq!(TradeRecord::CANONICAL_V2, 0x02);
+    }
+
+    #[test]
+    fn trade_record_fresh_nonce_is_nonzero_and_unique() {
+        // OS CSPRNG — two successive calls must never collide (probability
+        // 2^-128) and must never return the all-zero sentinel (2^-128 too).
+        let a = TradeRecord::fresh_nonce();
+        let b = TradeRecord::fresh_nonce();
+        assert_ne!(a, [0u8; 16]);
+        assert_ne!(b, [0u8; 16]);
+        assert_ne!(a, b);
+    }
+
+    fn build_dual_signed_trade(nonce: [u8; 16]) -> SignedTradeRecord {
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+        let trade = TradeRecord {
+            provider: NodeId(provider_key.verifying_key().to_bytes()),
+            consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+            trm_amount: 250,
+            tokens_processed: 40,
+            timestamp: now_millis(),
+            model_id: "replay-test".to_string(),
+            flops_estimated: 0,
+            nonce,
+        };
+        let canonical = trade.canonical_bytes();
+        SignedTradeRecord {
+            trade,
+            provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
+            consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn execute_signed_trade_rejects_replayed_nonce() {
+        // Phase 17 Wave 1.2 — replay defense. Submitting the exact same
+        // signed record twice must be rejected with ReplayedNonce on the
+        // second call, and the consumer balance must NOT be debited twice.
+        let mut ledger = ComputeLedger::new();
+        let signed = build_dual_signed_trade(TradeRecord::fresh_nonce());
+        let consumer = signed.trade.consumer.clone();
+        let amount = signed.trade.trm_amount;
+
+        assert!(ledger.execute_signed_trade(&signed).is_ok());
+        let first = ledger.get_balance(&consumer).map(|b| b.consumed).unwrap_or(0);
+        assert_eq!(first, amount);
+
+        let err = ledger.execute_signed_trade(&signed).unwrap_err();
+        assert!(matches!(err, SignatureError::ReplayedNonce { .. }));
+        let second = ledger.get_balance(&consumer).map(|b| b.consumed).unwrap_or(0);
+        assert_eq!(second, amount, "consumer must NOT be double-debited");
+    }
+
+    #[test]
+    fn execute_signed_trade_different_nonces_same_parties_both_accepted() {
+        // Two distinct trades between the same parties with different
+        // nonces are legitimate back-to-back payments and must both
+        // land on the ledger.
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+
+        let make = |nonce: [u8; 16]| {
+            let trade = TradeRecord {
+                provider: NodeId(provider_key.verifying_key().to_bytes()),
+                consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+                trm_amount: 100,
+                tokens_processed: 10,
+                timestamp: now_millis(),
+                model_id: "m".to_string(),
+                flops_estimated: 0,
+                nonce,
+            };
+            let canonical = trade.canonical_bytes();
+            SignedTradeRecord {
+                trade,
+                provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
+                consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+            }
+        };
+
+        let mut ledger = ComputeLedger::new();
+        let a = make(TradeRecord::fresh_nonce());
+        let b = make(TradeRecord::fresh_nonce());
+        let consumer = a.trade.consumer.clone();
+        assert!(ledger.execute_signed_trade(&a).is_ok());
+        assert!(ledger.execute_signed_trade(&b).is_ok());
+        assert_eq!(ledger.get_balance(&consumer).unwrap().consumed, 200);
+    }
+
+    #[test]
+    fn execute_signed_trade_v1_zero_nonce_is_not_dedup_gated() {
+        // Legacy v1 trades (nonce == [0;16]) intentionally skip the
+        // replay check for backward compatibility with pre-Phase-17
+        // peers. The ledger still records them; the dedup cache stays
+        // empty. Future phases may phase this carve-out out; until
+        // then, we guard the current behavior so the path is explicit.
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+        let trade = TradeRecord {
+            provider: NodeId(provider_key.verifying_key().to_bytes()),
+            consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+            trm_amount: 50,
+            tokens_processed: 5,
+            timestamp: now_millis(),
+            model_id: "legacy".into(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        };
+        let canonical = trade.canonical_bytes();
+        let signed = SignedTradeRecord {
+            trade,
+            provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
+            consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+        };
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger.execute_signed_trade(&signed).is_ok());
+        // v1 path must NOT populate the nonce cache.
+        assert!(ledger.seen_nonces.is_empty());
+    }
+
+    #[test]
+    fn nonce_cache_evicts_oldest_beyond_capacity() {
+        let mut cache = NonceCache::default();
+        // Fill to capacity using deterministic nonces.
+        for i in 0..NonceCache::CAPACITY as u32 {
+            let mut n = [0u8; 16];
+            n[..4].copy_from_slice(&i.to_le_bytes());
+            assert!(cache.insert(n));
+        }
+        assert_eq!(cache.order.len(), NonceCache::CAPACITY);
+        // First nonce (key = 0) still remembered.
+        assert!(cache.contains(&[0u8; 16]));
+        // Insert one more → oldest (the 0-key) should be evicted.
+        let fresh = TradeRecord::fresh_nonce();
+        cache.insert(fresh);
+        assert!(!cache.contains(&[0u8; 16]));
+        assert!(cache.contains(&fresh));
+        assert_eq!(cache.order.len(), NonceCache::CAPACITY);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 17 Wave 1.3 — update_trust_penalties + slash_event tests.
+    // ------------------------------------------------------------------
+
+    /// Inject a tight-cluster collusion pattern: `subject` trades with a
+    /// single counterparty many times within the detection window.
+    /// Nonces are generated so v2 dedup doesn't interfere.
+    fn inject_tight_cluster(
+        ledger: &mut ComputeLedger,
+        subject: NodeId,
+        counterparty: NodeId,
+        count: usize,
+        now_ms: u64,
+    ) {
+        for i in 0..count {
+            let trade = TradeRecord {
+                provider: subject.clone(),
+                consumer: counterparty.clone(),
+                trm_amount: 100,
+                tokens_processed: 10,
+                timestamp: now_ms.saturating_sub(i as u64 * 1_000),
+                model_id: "m".into(),
+                flops_estimated: 0,
+                // Distinct nonces — legal from a replay-defense POV.
+                nonce: {
+                    let mut n = [0u8; 16];
+                    n[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    n[15] = 0xAA; // ensure non-zero
+                    n
+                },
+            };
+            ledger.trade_log.push(trade);
+        }
+    }
+
+    #[test]
+    fn update_trust_penalties_burns_stake_for_collusion() {
+        use crate::{StakeDuration, StakingPool};
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0x11u8; 32]);
+        let counterparty = NodeId([0x22u8; 32]);
+        let now = now_millis();
+
+        // Build a stake for the subject so apply_slash has something to burn.
+        let mut staking = StakingPool::new();
+        let stake_amount = 10_000u64;
+        staking
+            .stake(subject.clone(), stake_amount, StakeDuration::Days30, now)
+            .unwrap();
+
+        // Inject a tight-cluster pattern: 20 trades with a single peer in
+        // the recent window. This should trip the collusion detector.
+        inject_tight_cluster(&mut ledger, subject.clone(), counterparty, 20, now);
+
+        let events = ledger.update_trust_penalties(&mut staking, now);
+
+        // At least one event recorded for the subject, stake actually burned.
+        assert!(!events.is_empty(), "expected at least one slash event");
+        let subject_event = events.iter().find(|e| e.node_id == subject).unwrap();
+        assert!(subject_event.burned_trm > 0);
+        assert_eq!(subject_event.reason, "collusion");
+
+        // Stake should have been reduced by exactly the burned amount.
+        let remaining = staking.total_staked();
+        assert_eq!(
+            remaining,
+            stake_amount - subject_event.burned_trm,
+            "stake reduced exactly by burned amount"
+        );
+
+        // Persistent audit trail matches the returned events.
+        assert_eq!(ledger.slash_events().len(), events.len());
+        assert!(ledger.slash_events().contains(subject_event));
+    }
+
+    #[test]
+    fn update_trust_penalties_noops_on_clean_ledger() {
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let mut staking = StakingPool::new();
+        let now = now_millis();
+        let events = ledger.update_trust_penalties(&mut staking, now);
+        assert!(events.is_empty(), "clean ledger must not slash");
+        assert!(ledger.slash_events().is_empty());
+    }
+
+    #[test]
+    fn update_trust_penalties_respects_cooldown_window() {
+        use crate::{StakeDuration, StakingPool};
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0x33u8; 32]);
+        let counterparty = NodeId([0x44u8; 32]);
+        let now = now_millis();
+
+        let mut staking = StakingPool::new();
+        staking
+            .stake(subject.clone(), 10_000, StakeDuration::Days30, now)
+            .unwrap();
+
+        inject_tight_cluster(&mut ledger, subject.clone(), counterparty, 20, now);
+
+        // First sweep fires once.
+        let first = ledger.update_trust_penalties(&mut staking, now);
+        assert!(!first.is_empty());
+
+        // Second sweep with no time elapsed must NOT double-slash the
+        // same node — the 5-minute cooldown window guards against this.
+        let second = ledger.update_trust_penalties(&mut staking, now + 60_000);
+        assert!(
+            !second.iter().any(|e| e.node_id == subject),
+            "must not double-slash within the cooldown window"
+        );
+    }
+
+    #[test]
+    fn update_trust_penalties_skips_stake_less_nodes() {
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0x55u8; 32]);
+        let counterparty = NodeId([0x66u8; 32]);
+        let now = now_millis();
+
+        // No stake created — apply_slash returns 0. The method must
+        // skip writing an audit-trail entry (keeps the log signal-rich).
+        let mut staking = StakingPool::new();
+        inject_tight_cluster(&mut ledger, subject, counterparty, 20, now);
+        let events = ledger.update_trust_penalties(&mut staking, now);
+        assert!(events.is_empty(), "stakeless nodes must not spam audit log");
+    }
+
+    #[test]
+    fn record_slash_event_appends_in_order() {
+        let mut ledger = ComputeLedger::new();
+        let a = NodeId([1u8; 32]);
+        let b = NodeId([2u8; 32]);
+        ledger.record_slash_event(a.clone(), 0.2, 100, "audit-fail", 1_000);
+        ledger.record_slash_event(b.clone(), 0.5, 500, "collusion", 2_000);
+        assert_eq!(ledger.slash_events().len(), 2);
+        assert_eq!(ledger.slash_events()[0].node_id, a);
+        assert_eq!(ledger.slash_events()[1].node_id, b);
+        assert_eq!(ledger.slash_events()[1].timestamp_ms, 2_000);
+    }
+
+    #[test]
+    fn slash_events_persist_across_save_load() {
+        use crate::StakingPool;
+        let tmp = unique_temp_path("slash-events");
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([0x77u8; 32]);
+        let counterparty = NodeId([0x88u8; 32]);
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+        staking
+            .stake(subject.clone(), 10_000, crate::StakeDuration::Days30, now)
+            .unwrap();
+        inject_tight_cluster(&mut ledger, subject, counterparty, 20, now);
+        ledger.update_trust_penalties(&mut staking, now);
+        let expected = ledger.slash_events().to_vec();
+        assert!(!expected.is_empty());
+
+        ledger.save_to_path(&tmp).unwrap();
+        let reloaded = ComputeLedger::load_from_path(&tmp).unwrap();
+        assert_eq!(reloaded.slash_events(), expected.as_slice());
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 17 Wave 1.4 — AuditVerdict ↔ slashing bridge tests.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn record_audit_failure_slash_burns_stake_and_logs_event() {
+        use crate::{StakeDuration, StakingPool};
+        let mut ledger = ComputeLedger::new();
+        let target = NodeId([0xCDu8; 32]);
+        let now = 1_700_000_000_000;
+        let mut staking = StakingPool::new();
+        staking
+            .stake(target.clone(), 10_000, StakeDuration::Days30, now)
+            .unwrap();
+
+        let burned = ledger.record_audit_failure_slash(&mut staking, &target, now);
+
+        assert!(burned > 0, "must burn actual TRM");
+        assert_eq!(ledger.slash_events().len(), 1);
+        let evt = &ledger.slash_events()[0];
+        assert_eq!(evt.reason, "audit-fail");
+        assert_eq!(evt.trust_penalty, ComputeLedger::AUDIT_FAIL_TRUST_PENALTY);
+        assert_eq!(evt.burned_trm, burned);
+        assert_eq!(evt.node_id, target);
+        assert_eq!(staking.total_staked(), 10_000 - burned);
+    }
+
+    #[test]
+    fn record_audit_failure_slash_on_unstaked_target_logs_zero_burn() {
+        // A target without a stake slot is still "punished" in the
+        // audit trail for transparency. burned == 0 because there's
+        // nothing to burn; this documents the attempt.
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let target = NodeId([0xEFu8; 32]);
+        let mut staking = StakingPool::new();
+        let burned = ledger.record_audit_failure_slash(&mut staking, &target, 1_000);
+        assert_eq!(burned, 0);
+        assert_eq!(ledger.slash_events().len(), 1);
+        assert_eq!(ledger.slash_events()[0].burned_trm, 0);
+        assert_eq!(ledger.slash_events()[0].reason, "audit-fail");
+    }
+
+    #[test]
+    fn audit_verdict_failed_path_end_to_end() {
+        // Walk the exact sequence the pipeline handler performs:
+        //   1. issue_challenge(expected=H)
+        //   2. resolve(response=H') where H' != H → Failed
+        //   3. record_audit_failure_slash → SlashEvent "audit-fail"
+        use crate::{StakeDuration, StakingPool};
+        use tirami_core::ModelId;
+        let mut ledger = ComputeLedger::new();
+        let target = NodeId([0x12u8; 32]);
+        let now = 2_000_000;
+
+        let pending = ledger.audit_tracker.issue_challenge(
+            target.clone(),
+            ModelId("m".into()),
+            [0xAAu8; 32],
+            now,
+        );
+        let verdict = ledger.audit_tracker.resolve(
+            pending.challenge_id,
+            &target,
+            &[0xBBu8; 32], // ≠ expected → Failed
+            now + 100,
+        );
+        assert_eq!(verdict, crate::AuditVerdict::Failed);
+
+        let mut staking = StakingPool::new();
+        staking
+            .stake(target.clone(), 5_000, StakeDuration::Days30, now)
+            .unwrap();
+        let burned = ledger.record_audit_failure_slash(&mut staking, &target, now + 200);
+        assert!(burned > 0);
+
+        let evt = ledger.slash_events().last().unwrap();
+        assert_eq!(evt.reason, "audit-fail");
+        assert_eq!(evt.timestamp_ms, now + 200);
+    }
+
+    #[test]
+    fn rebuild_nonce_cache_restores_dedup_after_restart() {
+        let mut ledger = ComputeLedger::new();
+        let signed = build_dual_signed_trade(TradeRecord::fresh_nonce());
+        let nonce = signed.trade.nonce;
+        let provider = signed.trade.provider.clone();
+        ledger.execute_signed_trade(&signed).unwrap();
+        // Simulate restart: drop ephemeral cache, then rebuild.
+        ledger.seen_nonces.clear();
+        ledger.rebuild_nonce_cache();
+        // Cache must once again reject this nonce.
+        let cache = ledger.seen_nonces.get(&provider).unwrap();
+        assert!(cache.contains(&nonce));
+        // Feeding the same signed trade must now be rejected.
+        let err = ledger.execute_signed_trade(&signed).unwrap_err();
+        assert!(matches!(err, SignatureError::ReplayedNonce { .. }));
     }
 
     #[test]
@@ -1857,6 +2681,7 @@ mod tests {
             timestamp: 1,
             model_id: "small".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.execute_trade(&TradeRecord {
             provider,
@@ -1866,6 +2691,7 @@ mod tests {
             timestamp: 2,
             model_id: "large".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
 
         let trades = ledger.recent_trades(2);
@@ -1887,6 +2713,7 @@ mod tests {
             timestamp: 42,
             model_id: "persisted".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
 
         ledger.save_to_path(&path).unwrap();
@@ -1911,6 +2738,7 @@ mod tests {
             timestamp: 100,
             model_id: "m1".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.execute_trade(&TradeRecord {
             provider: NodeId([2u8; 32]),
@@ -1920,6 +2748,7 @@ mod tests {
             timestamp: 200,
             model_id: "m2".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.execute_trade(&TradeRecord {
             provider: NodeId([9u8; 32]),
@@ -1929,6 +2758,7 @@ mod tests {
             timestamp: 999,
             model_id: "ignored".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
 
         let statement = ledger.export_settlement_statement(50, 250, Some(0.5));
@@ -1989,6 +2819,7 @@ mod tests {
             timestamp: 1000,
             model_id: "m1".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.execute_trade(&TradeRecord {
             provider,
@@ -1998,6 +2829,7 @@ mod tests {
             timestamp: 2000,
             model_id: "m2".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
 
         let root1 = ledger.compute_trade_merkle_root();
@@ -2017,6 +2849,7 @@ mod tests {
             timestamp: 500,
             model_id: "test".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
 
         let statement = ledger.export_settlement_statement(0, 10000, None);
@@ -2055,6 +2888,7 @@ mod tests {
             timestamp: 1000,
             model_id: "llama-7b".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
 
         let bytes1 = trade.canonical_bytes();
@@ -2074,6 +2908,7 @@ mod tests {
             timestamp: 1000,
             model_id: "model-a".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         let trade2 = TradeRecord {
             provider: NodeId([1u8; 32]),
@@ -2083,6 +2918,7 @@ mod tests {
             timestamp: 1000,
             model_id: "model-a".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         assert_ne!(trade1.canonical_bytes(), trade2.canonical_bytes());
     }
@@ -2133,6 +2969,7 @@ mod tests {
             timestamp: 1000,
             model_id: "test".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         ledger.execute_trade(&trade);
 
@@ -2161,6 +2998,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "test-model".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
 
         let canonical = trade.canonical_bytes();
@@ -2197,6 +3035,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "test".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
 
         let canonical = trade.canonical_bytes();
@@ -2237,6 +3076,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "test".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
 
         let canonical = trade.canonical_bytes();
@@ -2309,6 +3149,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "m1".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         let root1 = ledger.compute_trade_merkle_root();
 
@@ -2320,6 +3161,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "m2".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         let root2 = ledger.compute_trade_merkle_root();
 
@@ -2382,6 +3224,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "test".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         let data = ledger.prepare_anchor_data();
         assert_eq!(data.len(), 80);
@@ -2400,6 +3243,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "test".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         // Self-trade should not be recorded
         assert!(ledger.get_balance(&node).is_none());
@@ -2484,6 +3328,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "seed".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.update_reputation(borrower, 1.0);
         // Give borrower headroom so collateral reservation succeeds.
@@ -2691,6 +3536,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "m".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.update_reputation(&node, 1.0);
         let after = ledger.compute_credit_score(&node);
@@ -2748,6 +3594,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "test".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         assert_eq!(ledger.recent_trades(10).len(), 0);
     }
@@ -2902,6 +3749,7 @@ mod tests {
                 timestamp: now_millis().saturating_sub(i * 60_000),
                 model_id: "test".into(),
                 flops_estimated: 0,
+                            nonce: [0u8; 16],
             });
         }
         let raw = ledger.consensus_reputation(&subject);
@@ -2940,6 +3788,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "attack".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         // No trade should have been recorded and balance must not exist.
         assert_eq!(
@@ -2969,6 +3818,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "spam".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         assert_eq!(
             ledger.trade_log.len(),
@@ -3003,6 +3853,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "huge".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.execute_trade(&TradeRecord {
             provider: provider.clone(),
@@ -3012,6 +3863,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "huge2".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         let bal = ledger.get_balance(&provider).unwrap();
         // Contributed must NOT have wrapped around to a small value.
@@ -3288,6 +4140,7 @@ mod tests {
                 timestamp: now.saturating_sub(i * 60_000),
                 model_id: "spam".into(),
                 flops_estimated: 0,
+                            nonce: [0u8; 16],
             });
         }
 
@@ -3332,6 +4185,7 @@ mod tests {
                 timestamp: now.saturating_sub(i * 60_000),
                 model_id: "wash".into(),
                 flops_estimated: 0,
+                            nonce: [0u8; 16],
             });
         }
 
@@ -3503,6 +4357,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "test".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.save_to_path(&path).unwrap();
 
@@ -3693,6 +4548,7 @@ mod tests {
             timestamp: 9_999,
             model_id: "hmac-roundtrip".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.save_to_path(&path).unwrap();
         let loaded = ComputeLedger::load_from_path(&path).unwrap();
@@ -3716,6 +4572,7 @@ mod tests {
                 timestamp: i * 100,
                 model_id: format!("m{i}"),
                 flops_estimated: 0,
+                            nonce: [0u8; 16],
             });
         }
         ledger.save_to_path(&path).unwrap();
@@ -3755,6 +4612,7 @@ mod tests {
             timestamp: 1_000,
             model_id: "first".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.execute_trade(&TradeRecord {
             provider: NodeId([3u8; 32]),
@@ -3764,6 +4622,7 @@ mod tests {
             timestamp: 2_000,
             model_id: "second".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         });
         ledger.save_to_path(&path).unwrap();
 
@@ -3825,6 +4684,7 @@ mod tests {
             timestamp: 100,
             model_id: "a".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         let trade_b = TradeRecord {
             provider: NodeId([3u8; 32]),
@@ -3834,6 +4694,7 @@ mod tests {
             timestamp: 200,
             model_id: "b".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         let mut l1 = ComputeLedger::new();
         l1.execute_trade(&trade_a);
@@ -3858,6 +4719,7 @@ mod tests {
             timestamp: 1_000,
             model_id: "m".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         let mut l1 = ComputeLedger::new();
         l1.execute_trade(&base);
@@ -3887,6 +4749,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "t".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         let canonical = trade.canonical_bytes();
         let provider_sig = pk.sign(&canonical).to_bytes().to_vec();
@@ -3911,6 +4774,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "t".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         let canonical = trade.canonical_bytes();
         let consumer_sig = ck.sign(&canonical).to_bytes().to_vec();
@@ -3939,6 +4803,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "t".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         let canonical = trade.canonical_bytes();
         let provider_sig = pk.sign(&canonical).to_bytes().to_vec();
@@ -4169,6 +5034,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "m".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         }];
         let report = crate::collusion::CollusionDetector::analyze_node(&trades, &subject, now_millis());
         assert_eq!(report.trust_penalty, 0.0, "single trade below MIN_TRADES threshold must yield 0 penalty");
@@ -4369,6 +5235,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "m".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         let len_before = ledger.recent_trades(100).len();
         ledger.execute_trade(&self_trade);
@@ -4388,6 +5255,7 @@ mod tests {
             timestamp: now_millis(),
             model_id: "m".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         };
         ledger.execute_trade(&zero_trade);
         assert_eq!(ledger.recent_trades(10).len(), 0, "zero-CU trade must not be recorded");

@@ -255,3 +255,87 @@ Those later guarantees depend on shipping actual split inference first. Until th
 - Global lending velocity circuit breaker: suspends all new loans if total lending exceeds 50% of pool in any 1-hour window
 
 **Residual risk**: Slow-motion attack using aged identities accumulated over months. Maximum total exposure is bounded by `pool_size * (1 - reserve_ratio)` = 70% of pool. With collateral, actual loss is further bounded to ~47% of pool in the absolute worst case.
+
+---
+
+## Phase 17 — Large-Scale Hardening Delta (2026-04-18, Wave 1)
+
+The Phase 17 security audit surfaced several P0 execution gaps — mechanisms
+documented above as "implemented" but without live production call paths,
+plus missing defenses against replay and credential-compromise attacks at
+scale. Wave 1 closes them. Affected threats:
+
+### T10 update — TRM Forgery via replay
+The original mitigation relied on a dual-signed TradeRecord. Without a
+nonce, however, the same `(provider, consumer, amount, timestamp, model)`
+tuple was indistinguishable across identical successive trades, so a
+peer could rebroadcast a single signed record to double-bill a consumer.
+
+**Wave 1.1 / 1.2**: 128-bit provider-chosen nonce added to `TradeRecord`
+and carried in `TradeProposal` / `TradeGossip`. `ComputeLedger::execute_signed_trade`
+rejects duplicate nonces with `SignatureError::ReplayedNonce`. Ephemeral
+per-provider nonce cache (10 K/provider FIFO) rebuilt from `trade_log`
+on restart. Legacy v1 (zero-nonce) trades remain verifiable but
+exempt from dedup for backward compatibility.
+
+### T14 update — Inference Quality Attack without consequence
+Phase 14.3 added the audit challenge-response but only demoted the
+target's AuditTier. Tier demotion is recoverable with time; stake
+slashing is not.
+
+**Wave 1.4**: `AuditVerdict::Failed` now additionally burns 30 %
+("major" tier) of the offender's stake via
+`ComputeLedger::record_audit_failure_slash`, with a persisted
+`SlashEvent` (reason `"audit-fail"`). Recorded in the same audit
+trail as collusion-driven burns.
+
+### New T18 — Dead Slashing Code
+Pre-Phase-17 collusion detection already computed trust penalties,
+but `StakingPool::apply_slash` had zero production callers. A
+colluding provider kept their stake intact, making detection
+consequence-free.
+
+**Wave 1.3**: New `ComputeLedger::update_trust_penalties(&mut StakingPool,
+now_ms)` is called every 5 minutes by `TiramiNode::spawn_slashing_loop`.
+Penalties ≥ 0.1 burn stake and append a `SlashEvent`. 5-minute
+per-node cooldown prevents multi-penalty pile-on. Operators and
+auditors query the trail via `GET /v1/tirami/slash-events`.
+
+### New T19 — Single-Secret API Bearer Token
+Pre-Phase-17 Tirami used exactly one `config.api_bearer_token` for
+every API surface. If it leaked, the entire node was compromised and
+the only recovery was to rotate the secret on every node simultaneously.
+
+**Wave 1.5**: Scoped token system (`crates/tirami-node/src/api_tokens.rs`)
+with four privilege levels (ReadOnly, Inference, Economy, Admin).
+Tokens are 32-byte random values, shown exactly once on issue, and
+persisted by SHA-256 hash only. Admin endpoints:
+`POST /v1/tirami/tokens/issue|revoke` and `GET /v1/tirami/tokens`.
+The legacy bearer remains honored as implicit Admin for migration.
+A leaked ReadOnly token no longer compromises economic endpoints;
+revocation is instant and per-token, not cluster-wide.
+
+### New T20 — Cryptographically-Relevant Quantum Computers
+Ed25519 is expected to fall to a CRQC in the mid-2030s (NIST
+modeling). Tirami's trade log is append-only, so any signature that
+is breakable at rollout time retroactively invalidates history.
+A ratchet after the break is too late.
+
+**Wave 1.6 (scaffold)**: `tirami_core::crypto::HybridSignature`
+carries an Ed25519 signature plus an optional ML-DSA (FIPS-204)
+signature, with both-or-fail verification when the PQ half is
+present. A pluggable `PqSigner` / `PqVerifier` trait pair keeps the
+underlying scheme swappable. `Config::pq_signatures` is the opt-in.
+Full type lattice + 12 verify-matrix tests ship in this wave;
+the real ML-DSA binding waits on the `digest 0.11` version conflict
+to resolve (iroh 0.97 pins `digest 0.11.0-rc.10`, ml-dsa 0.1.0-rc.8
+pulls `digest 0.11.0` final). When unblocked, the production swap
+is one file.
+
+### Residual (tracked for Wave 2 / 3)
+- Per-ASN rate limiting and subnet-level Sybil defense (Wave 2.3 / 2.8).
+- Probabilistic SPoRA + SNARK audits for lazy-provider detection
+  (Wave 2.1 / 2.2).
+- Real ML-DSA backend swap (blocked on dep version pin).
+- TEE attestation as an optional premium tier (Wave 3.1).
+- External security audit before mainnet — gate, not optional.

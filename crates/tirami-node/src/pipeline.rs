@@ -39,6 +39,10 @@ impl PipelineCoordinator {
         config: Config,
         ledger_path: Option<std::path::PathBuf>,
         gossip: Arc<Mutex<GossipState>>,
+        // Phase 17 Wave 1.4 — staking pool is now plumbed into the audit
+        // handler so an AuditVerdict::Failed burns the target's stake
+        // and records a SlashEvent, not just a peer-registry demotion.
+        staking_pool: Arc<Mutex<tirami_ledger::StakingPool>>,
     ) -> anyhow::Result<()> {
         let node_id = self.transport.tirami_node_id();
         tracing::info!("Pipeline seed running, waiting for requests...");
@@ -350,16 +354,32 @@ impl PipelineCoordinator {
                                 tirami_net::gossip::handle_trade_gossip(&gossip, &trade_gossip).await
                             {
                                 let mut ledger = ledger.lock().await;
-                                ledger.execute_trade(&signed.trade);
-                                if let Some(path) = ledger_path.as_ref() {
-                                    let _ = ledger.save_to_path(path);
+                                // Phase 17 Wave 1.2 — route inbound gossip
+                                // through the signed path so nonce dedup
+                                // rejects replays of already-observed v2
+                                // trades. The gossip helper already ran a
+                                // first-pass verify, but dedup is stateful
+                                // and must happen at the ledger layer.
+                                match ledger.execute_signed_trade(&signed) {
+                                    Ok(()) => {
+                                        if let Some(path) = ledger_path.as_ref() {
+                                            let _ = ledger.save_to_path(path);
+                                        }
+                                        tracing::info!(
+                                            "Gossip trade recorded: {} CU ({} → {})",
+                                            signed.trade.trm_amount,
+                                            signed.trade.provider.to_hex(),
+                                            signed.trade.consumer.to_hex()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Rejected gossip trade from {}: {}",
+                                            signed.trade.provider.to_hex(),
+                                            e
+                                        );
+                                    }
                                 }
-                                tracing::info!(
-                                    "Gossip trade recorded: {} CU ({} → {})",
-                                    signed.trade.trm_amount,
-                                    signed.trade.provider.to_hex(),
-                                    signed.trade.consumer.to_hex()
-                                );
                             }
                         });
                     }
@@ -479,8 +499,17 @@ impl PipelineCoordinator {
                     // Phase 14.3 — audit response: compare against our
                     // expected hash stored in ledger.audit_tracker, then
                     // update the responder's AuditTier.
+                    //
+                    // Phase 17 Wave 1.4 — a Failed verdict now also burns
+                    // 30% of the target's stake and records a SlashEvent
+                    // with reason "audit-fail". This closes the
+                    // "detection without consequence" finding from the
+                    // security audit: previously, a repeatedly failing
+                    // auditee only saw their AuditTier drop, which is
+                    // recoverable with time; slashing is not.
                     Payload::AuditResponse(resp) => {
                         let ledger = ledger.clone();
+                        let staking = staking_pool.clone();
                         tokio::spawn(async move {
                             let mut guard = ledger.lock().await;
                             let verdict = guard.audit_tracker.resolve(
@@ -499,9 +528,24 @@ impl PipelineCoordinator {
                                 }
                                 tirami_ledger::AuditVerdict::Failed => {
                                     guard.peer_registry.record_audit_result(&resp.target, false);
+                                    // Hold the ledger lock, grab the
+                                    // staking lock under it, call the
+                                    // combined helper. Lock order
+                                    // (ledger → staking) matches the
+                                    // periodic slashing loop, preventing
+                                    // any deadlock from lock inversion.
+                                    let burned = {
+                                        let mut staking_guard = staking.lock().await;
+                                        guard.record_audit_failure_slash(
+                                            &mut staking_guard,
+                                            &resp.target,
+                                            now_millis(),
+                                        )
+                                    };
                                     tracing::warn!(
                                         target = %resp.target.to_hex(),
-                                        "audit failed — tier demoted"
+                                        burned_trm = burned,
+                                        "audit failed — tier demoted and stake slashed"
                                     );
                                 }
                                 tirami_ledger::AuditVerdict::Unknown => {
@@ -574,7 +618,9 @@ impl PipelineCoordinator {
                     }
                     Payload::TradeProposal(proposal) => {
                         if proposal.request_id == request_id {
-                            // Counter-sign the trade
+                            // Counter-sign the trade. The nonce from the
+                            // proposal is part of the canonical bytes in v2;
+                            // a mismatch here breaks sig verification.
                             let trade = TradeRecord {
                                 provider: proposal.provider,
                                 consumer: proposal.consumer,
@@ -583,6 +629,7 @@ impl PipelineCoordinator {
                                 timestamp: proposal.timestamp,
                                 model_id: proposal.model_id,
                                 flops_estimated: 0,
+                                nonce: proposal.nonce,
                             };
                             let canonical = trade.canonical_bytes();
                             let consumer_sig = transport.sign(&canonical).to_vec();
@@ -783,6 +830,8 @@ async fn handle_inference(
         timestamp: now_millis(),
         model_id: "active".to_string(),
         flops_estimated: 0,
+        // Phase 17 Wave 1.2 — provider-chosen replay-protection nonce.
+        nonce: TradeRecord::fresh_nonce(),
     };
 
     let canonical = trade.canonical_bytes();
@@ -802,6 +851,7 @@ async fn handle_inference(
             timestamp: trade.timestamp,
             model_id: trade.model_id.clone(),
             provider_sig: provider_sig.clone(),
+            nonce: trade.nonce,
         }),
     };
     transport.send_to(peer_id, &proposal_msg).await?;
@@ -821,24 +871,41 @@ async fn handle_inference(
                 provider_sig,
                 consumer_sig,
             };
+            // Phase 17 Wave 1.2 — route through execute_signed_trade so the
+            // ledger re-verifies signatures AND enforces nonce dedup. The
+            // explicit signed.verify() above is retained because we want
+            // to branch on signature-specific failures (50% penalty flow)
+            // rather than treat them identically to replay rejections.
             match signed.verify() {
                 Ok(()) => {
                     let mut ledger = ledger.lock().await;
-                    ledger.execute_trade(&signed.trade);
-                    if let Some(path) = ledger_path.as_ref() {
-                        ledger.save_to_path(path)?;
+                    match ledger.execute_signed_trade(&signed) {
+                        Ok(()) => {
+                            if let Some(path) = ledger_path.as_ref() {
+                                ledger.save_to_path(path)?;
+                            }
+                            tracing::info!(
+                                "Signed trade recorded: {} CU for {} tokens to {}",
+                                trade.trm_amount,
+                                total_tokens,
+                                peer_id
+                            );
+                            // Reputation boost for successful signed trade
+                            ledger.update_reputation(&trade.provider, 0.01);
+                            drop(ledger);
+                            // Broadcast to mesh via gossip
+                            tirami_net::gossip::broadcast_trade(&transport, &gossip, &signed).await;
+                        }
+                        Err(e) => {
+                            // Replay or (very unlikely) a second-pass sig
+                            // failure. Do NOT broadcast; do NOT credit.
+                            tracing::warn!(
+                                "Trade rejected by ledger after accept from {}: {}",
+                                peer_id,
+                                e
+                            );
+                        }
                     }
-                    tracing::info!(
-                        "Signed trade recorded: {} CU for {} tokens to {}",
-                        trade.trm_amount,
-                        total_tokens,
-                        peer_id
-                    );
-                    // Reputation boost for successful signed trade
-                    ledger.update_reputation(&trade.provider, 0.01);
-                    drop(ledger);
-                    // Broadcast to mesh via gossip
-                    tirami_net::gossip::broadcast_trade(&transport, &gossip, &signed).await;
                 }
                 Err(e) => {
                     tracing::warn!("Trade signature verification failed: {}", e);
@@ -1043,6 +1110,7 @@ mod tests {
                         },
                         None,
                         Arc::new(Mutex::new(GossipState::new())),
+                        Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
                     )
                     .await
                     .expect("seed loop");

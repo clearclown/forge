@@ -454,6 +454,7 @@ mod tests {
             timestamp: ts,
             model_id: "test".into(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         }
     }
 

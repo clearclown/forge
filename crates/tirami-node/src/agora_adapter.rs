@@ -98,6 +98,7 @@ mod tests {
             timestamp: 1_700_000_000_000,
             model_id: "test-model".to_string(),
             flops_estimated: 0,
+                    nonce: [0u8; 16],
         }
     }
 

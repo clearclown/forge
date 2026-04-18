@@ -283,6 +283,12 @@ impl TiramiNode {
         // by default; real Base L2 wiring lands once tirami-contracts ships).
         self.spawn_anchor_loop();
 
+        // Phase 17 Wave 1.3 — spawn the slashing loop so apply_slash has a
+        // live production call path. Runs every `slashing_interval_secs`
+        // (default 300s) and burns stake for nodes exceeding the collusion
+        // trust-penalty threshold.
+        self.spawn_slashing_loop();
+
         // Phase 14.3 — challenger-side audit loop: periodically picks peers
         // per their AuditTier probability and sends AuditChallenge messages.
         self.spawn_audit_challenger_loop(transport.clone());
@@ -299,6 +305,7 @@ impl TiramiNode {
                 self.config.clone(),
                 self.config.ledger_path.clone(),
                 self.gossip.clone(),
+                self.staking_pool.clone(),
             )
             .await
             .map_err(|e| tirami_core::TiramiError::NetworkError(format!("seed: {e}")))?;
@@ -474,6 +481,71 @@ impl TiramiNode {
                 let pruned = guard.audit_tracker.prune_expired(now_ms);
                 if pruned > 0 {
                     tracing::debug!(count = pruned, "pruned expired audit challenges");
+                }
+            }
+        });
+    }
+
+    /// Phase 17 Wave 1.3 — spawn the periodic slashing / trust-penalty loop.
+    ///
+    /// Every 5 minutes (configurable via `config.slashing_interval_secs`,
+    /// clamped to ≥ 60s to avoid runaway CPU on large ledgers), run the
+    /// collusion detector against the trade log and slash stakes that
+    /// cross [`ComputeLedger::SLASH_PENALTY_THRESHOLD`]. The result is
+    /// persisted to both the snapshot (via the normal `save_to_path`
+    /// cycle on trade events) and the in-memory `slash_events` audit
+    /// trail readable by operators.
+    ///
+    /// Wave 1.3 closes the "apply_slash is dead code" finding from the
+    /// Phase 17 security audit — this is the production call path that
+    /// keeps it alive.
+    fn spawn_slashing_loop(&self) {
+        let ledger = self.ledger.clone();
+        let staking = self.staking_pool.clone();
+        let ledger_path = self.config.ledger_path.clone();
+        let interval_secs = self.config.slashing_interval_secs.max(60);
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            // Skip the immediate first fire; let the node bootstrap.
+            ticker.tick().await;
+
+            loop {
+                ticker.tick().await;
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+
+                let events = {
+                    let mut l = ledger.lock().await;
+                    let mut s = staking.lock().await;
+                    l.update_trust_penalties(&mut s, now_ms)
+                };
+
+                if !events.is_empty() {
+                    tracing::warn!(
+                        "Slashing loop applied {} penalties (total burned: {} TRM)",
+                        events.len(),
+                        events.iter().map(|e| e.burned_trm).sum::<u64>()
+                    );
+                    for e in &events {
+                        tracing::warn!(
+                            "  slashed {} → penalty {:.2}, burned {} TRM, reason={}",
+                            e.node_id.to_hex(),
+                            e.trust_penalty,
+                            e.burned_trm,
+                            e.reason
+                        );
+                    }
+                    // Persist so a restart doesn't lose the audit trail.
+                    if let Some(path) = ledger_path.as_ref() {
+                        let l = ledger.lock().await;
+                        if let Err(e) = l.save_to_path(path) {
+                            tracing::error!("Failed to persist slash events: {}", e);
+                        }
+                    }
                 }
             }
         });

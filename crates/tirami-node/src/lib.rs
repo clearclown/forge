@@ -1,5 +1,6 @@
 pub mod agora_adapter;
 pub mod api;
+pub mod api_tokens;
 pub mod bank_adapter;
 pub mod forward_pipeline;
 pub mod handlers;
