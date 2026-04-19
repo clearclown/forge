@@ -3682,7 +3682,7 @@ async fn forge_agent_task(
 /// peer's OpenAI-compatible chat endpoint.
 ///
 /// Returns `(content_text, tokens_generated, remote_cost_trm)` on
-/// success. `remote_cost_trm` is pulled from the peer's `x_forge`
+/// success. `remote_cost_trm` is pulled from the peer's `x_tirami`
 /// extension when present (Tirami nodes attach the TRM cost to
 /// every reply). If the peer is a plain OpenAI server it's `None`
 /// and the caller should fall back to its local estimate.
@@ -3740,9 +3740,9 @@ pub(crate) async fn dispatch_remote_task(
         .and_then(|t| t.as_u64())
         .unwrap_or(0) as u32;
     // Tirami's OpenAI-compatible handler attaches the TRM cost via
-    // an `x_forge.trm_cost` extension; plain OpenAI servers omit it.
+    // an `x_tirami.trm_cost` extension; plain OpenAI servers omit it.
     let remote_cost = json
-        .get("x_forge")
+        .get("x_tirami")
         .and_then(|x| x.get("trm_cost"))
         .and_then(|c| c.as_u64());
     Ok((content, tokens, remote_cost))
@@ -4735,7 +4735,7 @@ mod tests {
         use axum::routing::post;
         use axum::Router as AxumRouter;
         // Mini local server that returns an OpenAI-shaped reply
-        // with Tirami's `x_forge.trm_cost` extension.
+        // with Tirami's `x_tirami.trm_cost` extension.
         let app = AxumRouter::new().route(
             "/v1/chat/completions",
             post(|Json(req): Json<serde_json::Value>| async move {
@@ -4764,7 +4764,7 @@ mod tests {
                         "completion_tokens": 7,
                         "total_tokens": 12
                     },
-                    "x_forge": { "trm_cost": 42 }
+                    "x_tirami": { "trm_cost": 42 }
                 }))
             }),
         );
