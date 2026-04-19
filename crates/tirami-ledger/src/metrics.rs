@@ -20,6 +20,28 @@ use prometheus::{
 };
 
 /// Holds all Prometheus metrics for a Forge node.
+/// Placeholder NodeId used by HTTP `/v1/chat/completions` when the
+/// caller does not supply an `X-Tirami-Node-Id` header. Every byte
+/// is 0xFF so the sentinel is easy to spot in ledger dumps. The
+/// metrics layer filters this id out so it never appears as a
+/// node_id label on Prometheus dashboards (fix #83).
+const ANONYMOUS_CONSUMER_SENTINEL: [u8; 32] = [0xFFu8; 32];
+
+pub(crate) fn is_anonymous_consumer(node_id: &tirami_core::NodeId) -> bool {
+    node_id.0 == ANONYMOUS_CONSUMER_SENTINEL
+}
+
+/// Fix #85 — round a Prometheus gauge value to 9 decimal places so
+/// long-tail f64 drift (e.g. `0.9999999993809524` from `1.0 -
+/// minted/TOTAL_SUPPLY` with tens minted against 21 B) doesn't
+/// surface on operator dashboards.
+fn round_to_9dp(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    (x * 1_000_000_000.0).round() / 1_000_000_000.0
+}
+
 pub struct TiramiMetrics {
     pub registry: Registry,
     pub cu_contributed: GaugeVec,
@@ -315,6 +337,15 @@ impl TiramiMetrics {
     ) {
         // Per-node balance and reputation metrics.
         for balance in ledger.balances.values() {
+            // Fix #83 — skip the anonymous-consumer sentinel. HTTP
+            // `record_api_trade` uses NodeId([255u8; 32]) as a
+            // placeholder consumer when the caller omits the
+            // `X-Tirami-Node-Id` header. That's an accounting
+            // bucket, not a real peer, so it shouldn't show up as
+            // a node_id label on Prometheus dashboards.
+            if is_anonymous_consumer(&balance.node_id) {
+                continue;
+            }
             let hex = balance.node_id.to_hex();
             let label = [hex.as_str()];
 
@@ -363,6 +394,9 @@ impl TiramiMetrics {
             }
 
             for node in &nodes {
+                if is_anonymous_consumer(node) {
+                    continue;
+                }
                 let report =
                     CollusionDetector::analyze_node(trades, node, now_ms);
                 let hex = node.to_hex();
@@ -383,14 +417,18 @@ impl TiramiMetrics {
         }
 
         // Phase 13 tokenomics gauges — ledger-derived.
+        // Fix #85 — round supply_factor / yield_rate to 9 decimals
+        // (nano-unit precision, well below any operationally
+        // meaningful alert threshold) to silence f64 long-tail
+        // noise on dashboards.
         let minted = ledger.total_minted;
         self.total_minted.set(minted as i64);
         self.supply_factor
-            .set(crate::tokenomics::supply_factor(minted));
+            .set(round_to_9dp(crate::tokenomics::supply_factor(minted)));
         self.current_epoch
             .set(crate::tokenomics::current_epoch(minted) as i64);
         self.yield_rate
-            .set(crate::tokenomics::epoch_yield_rate(minted));
+            .set(round_to_9dp(crate::tokenomics::epoch_yield_rate(minted)));
 
         // Optional staking pool data.
         if let Some(pool) = staking_pool {
@@ -509,6 +547,49 @@ mod tests {
             output.contains(&node.to_hex()),
             "node hex {} not in output",
             node.to_hex()
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Fix #83 — anonymous consumer sentinel must not leak to metrics
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn is_anonymous_consumer_recognises_sentinel() {
+        let sentinel = NodeId([0xFFu8; 32]);
+        assert!(super::is_anonymous_consumer(&sentinel));
+        let real = NodeId([0x42u8; 32]);
+        assert!(!super::is_anonymous_consumer(&real));
+    }
+
+    #[test]
+    fn test_observe_skips_anonymous_consumer_sentinel() {
+        // Simulate the state after a self-served HTTP chat: the
+        // ledger has a real node AND the anonymous sentinel in
+        // `balances`. Metrics must only expose the real node.
+        let mut ledger = ComputeLedger::new();
+        let real = NodeId([0x42u8; 32]);
+        let anon = NodeId([0xFFu8; 32]);
+        ledger.execute_trade(&TradeRecord {
+            provider: real.clone(),
+            consumer: anon.clone(),
+            trm_amount: 5,
+            tokens_processed: 5,
+            timestamp: 1_700_000_000_000,
+            model_id: "test".to_string(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        });
+        let metrics = TiramiMetrics::new();
+        metrics.observe(&ledger, 1_700_000_000_000);
+        let output = metrics.encode().unwrap();
+        assert!(
+            output.contains(&real.to_hex()),
+            "real node must appear in /metrics"
+        );
+        assert!(
+            !output.contains(&"ff".repeat(32)),
+            "anonymous sentinel must NOT appear in /metrics:\n{output}"
         );
     }
 

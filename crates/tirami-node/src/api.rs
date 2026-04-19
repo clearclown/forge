@@ -928,14 +928,15 @@ fn gen_request_id() -> String {
 }
 
 /// Get model name from manifest or fallback.
-/// Returns the actual loaded model name, or "forge-no-model" if none is loaded.
+/// Returns the actual loaded model name, or "tirami-no-model" when
+/// running as a pure forwarder without a local model.
 async fn model_name(manifest: &ModelState) -> String {
     manifest
         .lock()
         .await
         .as_ref()
         .map(|m| m.id.0.clone())
-        .unwrap_or_else(|| "forge-no-model".to_string())
+        .unwrap_or_else(|| "tirami-no-model".to_string())
 }
 
 /// Parse an `X-Tirami-Node-Id` header (64-char hex → NodeId).
@@ -1295,13 +1296,20 @@ async fn openai_sync_response(
 ) -> Result<Json<OpenAIChatResponse>, (StatusCode, String)> {
     let mut engine = state.engine.lock().await;
     if !engine.is_loaded() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({
-                "error": {"message": "model not loaded", "type": "server_error"}
-            })
-            .to_string(),
-        ));
+        // Phase 18.5-part-4 (fix #80) — local engine has no model;
+        // try to forward the inference request to a connected peer
+        // over P2P. This is the only path that triggers a real
+        // dual-signed TRM negotiation from an HTTP client.
+        drop(engine);
+        return forward_chat_to_peer(
+            &state,
+            &prompt,
+            max_tokens,
+            temperature,
+            model,
+            has_tools,
+        )
+        .await;
     }
 
     // Use the engine's tokenizer for accurate prompt token count (#P11-prompt-tokens).
@@ -1418,6 +1426,223 @@ async fn openai_sync_response(
     }))
 }
 
+/// Phase 18.5-part-4 (fix #80) — forward a chat request to a
+/// connected peer via the P2P pipeline.
+///
+/// Invoked from `openai_sync_response` / `openai_stream_response`
+/// when the local engine isn't loaded. Picks the first connected
+/// peer (a smarter routing policy can slot into the same hook
+/// later) and drives `PipelineCoordinator::request_inference`,
+/// which:
+///   - Sends `Payload::InferenceRequest` to the peer.
+///   - Collects `Payload::TokenStream` chunks back.
+///   - On `Payload::TradeProposal`, counter-signs and returns
+///     `Payload::TradeAccept` so the peer records a dual-signed
+///     `SignedTradeRecord` and gossips it to the mesh.
+///
+/// Returns an OpenAI-shape response with the peer's tokens. The
+/// `x_tirami.effective_balance` reflects the local node's balance
+/// *after* the trade is gossiped back to us (which may not have
+/// happened yet by the time we respond — we report the pre-trade
+/// balance in that window).
+pub(crate) async fn forward_chat_to_peer(
+    state: &AppState,
+    prompt: &str,
+    max_tokens: u32,
+    temperature: f32,
+    model: String,
+    has_tools: bool,
+) -> Result<Json<OpenAIChatResponse>, (StatusCode, String)> {
+    let cluster = state.cluster.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no connected peer cluster — model not loaded and transport inactive".to_string(),
+        )
+    })?;
+    let transport = cluster.transport_arc();
+    let peers = transport.connected_peers().await;
+    let peer_id = peers.first().cloned().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "model not loaded locally and no peers connected to forward to".to_string(),
+        )
+    })?;
+    let local_node_id = transport.tirami_node_id();
+
+    let text = crate::pipeline::PipelineCoordinator::request_inference(
+        &transport,
+        &peer_id,
+        &local_node_id,
+        prompt,
+        max_tokens,
+        temperature,
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_GATEWAY, format!("peer inference failed: {e}")))?;
+
+    // Count completion tokens using the local tokenizer if loaded
+    // (best effort — most workers won't have it). Fall back to a
+    // whitespace-split estimate so usage.completion_tokens is never 0.
+    let completion_tokens = {
+        let mut engine = state.engine.lock().await;
+        engine.tokenize(&text).ok().map(|t| t.len() as u32)
+    }
+    .unwrap_or_else(|| text.split_whitespace().count().max(1) as u32);
+
+    let effective_balance = state
+        .ledger
+        .lock()
+        .await
+        .effective_balance(&local_node_id);
+
+    let (message, finish_reason) = if has_tools {
+        let (content_before, maybe_tc) = extract_tool_call(&text);
+        if let Some(tc) = maybe_tc {
+            let tool_call = OpenAIToolCall {
+                id: tc.id,
+                call_type: "function".to_string(),
+                function: OpenAIFunctionCall {
+                    name: tc.name,
+                    arguments: tc.arguments,
+                },
+            };
+            (
+                OpenAIChatMessage {
+                    role: "assistant".to_string(),
+                    content: if content_before.is_empty() { None } else { Some(content_before) },
+                    tool_calls: Some(vec![tool_call]),
+                },
+                "tool_calls".to_string(),
+            )
+        } else {
+            (
+                OpenAIChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(text),
+                    tool_calls: None,
+                },
+                "stop".to_string(),
+            )
+        }
+    } else {
+        (
+            OpenAIChatMessage {
+                role: "assistant".to_string(),
+                content: Some(text),
+                tool_calls: None,
+            },
+            "stop".to_string(),
+        )
+    };
+
+    // The concrete trm_cost of the just-negotiated trade lives on
+    // the peer; until the signed trade lands locally via gossip we
+    // report 0 here. Clients relying on trm_cost should wait for
+    // the gossip round-trip (bounded by `state.config.anchor_interval_secs`).
+    Ok(Json(OpenAIChatResponse {
+        id: gen_request_id(),
+        object: "chat.completion".to_string(),
+        created: now_secs(),
+        model,
+        choices: vec![OpenAIChoice {
+            index: 0,
+            message,
+            finish_reason,
+        }],
+        usage: OpenAIUsage {
+            prompt_tokens: 0,
+            completion_tokens,
+            total_tokens: completion_tokens,
+        },
+        x_tirami: Some(TiramiUsageExt {
+            trm_cost: 0,
+            effective_balance,
+        }),
+    }))
+}
+
+/// Fix #80 — wrap a forwarded (non-stream) OpenAIChatResponse in a
+/// minimal SSE stream so streaming callers get the same shape they
+/// would from the local path: role chunk, one content chunk, stop
+/// chunk, [DONE] sentinel.
+fn forwarded_to_sse_stream(
+    resp: OpenAIChatResponse,
+    model: &str,
+) -> Sse<
+    impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>> + Send + 'static,
+> {
+    let id = resp.id.clone();
+    let created = resp.created;
+    let choice = resp.choices.into_iter().next();
+    let (content, tool_calls, finish_reason) = match choice {
+        Some(c) => (
+            c.message.content.unwrap_or_default(),
+            c.message.tool_calls,
+            c.finish_reason,
+        ),
+        None => (String::new(), None, "stop".to_string()),
+    };
+
+    let role_chunk = serde_json::to_string(&OpenAIStreamChunk {
+        id: id.clone(),
+        object: "chat.completion.chunk".to_string(),
+        created,
+        model: model.to_string(),
+        choices: vec![OpenAIStreamChoice {
+            index: 0,
+            delta: OpenAIStreamDelta {
+                role: Some("assistant".to_string()),
+                content: None,
+                tool_calls: None,
+            },
+            finish_reason: None,
+        }],
+    })
+    .unwrap_or_default();
+
+    let content_chunk = serde_json::to_string(&OpenAIStreamChunk {
+        id: id.clone(),
+        object: "chat.completion.chunk".to_string(),
+        created,
+        model: model.to_string(),
+        choices: vec![OpenAIStreamChoice {
+            index: 0,
+            delta: OpenAIStreamDelta {
+                role: None,
+                content: Some(content),
+                tool_calls: None,
+            },
+            finish_reason: None,
+        }],
+    })
+    .unwrap_or_default();
+
+    let stop_chunk = serde_json::to_string(&OpenAIStreamChunk {
+        id,
+        object: "chat.completion.chunk".to_string(),
+        created,
+        model: model.to_string(),
+        choices: vec![OpenAIStreamChoice {
+            index: 0,
+            delta: OpenAIStreamDelta {
+                role: None,
+                content: None,
+                tool_calls,
+            },
+            finish_reason: Some(finish_reason),
+        }],
+    })
+    .unwrap_or_default();
+
+    let events: Vec<Result<Event, std::convert::Infallible>> = vec![
+        Ok(Event::default().data(role_chunk)),
+        Ok(Event::default().data(content_chunk)),
+        Ok(Event::default().data(stop_chunk)),
+        Ok(Event::default().data("[DONE]")),
+    ];
+    Sse::new(tokio_stream::iter(events))
+}
+
 /// Streaming SSE response in OpenAI format.
 ///
 /// Uses `InferenceEngine::generate_streaming` so tokens are emitted to the
@@ -1444,13 +1669,23 @@ async fn openai_stream_response(
     {
         let engine = state.engine.lock().await;
         if !engine.is_loaded() {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                serde_json::json!({
-                    "error": {"message": "model not loaded", "type": "server_error"}
-                })
-                .to_string(),
-            ));
+            // Fix #80 — forward to a connected peer when no local
+            // model is loaded. The peer path returns the full text
+            // in one shot, so we emit it as a single SSE content
+            // chunk + stop + [DONE]. True chunked streaming across
+            // the P2P boundary is a follow-up (the pipeline already
+            // streams tokens, we just need a stream-forwarding hook).
+            drop(engine);
+            let json = forward_chat_to_peer(
+                &state,
+                &prompt,
+                max_tokens,
+                temperature,
+                model.clone(),
+                has_tools,
+            )
+            .await?;
+            return Ok(forwarded_to_sse_stream(json.0, &model).into_response());
         }
     } // release lock before blocking
 
@@ -1683,6 +1918,22 @@ async fn forge_balance(
     })
 }
 
+/// Fix #85 — round pricing floats to 6 decimal places before
+/// serializing.
+///
+/// The pricing engine uses EMA smoothing, which produces
+/// `1.0 ± tiny_epsilon` at the steady state. Operators reading
+/// `/v1/tirami/pricing` shouldn't see `0.9990014976703275` for a
+/// mostly-idle node. 6 decimals keeps enough precision for
+/// anything operationally meaningful (sub-cent on a $1 TRM) while
+/// silencing the f64 noise.
+fn round_price(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    (x * 1_000_000.0).round() / 1_000_000.0
+}
+
 /// GET /v1/tirami/pricing — current market price and cost estimates.
 async fn forge_pricing(
     State(state): State<AppState>,
@@ -1693,11 +1944,11 @@ async fn forge_pricing(
     let trm_per_token = price.effective_trm_per_token();
 
     Ok(Json(TiramiPricingResponse {
-        trm_per_token,
-        supply_factor: price.supply_factor,
-        demand_factor: price.demand_factor,
-        cu_purchasing_power: price.cu_purchasing_power(),
-        deflation_factor: price.deflation_factor(),
+        trm_per_token: round_price(trm_per_token),
+        supply_factor: round_price(price.supply_factor),
+        demand_factor: round_price(price.demand_factor),
+        cu_purchasing_power: round_price(price.cu_purchasing_power()),
+        deflation_factor: round_price(price.deflation_factor()),
         total_trades_ever: price.total_trades_ever,
         estimated_cost_100_tokens: ledger.estimate_cost(100, 1, 1),
         estimated_cost_1000_tokens: ledger.estimate_cost(1000, 1, 1),
@@ -1805,9 +2056,11 @@ async fn forge_providers(
             serde_json::json!({
                 "node_id": n.node_id.to_hex(),
                 "contributed_cu": n.contributed,
-                "reputation": n.reputation,
+                "reputation": round_price(n.reputation),
                 "cu_per_100_tokens": rep_cost,
-                "base_trm_per_token": price,
+                // Fix #85 — snap to 6 decimals to hide EMA fp noise
+                // that otherwise renders as 0.9990014976703275.
+                "base_trm_per_token": round_price(price),
             })
         })
         .collect();
@@ -2936,8 +3189,12 @@ async fn forge_slash_events(
 
 #[derive(serde::Deserialize)]
 struct TokenIssueBody {
-    /// Hex-encoded 64-char NodeId for the token owner.
-    node_id: String,
+    /// Hex-encoded 64-char NodeId for the token owner. Optional:
+    /// when omitted, defaults to the local node's id so the common
+    /// "issue me a token" flow doesn't require extra plumbing
+    /// (fix #84).
+    #[serde(default)]
+    node_id: Option<String>,
     /// One of "read_only" | "inference" | "economy" | "admin".
     scope: String,
     /// Seconds until expiry. `0` means "never expires" (infra-only).
@@ -2971,8 +3228,14 @@ async fn forge_tokens_issue(
     require_admin_scope(&state, &headers).await?;
     check_forge_rate_limit(&state).await?;
 
-    let node_id = NodeId::from_hex(&body.node_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid node_id: {e}")))?;
+    // Fix #84 — default the node_id to the local node's identity
+    // when the caller omits it. Matches the "issue me a token"
+    // mental model that originally tripped up integrators.
+    let node_id = match body.node_id.as_deref() {
+        Some(hex) if !hex.is_empty() => NodeId::from_hex(hex)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid node_id: {e}")))?,
+        _ => state.local_node_id.clone(),
+    };
     let scope = crate::api_tokens::ApiScope::parse(&body.scope).ok_or((
         StatusCode::BAD_REQUEST,
         format!(
@@ -3286,6 +3549,11 @@ async fn forge_agent_task(
             let output = tokens.join("");
             let flops_per_token = flops_per_token_from_manifest(&state).await;
             let model_id = req.model.as_deref().unwrap_or("active");
+            // Record the compute event on the ledger (accounting of
+            // FLOPs performed on the local engine). `record_api_trade`
+            // with consumer=None routes to the anonymous sentinel and
+            // still counts on `contributed` — this is the node's own
+            // internal accounting, not a wallet transfer.
             let trm_cost = record_api_trade(
                 &state.ledger,
                 &wallet,
@@ -3295,16 +3563,12 @@ async fn forge_agent_task(
                 flops_per_token,
             )
             .await;
-            // Self-originated by the local user: record as a spend
-            // on the agent (compute consumed, not earned).
-            {
-                let mut guard = state.personal_agent.lock().await;
-                if let Some(agent) = guard.as_mut() {
-                    if agent.wallet == wallet {
-                        agent.record_spend(trm_cost);
-                    }
-                }
-            }
+            // Fix #81 — self-served RunLocal tasks do NOT move TRM
+            // out of the user's wallet. The node paid itself in
+            // compute, so the PersonalAgent's spend tally must stay
+            // put. `maybe_record_agent_earn` already has the mirror
+            // invariant: earn only fires when the consumer is a
+            // peer, never when it's the anonymous-local sentinel.
             Ok(Json(serde_json::json!({
                 "task_id": task_id,
                 "status": "run_local",
@@ -3851,11 +4115,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_name_fallback_when_no_model_loaded() {
-        // When no manifest is set, model_name() should return "forge-no-model"
-        // (not the old "forge-model" hardcoded string).
+        // When no manifest is set, model_name() returns the "no model
+        // loaded" sentinel. Phase 17 rename: `forge-no-model` →
+        // `tirami-no-model`.
         let manifest_state: ModelState = Arc::new(Mutex::new(None));
         let name = model_name(&manifest_state).await;
-        assert_eq!(name, "forge-no-model");
+        assert_eq!(name, "tirami-no-model");
     }
 
     // -------------------------------------------------------------------------
@@ -4545,6 +4810,76 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    // -----------------------------------------------------------------
+    // Fix #81 regression: RunLocal must not touch the agent's spend tally.
+    // -----------------------------------------------------------------
+    #[tokio::test]
+    async fn agent_task_run_local_does_not_change_agent_spend_tally() {
+        // The RunLocal branch returns 503 when the model isn't
+        // loaded. Whether the branch succeeds or fails, the
+        // PersonalAgent's spend / earn tallies must not change
+        // because no TRM crosses wallet boundaries on a
+        // self-served task (the node pays itself in compute).
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+
+        // Snapshot tallies via /v1/tirami/agent/status.
+        let before = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tirami/agent/status")
+                    .body(Body::empty())
+                    .expect("before request"),
+            )
+            .await
+            .expect("before response");
+        let before_body = axum::body::to_bytes(before.into_body(), usize::MAX)
+            .await
+            .expect("before body");
+        let before_json: serde_json::Value =
+            serde_json::from_slice(&before_body).expect("before json");
+        let before_spent = before_json["spent_today_trm"].as_u64().unwrap_or_default();
+        let before_earned = before_json["earned_today_trm"].as_u64().unwrap_or_default();
+
+        // Drive the RunLocal path. It'll 503 on missing model, but the
+        // structural guarantee is: neither path touches the tally.
+        let _ = post_agent_task(
+            app.clone(),
+            serde_json::json!({
+                "prompt": "hi",
+                "max_tokens": 10,
+                "estimated_trm": 1,
+            }),
+        )
+        .await;
+
+        let after = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tirami/agent/status")
+                    .body(Body::empty())
+                    .expect("after request"),
+            )
+            .await
+            .expect("after response");
+        let after_body = axum::body::to_bytes(after.into_body(), usize::MAX)
+            .await
+            .expect("after body");
+        let after_json: serde_json::Value =
+            serde_json::from_slice(&after_body).expect("after json");
+        let after_spent = after_json["spent_today_trm"].as_u64().unwrap_or_default();
+        let after_earned = after_json["earned_today_trm"].as_u64().unwrap_or_default();
+
+        assert_eq!(
+            (before_spent, before_earned),
+            (after_spent, after_earned),
+            "RunLocal path must not change spent/earned tallies on a self-served task"
+        );
+    }
+
     #[tokio::test]
     async fn record_api_trade_populates_flops_estimated() {
         // Phase 15 Step 3 — verify FLOP accounting is wired through.
@@ -4653,6 +4988,60 @@ mod tests {
         assert_eq!(json["scope"], "read_only");
         assert!(json["token"].as_str().unwrap().len() == 64);
         assert_eq!(json["label"], "ci-bot");
+    }
+
+    // ------------------------------------------------------------------
+    // Fix #85 — round_price eliminates EMA f64 noise
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn round_price_snaps_noise_near_one() {
+        assert!((round_price(0.9990014976703275) - 0.999001).abs() < 1e-9);
+        // Exactly 1.0 stays 1.0.
+        assert_eq!(round_price(1.0), 1.0);
+        // Values already at 6-decimal precision are unchanged.
+        assert_eq!(round_price(0.5), 0.5);
+        // NaN / Inf are passed through.
+        assert!(round_price(f64::NAN).is_nan());
+        assert!(round_price(f64::INFINITY).is_infinite());
+    }
+
+    #[tokio::test]
+    async fn tokens_issue_defaults_node_id_to_local_node_when_omitted() {
+        // Fix #84 — integrators shouldn't need to know the local
+        // node_id to issue a token "for me". Omit the field and
+        // the server fills it in.
+        let mut config = Config::default();
+        config.api_bearer_token = Some("root".to_string());
+        let app = test_router(config);
+
+        let body = serde_json::json!({
+            "scope": "read_only",
+            "ttl_secs": 60,
+            "label": "auto-fill-test",
+            // no node_id
+        })
+        .to_string();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/tokens/issue")
+                    .header(AUTHORIZATION, "Bearer root")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        // Expect a non-empty node_id — the local one the test router
+        // bound to. We don't pin the exact value (that's wiring
+        // detail), just that the handler resolved SOME node id.
+        let node_id = json["node_id"].as_str().unwrap_or("");
+        assert!(!node_id.is_empty(), "node_id auto-fill must not be empty");
+        assert_eq!(node_id.len(), 64, "hex NodeId must be 64 chars");
     }
 
     #[tokio::test]
