@@ -655,16 +655,55 @@ impl PipelineCoordinator {
         transport.send_to(seed_peer_id, &envelope).await?;
         tracing::debug!("Sent inference request {} to {}", request_id, seed_peer_id);
 
-        // Collect streamed tokens
+        // Collect streamed tokens. Two completion signals:
+        //   (a) is_final=true TokenStream chunk arrives.
+        //   (b) TradeProposal counter-signed + TradeAccept sent.
+        //
+        // Fix #80-follow-up — previously this loop broke on (a)
+        // which abandoned the TradeProposal flight still in the
+        // wire buffer. The seed then timed out at 5s and fell
+        // back to the half-TRM penalty path. Now we wait for
+        // BOTH; if the TradeProposal doesn't arrive within
+        // `TRADE_PROPOSAL_WAIT`, we return the text anyway (the
+        // seed's timeout path will still record a trade).
+        const TRADE_PROPOSAL_WAIT: std::time::Duration =
+            std::time::Duration::from_secs(3);
         let mut result = String::new();
+        let mut seen_final = false;
+        let mut counter_signed = false;
+        let overall_deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(((max_tokens as u64) / 4).max(15));
         loop {
-            match transport.recv().await {
-                Some((peer_id, response)) => match response.payload {
+            if seen_final && counter_signed {
+                break;
+            }
+            let remaining = if seen_final {
+                TRADE_PROPOSAL_WAIT
+            } else {
+                overall_deadline.saturating_duration_since(tokio::time::Instant::now())
+            };
+            if remaining.is_zero() {
+                break;
+            }
+            let next = tokio::time::timeout(remaining, transport.recv()).await;
+            let envelope = match next {
+                Ok(Some((_peer_id, envelope))) => envelope,
+                Ok(None) => break,
+                Err(_) => {
+                    // Timeout: either waiting for tokens (unlikely to
+                    // have completed the HTTP response) or for the
+                    // trailing TradeProposal. In either case, exit.
+                    break;
+                }
+            };
+            let peer_id = &seed_peer_id;
+            let response = envelope;
+            match response.payload {
                     Payload::TokenStream(ts) => {
                         if ts.request_id == request_id {
                             result.push_str(&ts.text);
                             if ts.is_final {
-                                break;
+                                seen_final = true;
                             }
                         }
                     }
@@ -700,7 +739,7 @@ impl PipelineCoordinator {
                                     consumer_sig,
                                 }),
                             };
-                            if let Err(e) = transport.send_to(&peer_id, &accept).await {
+                            if let Err(e) = transport.send_to(peer_id, &accept).await {
                                 tracing::warn!("Failed to send TradeAccept: {}", e);
                             } else {
                                 tracing::debug!(
@@ -709,11 +748,10 @@ impl PipelineCoordinator {
                                     request_id
                                 );
                             }
+                            counter_signed = true;
                         }
                     }
                     _ => {}
-                },
-                None => break,
             }
         }
 
